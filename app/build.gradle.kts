@@ -60,6 +60,11 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+    lint {
+        // ComponentActivity 使用 registerForActivityResult 时 lint 误报 Fragment 版本问题
+        disable += "InvalidFragmentVersionForActivityResult"
+        abortOnError = false
+    }
 }
 
 dependencies {
