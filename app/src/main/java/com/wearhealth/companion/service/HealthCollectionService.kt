@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.wearhealth.companion.R
@@ -45,7 +44,7 @@ class HealthCollectionService : Service() {
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.service_notification_title))
             .setContentText(getString(R.string.service_notification_text))
-            .setSmallIcon(android.R.drawable.ic_menu_heart)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)
             .build()
 

@@ -15,7 +15,7 @@ import java.nio.channels.FileChannel
  *
  * 当前行为：
  * - 尝试从 assets 加载 `health_model.tflite`
- * - 若模型存在：把最近 N 个样本特征化后送入模型推理
+ * - 若模型存在：把样本特征化后送入模型推理
  * - 若模型不存在：回退到 RuleBasedAnalyzer
  *
  * 模型输入（示例，后续按实际训练的模型调整）：
@@ -33,7 +33,8 @@ class TFLiteAnalyzer(context: Context) {
     init {
         try {
             val asset = context.assets.openFd(MODEL_FILENAME)
-            val buffer: ByteBuffer = FileInputStream(asset.fileDescriptor.file).channel
+            val inputStream = FileInputStream(asset.fileDescriptor)
+            val buffer: ByteBuffer = inputStream.channel
                 .map(FileChannel.MapMode.READ_ONLY, asset.startOffset, asset.declaredLength)
             val options = Interpreter.Options().apply { setNumThreads(2) }
             interpreter = Interpreter(buffer, options)

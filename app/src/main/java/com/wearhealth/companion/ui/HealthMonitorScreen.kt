@@ -3,6 +3,7 @@ package com.wearhealth.companion.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
@@ -16,7 +17,6 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.material.Button
-import androidx.wear.compose.material.Chip
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
 import com.wearhealth.companion.model.HealthStatus
@@ -97,7 +97,7 @@ private fun MetricsGrid(sample: com.wearhealth.companion.model.HealthSample) {
 
 @Composable
 private fun MetricRow(label: String, value: String) {
-    androidx.wear.compose.material.Row(
+    Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {

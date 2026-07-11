@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.wear.compose.material.MaterialTheme
@@ -20,7 +21,7 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { result ->
+    ) { _ ->
         // 忽略结果；用户拒绝时 UI 会显示无数据
     }
 
@@ -52,6 +53,3 @@ class MainActivity : ComponentActivity() {
         )
     }
 }
-
-// 别名：Compose 中 Box 在 androidx.compose.foundation.layout
-private typealias Box = androidx.compose.foundation.layout.Box

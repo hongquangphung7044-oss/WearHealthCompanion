@@ -6,7 +6,7 @@ import com.wearhealth.companion.model.HealthThresholds
 
 /**
  * 本地规则引擎：基于阈值做异常检测
- * 优先级：HighHR > LowHR > IrregularRhythm > LowSpO2 > LowHRV > Normal
+ * 优先级：HighHR > LowHR > LowSpO2 > LowHRV > Normal
  */
 class RuleBasedAnalyzer {
 
@@ -23,9 +23,9 @@ class RuleBasedAnalyzer {
                 HealthStatus.HighHeartRate(sample.heartRate)
             isResting && sample.heartRate < HealthThresholds.HR_LOW ->
                 HealthStatus.LowHeartRate(sample.heartRate)
-            sample.spo2 in 1 until HealthThresholds.SPO2_LOW ->
+            sample.spo2 > 0 && sample.spo2 < HealthThresholds.SPO2_LOW ->
                 HealthStatus.LowSpO2(sample.spo2)
-            sample.hrvMs in 1.0 until HealthThresholds.HRV_LOW ->
+            sample.hrvMs > 0 && sample.hrvMs < HealthThresholds.HRV_LOW ->
                 HealthStatus.LowHRV(sample.hrvMs)
             else -> HealthStatus.Normal
         }

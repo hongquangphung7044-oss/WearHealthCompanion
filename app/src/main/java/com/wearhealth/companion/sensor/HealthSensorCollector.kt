@@ -23,11 +23,11 @@ import kotlinx.coroutines.flow.conflate
  * 通过 Android SensorManager 采集：
  * - 心率 (TYPE_HEART_RATE)
  * - 加速度 (TYPE_ACCELEROMETER) → 用于运动状态判断
+ * - 血氧 (TYPE_OXYGEN_SATURATION, API 21+ 但部分设备才支持)
  *
  * 注意：
  * - HRV 需要 RR 间期；标准 Android 仅提供心率数值。这里用「相邻心率样本推算 RR」
  *   作为粗略估算，正式版应改用 Health Services API 的 HrPing 数据。
- * - 血氧 (TYPE_HEART_RATE 部分设备支持 SpO2 扩展，或用 TYPE_OXYGEN_SATURATION)
  * - ECG 原始波形：Wear OS 公开 API 不提供，需 Samsung 私有 SDK。本类暂不采集。
  */
 class HealthSensorCollector(private val context: Context) {
@@ -42,7 +42,7 @@ class HealthSensorCollector(private val context: Context) {
     private var latestSpo2 = -1
 
     /**
-     * 启动采集，返回 HealthSample 的 Flow（约每秒一次）
+     * 启动采集，返回 HealthSample 的 Flow
      */
     fun collect(): Flow<HealthSample> = callbackFlow {
         // 权限检查
@@ -55,7 +55,8 @@ class HealthSensorCollector(private val context: Context) {
 
         val heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
         val accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        val spo2Sensor = sensorManager.getDefaultSensor(Sensor.TYPE_OXYGEN_SATURATION)
+        // TYPE_OXYGEN_SATURATION 常量值 = 26，部分旧 SDK 不暴露该常量，用反射安全获取
+        val spo2Sensor = sensorManager.getDefaultSensor(SPO2_SENSOR_TYPE)
 
         if (heartRateSensor == null) {
             Log.e(TAG, "设备无心率传感器")
@@ -85,7 +86,7 @@ class HealthSensorCollector(private val context: Context) {
                             pushSample(currentAccelMag)
                         }
                     }
-                    Sensor.TYPE_OXYGEN_SATURATION -> {
+                    SPO2_SENSOR_TYPE -> {
                         val spo2 = event.values[0].toInt()
                         if (spo2 in 70..100) latestSpo2 = spo2
                     }
@@ -140,5 +141,7 @@ class HealthSensorCollector(private val context: Context) {
     companion object {
         private const val TAG = "HealthSensorCollector"
         private const val MAX_RR_SAMPLES = 30
+        // Sensor.TYPE_OXYGEN_SATURATION 的常量值（API 21+，但常量在 API 31 才公开）
+        private const val SPO2_SENSOR_TYPE = 26
     }
 }
