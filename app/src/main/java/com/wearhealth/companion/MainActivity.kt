@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.PositionIndicator
 import androidx.wear.compose.material.Scaffold
@@ -30,9 +31,10 @@ class MainActivity : ComponentActivity() {
         requestPermissions()
         setContent {
             MaterialTheme {
+                val listState = rememberScalingLazyListState()
                 Scaffold(
                     timeText = { TimeText() },
-                    positionIndicator = { PositionIndicator() },
+                    positionIndicator = { PositionIndicator(scalingLazyListState = listState) },
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         HealthMonitorScreen(viewModel = viewModel)

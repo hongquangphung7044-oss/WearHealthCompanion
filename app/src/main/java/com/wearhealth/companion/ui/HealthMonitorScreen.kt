@@ -25,9 +25,11 @@ import com.wearhealth.companion.model.toDisplayText
 @Composable
 fun HealthMonitorScreen(viewModel: HealthViewModel) {
     val uiState by viewModel.uiState.collectAsState()
+    val listState = androidx.wear.compose.foundation.lazy.rememberScalingLazyListState()
 
     ScalingLazyColumn(
         modifier = Modifier.fillMaxSize(),
+        state = listState,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
