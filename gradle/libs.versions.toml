@@ -10,7 +10,7 @@ coroutines = "1.8.1"
 tflite = "2.16.1"
 tfliteSupport = "0.4.4"
 playServicesWearable = "18.2.0"
-healthServicesClient = "1.0.0-rc02"  // Health Services API（替代部分 Samsung 私有 SDK）
+healthServicesClient = "1.0.0-rc02"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
