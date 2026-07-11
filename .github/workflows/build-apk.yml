@@ -29,15 +29,15 @@ jobs:
 
       - name: Decode signing keystore
         run: |
-          mkdir -p $HOME/.keystore
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $HOME/.keystore/release.keystore
-          ls -lh $HOME/.keystore/release.keystore
+          mkdir -p /home/runner/.keystore
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /home/runner/.keystore/release.keystore
+          ls -lh /home/runner/.keystore/release.keystore
 
       - name: Build Release APK
         env:
           VERSION_CODE: ${{ github.run_number }}
           VERSION_NAME: 1.0.${{ github.run_number }}
-          KEYSTORE_PATH: ${{ format('{0}/.keystore/release.keystore', env.HOME) }}
+          KEYSTORE_PATH: /home/runner/.keystore/release.keystore
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
