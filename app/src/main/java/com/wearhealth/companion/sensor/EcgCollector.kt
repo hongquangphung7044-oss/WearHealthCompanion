@@ -134,10 +134,11 @@ class EcgCollector(private val context: Context) {
             }
             Log.i(TAG, "电极接触检测成功，开始 30 秒采集")
 
-            // 5. 正式采集：30 秒倒计时，期间检测接触断开
+            // 5. 正式采集：30 秒倒计时
+            // 注意：不在采集中检测"接触断开"——Samsung SDK 的 leadOff 值在测量过程中
+            // 可能短暂波动，误判会导致测量失败。数据质量交给本地预检 + API sqGrade 判断
             val totalTicks = targetDurationSec * 10  // 100ms 一次
             var tick = 0
-            var contactLostTicks = 0  // 接触断开计数（连续断开超过 15 秒才提示）
             while (tick < totalTicks) {
                 delay(100)
                 tick++
@@ -146,19 +147,6 @@ class EcgCollector(private val context: Context) {
                 // 实时波形：显示最近 250 个采样点 ≈ 0.5 秒，清晰显示一个心跳周期
                 val startIdx = maxOf(0, ecgData.size - 250)
                 _liveSamples.value = ecgData.subList(startIdx, ecgData.size).toList()
-                // 检测接触是否断开（leadLost 标志由 listener 更新）
-                if (leadLost) {
-                    contactLostTicks++
-                    if (contactLostTicks >= 150) {  // 连续 15 秒断开才报错
-                        _state.value = EcgCollectionState.Error(
-                            "采集中电极接触断开超过 15 秒。请保持手指轻触上方按键不要移动，重新测量"
-                        )
-                        fullyReleaseService()
-                        return emptyList()
-                    }
-                } else {
-                    contactLostTicks = 0
-                }
             }
 
             // 6. 停止追踪器但保持 service（下次测量复用）
