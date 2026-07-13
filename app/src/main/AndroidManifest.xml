@@ -18,11 +18,6 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
 
-        <service android:name=".sync.WearDataListenerService" android:exported="true"
-            android:permission="com.google.android.gms.permission.WEARABLE_BIND_LISTENER">
-            <intent-filter><action android:name="com.google.android.gms.wearable.DATA_CHANGED" /></intent-filter>
-        </service>
-
         <activity
             android:name=".MainActivity"
             android:exported="true"

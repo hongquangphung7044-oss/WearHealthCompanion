@@ -84,7 +84,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     // Wear OS
-    implementation(libs.play.services.wearable)
     implementation(libs.androidx.security.crypto)
 
     // 网络：调用 HeartVoice ECG 分析 API

@@ -29,15 +29,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.lifecycleScope
-import com.google.android.gms.tasks.Tasks
-import com.google.android.gms.wearable.PutDataMapRequest
-import com.google.android.gms.wearable.Wearable
 import com.wearhealth.companion.mobile.data.EcgStore
 import com.wearhealth.companion.mobile.settings.SecureSettings
-import com.wearhealth.companion.mobile.sync.WearProtocol
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val exportPdf = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
@@ -54,13 +47,8 @@ class MainActivity : ComponentActivity() {
 
     private fun saveAndPushKey(value: String) {
         SecureSettings(this).saveApiKey(value)
-        lifecycleScope.launch(Dispatchers.IO) {
-            val request = PutDataMapRequest.create(WearProtocol.CONFIG_PATH).apply {
-                dataMap.putString("apiKey", value.trim())
-                dataMap.putLong("nonce", System.nanoTime())
-            }.asPutDataRequest().setUrgent()
-            runCatching { Tasks.await(Wearable.getDataClient(this@MainActivity).putDataItem(request)) }
-        }
+        // Stored locally. It will be sent only through the forthcoming direct BLE GATT transport.
+        // No proprietary mobile-service framework is required on the watch.
     }
 
     private companion object {
@@ -96,8 +84,8 @@ private fun CompanionApp(onPushKey: (String) -> Unit, onExport: () -> Unit) {
             Column(Modifier.fillMaxSize().padding(contentPadding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("设置", style = MaterialTheme.typography.headlineSmall)
                 OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, label = { Text("HeartVoice API Key") }, modifier = Modifier.fillMaxWidth())
-                Button(onClick = { onPushKey(apiKey) }) { Text("保存并自动推送到手表") }
-                Text("用户资料字段（姓名、性别、出生日期、身高、体重）和完整波形 PDF 将在报告完善版本中提供。")
+                Button(onClick = { onPushKey(apiKey) }) { Text("保存到手机") }
+                Text("此版本不依赖 Google Play 服务。API Key 已安全保存到手机；待直连蓝牙同步器完成后再推送到手表。")
             }
         }
     }

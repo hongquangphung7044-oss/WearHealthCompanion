@@ -68,7 +68,7 @@ API Key 不写入源码、`BuildConfig`、GitHub Actions 或发布 APK：
 
 1. 在手机同步器的「设置」录入 Key；
 2. 手机保存在 Android Keystore 支持的加密存储中；
-3. 手机通过 Wear OS Data Layer 下发给已配对手表；
+3. 手机将通过后续的直连 Bluetooth LE GATT 同步器下发给已配对手表（不依赖 Google Play 服务）；
 4. 手表使用自身的 Keystore 支持加密存储保存，以支持脱离手机独立分析。
 
 > 不要将 Key 提交到仓库、README 或 Actions Secret；历史上使用过的 Key 应在服务商后台撤销。

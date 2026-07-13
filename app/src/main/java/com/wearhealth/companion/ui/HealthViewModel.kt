@@ -12,7 +12,6 @@ import com.wearhealth.companion.model.localSignalQualityCheck
 import com.wearhealth.companion.network.HeartVoiceApiClient
 import com.wearhealth.companion.sensor.EcgCollector
 import com.wearhealth.companion.data.EcgRawArchive
-import com.wearhealth.companion.sync.WearEcgSync
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -109,10 +108,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 // 保存到历史记录
                 val saved = historyRepo.save(finalResult, rawSampleCount = ecgData.size)
                 rawArchive.save(saved.recordId, ecgData)
-                // The status remains SENDING until the phone has persisted the record and sends an ACK.
-                if (WearEcgSync.send(getApplication<Application>().applicationContext, saved)) {
-                    historyRepo.markSending(saved.recordId)
-                }
+                // Full-resolution archive is retained locally. Direct BLE transfer is implemented separately
+                // because mainland Galaxy Watch firmware does not ship Google Play services / Data Layer.
                 _uiState.value = _uiState.value.copy(
                     ecgState = EcgCollectionState.Done(finalResult),
                     ecgResult = finalResult,
@@ -164,20 +161,19 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
 
+    /**
+     * Direct Bluetooth synchronization is intentionally not started until a compatible
+     * GATT transport is paired. The record remains locally archived and pending.
+     */
     fun sendHistoryToPhone(item: HistoryItem) {
-        viewModelScope.launch {
-            if (WearEcgSync.send(getApplication<Application>().applicationContext, item)) {
-                historyRepo.markSending(item.recordId)
-            } else {
-                historyRepo.markPending(item.recordId)
-            }
-            val records = historyRepo.getAll()
-            _uiState.value = _uiState.value.copy(
-                history = records,
-                historyDetail = records.firstOrNull { it.recordId == item.recordId },
-            )
-        }
+        historyRepo.markPending(item.recordId)
+        val records = historyRepo.getAll()
+        _uiState.value = _uiState.value.copy(
+            history = records,
+            historyDetail = records.firstOrNull { it.recordId == item.recordId },
+        )
     }
+
 
     private fun downsample(data: List<Int>, targetSize: Int): List<Int> {
         if (data.size <= targetSize) return data
