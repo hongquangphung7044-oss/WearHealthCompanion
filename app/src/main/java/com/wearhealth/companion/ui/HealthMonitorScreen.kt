@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -21,10 +22,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
@@ -77,6 +81,32 @@ fun HealthMonitorScreen(
             }
             val color = if (sdkOk && apiOk) Color(0xFF4CAF50) else Color(0xFFFF9800)
             Text(text = statusText, style = MaterialTheme.typography.bodySmall, color = color)
+        }
+
+        // 同步状态消息（如果 syncMessage 不为 null）
+        if (uiState.syncMessage != null) {
+            item {
+                val msgColor = if (uiState.syncMessage.startsWith("传送失败") ||
+                    uiState.syncMessage.startsWith("API Key 不能为空"))
+                    Color(0xFFEF5350) else Color(0xFF64B5F6)
+                Text(
+                    text = uiState.syncMessage!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = msgColor,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
+        }
+
+        // API Key 输入界面：未配置时显示
+        if (!uiState.apiKeyConfigured && !uiState.showHistory) {
+            item {
+                ApiKeyInputCard(
+                    onSave = { key -> viewModel.saveApiKey(key) },
+                    syncing = uiState.syncingToPhone,
+                )
+            }
         }
 
         val state = uiState.ecgState
@@ -207,6 +237,34 @@ fun HealthMonitorScreen(
                     )
                 }
                 item { HistoryDetailCard(item = uiState.historyDetail!!) }
+                // 传送到手机按钮
+                item {
+                    val detail = uiState.historyDetail!!
+                    if (detail.syncedToPhone) {
+                        // 已传送：灰色不可点击
+                        Button(
+                            onClick = {},
+                            enabled = false,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF607D8B),
+                            ),
+                        ) { Text("已传送 ✓", style = MaterialTheme.typography.bodySmall) }
+                    } else {
+                        // 未传送：可点击
+                        Button(
+                            onClick = { viewModel.syncToPhone(detail) },
+                            enabled = !uiState.syncingToPhone,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF64B5F6),
+                            ),
+                        ) {
+                            Text(
+                                if (uiState.syncingToPhone) "传送中..." else "传送到手机",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
                 item {
                     val detail = uiState.historyDetail!!
                     val label = when (detail.syncStatus) { "SENT" -> "已发送 · 重新发送"; "SENDING" -> "正在发送…"; else -> "发送到手机" }
@@ -498,6 +556,14 @@ private fun HistoryItemRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF78909C),
             )
+            // 同步状态指示
+            val syncText = if (item.syncedToPhone) "已传送 ✓" else "未传送"
+            val syncColor = if (item.syncedToPhone) Color(0xFF4CAF50) else Color(0xFFFF9800)
+            Text(
+                text = syncText,
+                style = MaterialTheme.typography.bodySmall,
+                color = syncColor,
+            )
         }
     }
 }
@@ -589,6 +655,71 @@ private fun HistoryDetailCard(item: HistoryItem) {
             Text("房早 ${item.pacCount} 次 / 室早 ${item.pvcCount} 次",
                 style = MaterialTheme.typography.bodySmall,
                 color = if (item.pacCount + item.pvcCount > 10) Color(0xFFEF5350) else Color(0xFFFF9800))
+        }
+    }
+}
+
+/**
+ * API Key 输入卡片
+ *
+ * 当 apiKeyConfigured 为 false 时显示，让用户在手表端输入 HeartVoice API Key。
+ * 也可通过手机端 Wearable Data Layer 下发，无需手动输入。
+ */
+@Composable
+private fun ApiKeyInputCard(
+    onSave: (String) -> Unit,
+    syncing: Boolean,
+) {
+    var apiKeyInput by remember { mutableStateOf("") }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp),
+    ) {
+        Text(
+            text = "请配置 API Key",
+            style = MaterialTheme.typography.titleSmall,
+            color = Color(0xFFFF9800),
+            textAlign = TextAlign.Center,
+        )
+        Text(
+            text = "在手机端 App 下发，或在此输入",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF78909C),
+            textAlign = TextAlign.Center,
+        )
+        // 输入框（使用 BasicTextField，Wear OS 上会唤起输入法）
+        BasicTextField(
+            value = apiKeyInput,
+            onValueChange = { apiKeyInput = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            textStyle = TextStyle(
+                color = Color.White,
+                fontSize = 12.sp,
+            ),
+            cursorBrush = SolidColor(Color(0xFF64B5F6)),
+            singleLine = true,
+            decorationBox = { innerTextField ->
+                if (apiKeyInput.isEmpty()) {
+                    Text(
+                        text = "输入 API Key",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF78909C),
+                    )
+                }
+                innerTextField()
+            },
+        )
+        Button(
+            onClick = { onSave(apiKeyInput) },
+            enabled = apiKeyInput.isNotBlank() && !syncing,
+        ) {
+            Text("保存", style = MaterialTheme.typography.bodySmall)
         }
     }
 }

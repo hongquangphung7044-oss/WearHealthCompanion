@@ -1,8 +1,13 @@
 package com.wearhealth.companion.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.android.gms.tasks.Tasks
+import com.google.android.gms.wearable.PutDataMapRequest
+import com.google.android.gms.wearable.Wearable
+import com.wearhealth.companion.data.ApiKeyManager
 import com.wearhealth.companion.data.EcgHistoryRepository
 import com.wearhealth.companion.data.HistoryItem
 import com.wearhealth.companion.model.EcgAnalysisResult
@@ -11,13 +16,16 @@ import com.wearhealth.companion.model.computeMinMaxHeartRate
 import com.wearhealth.companion.model.localSignalQualityCheck
 import com.wearhealth.companion.network.HeartVoiceApiClient
 import com.wearhealth.companion.sensor.EcgCollector
-import com.wearhealth.companion.data.EcgRawArchive
-import com.wearhealth.companion.ble.BleEcgUploader
-import com.wearhealth.companion.security.ApiKeyStore
+import com.wearhealth.companion.service.WatchWearableListenerService
+import com.wearhealth.companion.shared.DataLayerPaths
+import com.wearhealth.companion.shared.EcgMeasurementTransfer
+import com.wearhealth.companion.shared.MeasurementSerializer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class EcgUiState(
     val ecgState: EcgCollectionState = EcgCollectionState.Idle,
@@ -28,16 +36,16 @@ data class EcgUiState(
     val showHistory: Boolean = false,
     val history: List<HistoryItem> = emptyList(),
     val historyDetail: HistoryItem? = null,      // 点击进入的历史详情
+    val syncingToPhone: Boolean = false,         // 是否正在传送到手机
+    val syncMessage: String? = null,             // 传送状态消息
 )
 
 class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
     private val ecgCollector = EcgCollector(app.applicationContext)
-    private val heartVoiceApi = HeartVoiceApiClient(app.applicationContext)
-    private val rawArchive = EcgRawArchive(app.applicationContext)
+    private val apiKeyManager = ApiKeyManager(app.applicationContext)
+    private var heartVoiceApi = HeartVoiceApiClient(apiKeyManager.getApiKey())
     private val historyRepo = EcgHistoryRepository(app.applicationContext)
-    private val bleUploader = BleEcgUploader(app.applicationContext)
-    private val apiKeyStore = ApiKeyStore(app.applicationContext)
 
     private val _uiState = MutableStateFlow(EcgUiState())
     val uiState: StateFlow<EcgUiState> = _uiState.asStateFlow()
@@ -45,8 +53,26 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     init {
         _uiState.value = _uiState.value.copy(
             sdkAvailable = ecgCollector.checkSdkAvailable(),
-            apiKeyConfigured = heartVoiceApi.isApiKeyConfigured,
+            apiKeyConfigured = apiKeyManager.isConfigured(),
         )
+        // 监听 API Key 变更（手机端下发或本地保存后自动刷新）
+        viewModelScope.launch {
+            ApiKeyManager.refreshTrigger.collect {
+                refreshApiKeyStatus()
+            }
+        }
+        // 监听 Service 完成的同步事件，刷新历史列表
+        viewModelScope.launch {
+            WatchWearableListenerService.syncCompleted.collect {
+                _uiState.value = _uiState.value.copy(
+                    history = historyRepo.getAll(),
+                    historyDetail = _uiState.value.historyDetail?.let { detail ->
+                        historyRepo.getAll().find { it.timestamp == detail.timestamp } ?: detail
+                    },
+                    syncMessage = "已从手机端触发同步",
+                )
+            }
+        }
     }
 
     fun startEcgMeasurement() {
@@ -109,10 +135,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                         it != "SN" && it != "SNT" && it != "SNB"
                     },
                 )
-                // 保存到历史记录
-                val saved = historyRepo.save(finalResult, rawSampleCount = ecgData.size)
-                rawArchive.save(saved.recordId, ecgData)
-                bleUploader.upload(saved) { sent -> if (sent) historyRepo.markSynced(saved.recordId) else historyRepo.markPending(saved.recordId) }
+                // 保存到历史记录（同时保存完整原始波形 rawEcgData，不降采样）
+                historyRepo.save(finalResult, rawEcgData = ecgData)
                 _uiState.value = _uiState.value.copy(
                     ecgState = EcgCollectionState.Done(finalResult),
                     ecgResult = finalResult,
@@ -124,6 +148,189 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+    // ========== API Key 管理 ==========
+
+    /**
+     * 保存 API Key（用户在手表端输入或由手机下发后调用）
+     *
+     * 保存后会重建 HeartVoiceApiClient 并刷新 UI 状态。
+     */
+    fun saveApiKey(key: String) {
+        val trimmed = key.trim()
+        if (trimmed.isEmpty()) {
+            _uiState.value = _uiState.value.copy(syncMessage = "API Key 不能为空")
+            return
+        }
+        apiKeyManager.saveApiKey(trimmed)
+        // 用新的 API Key 重建客户端
+        heartVoiceApi = HeartVoiceApiClient(trimmed)
+        _uiState.value = _uiState.value.copy(
+            apiKeyConfigured = true,
+            syncMessage = "API Key 已保存",
+        )
+    }
+
+    /**
+     * 刷新 API Key 配置状态
+     *
+     * 在 onResume 或收到手机下发的新 Key 时调用。
+     */
+    fun refreshApiKeyStatus() {
+        val apiKey = apiKeyManager.getApiKey()
+        // 用最新的 API Key 重建客户端
+        heartVoiceApi = HeartVoiceApiClient(apiKey)
+        _uiState.value = _uiState.value.copy(
+            apiKeyConfigured = apiKeyManager.isConfigured(),
+        )
+    }
+
+    // ========== 传送到手机（Wearable Data Layer）==========
+
+    /**
+     * 将指定记录通过 Wearable Data Layer 发送到手机
+     *
+     * 使用 PutDataMapRequest + MeasurementSerializer.toDataMap() 传输完整数据，
+     * 包括完整原始波形（二进制编码，约 60KB）。
+     */
+    fun syncToPhone(item: HistoryItem) {
+        if (_uiState.value.syncingToPhone) return
+        if (item.syncedToPhone) {
+            _uiState.value = _uiState.value.copy(syncMessage = "该记录已传送过")
+            return
+        }
+
+        _uiState.value = _uiState.value.copy(
+            syncingToPhone = true,
+            syncMessage = "正在传送到手机...",
+        )
+
+        viewModelScope.launch {
+            try {
+                val transfer = EcgMeasurementTransfer(
+                    timestamp = item.timestamp,
+                    diagnosis = item.diagnosis,
+                    avgHeartRate = item.avgHeartRate,
+                    minHeartRate = item.minHeartRate,
+                    maxHeartRate = item.maxHeartRate,
+                    signalQuality = item.signalQuality,
+                    isAbnormal = item.isAbnormal,
+                    avgQrs = item.avgQrs,
+                    prInterval = item.prInterval,
+                    avgQt = item.avgQt,
+                    avgQtc = item.avgQtc,
+                    pacCount = item.pacCount,
+                    pvcCount = item.pvcCount,
+                    rawEcgData = item.rawEcgData,
+                    downsampledEcg = item.ecgSamples,
+                    sampleRate = 500,
+                )
+
+                val putDataMapReq = PutDataMapRequest.create(
+                    "${DataLayerPaths.PATH_ECG_MEASUREMENT}/${item.timestamp}"
+                )
+                putDataMapReq.dataMap.putAll(MeasurementSerializer.toDataMap(transfer))
+                val putDataReq = putDataMapReq.asPutDataRequest()
+                // 设置 urgency 为高优先级，确保及时同步
+                putDataReq.setUrgent()
+
+                withContext(Dispatchers.IO) {
+                    Tasks.await(Wearable.getDataClient(getApplication()).putDataItem(putDataReq))
+                }
+
+                // 标记为已同步
+                historyRepo.markSynced(item.timestamp)
+                Log.i(TAG, "ECG 记录已传送到手机: ${item.timestamp}")
+
+                _uiState.value = _uiState.value.copy(
+                    syncingToPhone = false,
+                    syncMessage = "已传送到手机",
+                    history = historyRepo.getAll(),
+                    historyDetail = _uiState.value.historyDetail?.copy(syncedToPhone = true),
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "传送到手机失败", e)
+                _uiState.value = _uiState.value.copy(
+                    syncingToPhone = false,
+                    syncMessage = "传送失败: ${e.message ?: "未知错误"}",
+                )
+            }
+        }
+    }
+
+    /**
+     * 同步所有未传送到手机的记录
+     *
+     * 通常在收到手机的 /sync_request 消息时调用。
+     */
+    fun syncAllUnsynced() {
+        val unsynced = historyRepo.getUnsynced()
+        if (unsynced.isEmpty()) {
+            _uiState.value = _uiState.value.copy(syncMessage = "没有未传送的记录")
+            return
+        }
+
+        _uiState.value = _uiState.value.copy(
+            syncingToPhone = true,
+            syncMessage = "正在传送 ${unsynced.size} 条记录...",
+        )
+
+        viewModelScope.launch {
+            var success = 0
+            var failed = 0
+            for (item in unsynced) {
+                try {
+                    val transfer = EcgMeasurementTransfer(
+                        timestamp = item.timestamp,
+                        diagnosis = item.diagnosis,
+                        avgHeartRate = item.avgHeartRate,
+                        minHeartRate = item.minHeartRate,
+                        maxHeartRate = item.maxHeartRate,
+                        signalQuality = item.signalQuality,
+                        isAbnormal = item.isAbnormal,
+                        avgQrs = item.avgQrs,
+                        prInterval = item.prInterval,
+                        avgQt = item.avgQt,
+                        avgQtc = item.avgQtc,
+                        pacCount = item.pacCount,
+                        pvcCount = item.pvcCount,
+                        rawEcgData = item.rawEcgData,
+                        downsampledEcg = item.ecgSamples,
+                        sampleRate = 500,
+                    )
+                    val putDataMapReq = PutDataMapRequest.create(
+                        "${DataLayerPaths.PATH_ECG_MEASUREMENT}/${item.timestamp}"
+                    )
+                    putDataMapReq.dataMap.putAll(MeasurementSerializer.toDataMap(transfer))
+                    val putDataReq = putDataMapReq.asPutDataRequest()
+                    putDataReq.setUrgent()
+
+                    withContext(Dispatchers.IO) {
+                        Tasks.await(Wearable.getDataClient(getApplication()).putDataItem(putDataReq))
+                    }
+                    historyRepo.markSynced(item.timestamp)
+                    success++
+                } catch (e: Exception) {
+                    Log.e(TAG, "传送记录 ${item.timestamp} 失败", e)
+                    failed++
+                }
+            }
+
+            _uiState.value = _uiState.value.copy(
+                syncingToPhone = false,
+                syncMessage = "传送完成: 成功 $success 条" + if (failed > 0) "，失败 $failed 条" else "",
+                history = historyRepo.getAll(),
+                historyDetail = _uiState.value.historyDetail?.let { detail ->
+                    historyRepo.getAll().find { it.timestamp == detail.timestamp } ?: detail
+                },
+            )
+        }
+    }
+
+    /** 清除同步状态消息 */
+    fun clearSyncMessage() {
+        _uiState.value = _uiState.value.copy(syncMessage = null)
     }
 
     // ========== 历史记录管理 ==========
@@ -141,7 +348,9 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun showHistoryDetail(item: HistoryItem) {
-        _uiState.value = _uiState.value.copy(historyDetail = item)
+        // 从仓库重新读取，确保 syncedToPhone 状态最新
+        val latest = historyRepo.getAll().find { it.timestamp == item.timestamp } ?: item
+        _uiState.value = _uiState.value.copy(historyDetail = latest)
     }
 
     fun hideHistoryDetail() {
@@ -149,7 +358,6 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteHistory(timestamp: Long) {
-        historyRepo.getAll().firstOrNull { it.timestamp == timestamp }?.let { rawArchive.delete(it.recordId) }
         historyRepo.delete(timestamp)
         _uiState.value = _uiState.value.copy(
             history = historyRepo.getAll(),
@@ -158,26 +366,9 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteAllHistory() {
-        rawArchive.deleteAll()
         historyRepo.deleteAll()
         _uiState.value = _uiState.value.copy(history = emptyList(), historyDetail = null)
     }
-
-
-    fun sendHistoryToPhone(item: HistoryItem) {
-        historyRepo.markSending(item.recordId)
-        bleUploader.upload(item) { sent ->
-            if (sent) historyRepo.markSynced(item.recordId) else historyRepo.markPending(item.recordId)
-            val records = historyRepo.getAll()
-            _uiState.value = _uiState.value.copy(history = records, historyDetail = records.firstOrNull { it.recordId == item.recordId })
-        }
-    }
-
-    fun saveLocalApiKey(value: String) {
-        apiKeyStore.save(value)
-        _uiState.value = _uiState.value.copy(apiKeyConfigured = value.isNotBlank())
-    }
-
 
     private fun downsample(data: List<Int>, targetSize: Int): List<Int> {
         if (data.size <= targetSize) return data
@@ -217,7 +408,6 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(
             ecgState = EcgCollectionState.Idle,
             ecgResult = null,
-            apiKeyConfigured = heartVoiceApi.isApiKeyConfigured,
             liveSamples = emptyList(),
         )
     }
@@ -225,5 +415,9 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         ecgCollector.disconnect()
         super.onCleared()
+    }
+
+    companion object {
+        private const val TAG = "HealthViewModel"
     }
 }

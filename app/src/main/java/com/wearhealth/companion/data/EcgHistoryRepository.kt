@@ -12,17 +12,22 @@ import java.util.Locale
  * ECG 测量历史记录存储
  *
  * 使用 SharedPreferences 以 JSON 数组形式存储，简单可靠。
- * 每条记录包含：时间戳、诊断、心率、关键参数、波形（降采样）、信号质量
+ * 每条记录包含：时间戳、诊断、心率、关键参数、波形（降采样，用于手表显示）、
+ * 完整原始波形（用于传送到手机）、信号质量、是否已同步到手机。
  */
 class EcgHistoryRepository(context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    /** 保存一条测量记录 */
-    fun save(result: EcgAnalysisResult, rawSampleCount: Int): HistoryItem {
+    /**
+     * 保存一条测量记录
+     *
+     * @param result ECG 分析结果
+     * @param rawEcgData 完整原始波形（不降采样，约 15000 点，用于传送到手机）
+     */
+    fun save(result: EcgAnalysisResult, rawEcgData: List<Int> = emptyList()) {
         val list = getAll().toMutableList()
         list.add(0, HistoryItem(
-            recordId = java.util.UUID.randomUUID().toString(),
             timestamp = System.currentTimeMillis(),
             diagnosis = result.diagnosis,
             avgHeartRate = result.avgHeartRate,
@@ -37,12 +42,12 @@ class EcgHistoryRepository(context: Context) {
             pacCount = result.pacCount,
             pvcCount = result.pvcCount,
             ecgSamples = result.ecgSamples,
-            rawSampleCount = rawSampleCount,
+            rawEcgData = rawEcgData,
+            syncedToPhone = false,
         ))
         // 最多保留 50 条
         val trimmed = if (list.size > 50) list.take(50) else list
         prefs.edit().putString(KEY_HISTORY, toJson(trimmed)).apply()
-        return list.first()
     }
 
     fun getAll(): List<HistoryItem> {
@@ -50,17 +55,24 @@ class EcgHistoryRepository(context: Context) {
         return try { fromJson(json) } catch (e: Exception) { emptyList() }
     }
 
+    /** 获取未同步到手机的记录 */
+    fun getUnsynced(): List<HistoryItem> = getAll().filterNot { it.syncedToPhone }
+
+    /** 标记指定时间戳的记录为已同步到手机 */
+    fun markSynced(timestamp: Long) {
+        val list = getAll().map { item ->
+            if (item.timestamp == timestamp) item.copy(syncedToPhone = true) else item
+        }
+        prefs.edit().putString(KEY_HISTORY, toJson(list)).apply()
+    }
+
     fun delete(timestamp: Long) {
         val list = getAll().filterNot { it.timestamp == timestamp }
         prefs.edit().putString(KEY_HISTORY, toJson(list)).apply()
     }
 
-    fun deleteAll() { prefs.edit().remove(KEY_HISTORY).apply() }
-    fun markSynced(recordId: String) { update(recordId) { it.copy(syncStatus = "SENT") } }
-    fun markSending(recordId: String) { update(recordId) { it.copy(syncStatus = "SENDING") } }
-    fun markPending(recordId: String) { update(recordId) { it.copy(syncStatus = "PENDING") } }
-    private fun update(recordId: String, change: (HistoryItem) -> HistoryItem) {
-        prefs.edit().putString(KEY_HISTORY, toJson(getAll().map { if (it.recordId == recordId) change(it) else it })).apply()
+    fun deleteAll() {
+        prefs.edit().remove(KEY_HISTORY).apply()
     }
 
     private fun toJson(list: List<HistoryItem>): String {
@@ -68,10 +80,11 @@ class EcgHistoryRepository(context: Context) {
         list.forEach { item ->
             val samples = JSONArray()
             item.ecgSamples.forEach { samples.put(it) }
+            val raw = JSONArray()
+            item.rawEcgData.forEach { raw.put(it) }
             val diag = JSONArray()
             item.diagnosis.forEach { diag.put(it) }
             arr.put(JSONObject().apply {
-                put("id", item.recordId)
                 put("ts", item.timestamp)
                 put("diag", diag)
                 put("hr", item.avgHeartRate)
@@ -86,8 +99,8 @@ class EcgHistoryRepository(context: Context) {
                 put("pac", item.pacCount)
                 put("pvc", item.pvcCount)
                 put("samples", samples)
-                put("rawCount", item.rawSampleCount)
-                put("sync", item.syncStatus)
+                put("sync", item.syncedToPhone)
+                put("raw", raw)
             })
         }
         return arr.toString()
@@ -104,8 +117,11 @@ class EcgHistoryRepository(context: Context) {
             val samplesArr = o.optJSONArray("samples") ?: JSONArray()
             val samples = mutableListOf<Int>()
             for (j in 0 until samplesArr.length()) samples.add(samplesArr.getInt(j))
+            // 完整原始波形（用于传送到手机，可能较大）
+            val rawArr = o.optJSONArray("raw") ?: JSONArray()
+            val raw = mutableListOf<Int>()
+            for (j in 0 until rawArr.length()) raw.add(rawArr.getInt(j))
             list.add(HistoryItem(
-                recordId = o.optString("id", o.getLong("ts").toString()),
                 timestamp = o.getLong("ts"),
                 diagnosis = diag,
                 avgHeartRate = o.optInt("hr"),
@@ -120,8 +136,8 @@ class EcgHistoryRepository(context: Context) {
                 pacCount = o.optInt("pac"),
                 pvcCount = o.optInt("pvc"),
                 ecgSamples = samples,
-                rawSampleCount = o.optInt("rawCount", 0),
-                syncStatus = o.optString("sync", "PENDING"),
+                rawEcgData = raw,
+                syncedToPhone = o.optBoolean("sync", false),
             ))
         }
         return list
@@ -139,7 +155,6 @@ class EcgHistoryRepository(context: Context) {
 }
 
 data class HistoryItem(
-    val recordId: String,
     val timestamp: Long,
     val diagnosis: List<String>,
     val avgHeartRate: Int,
@@ -153,7 +168,7 @@ data class HistoryItem(
     val avgQtc: Int,
     val pacCount: Int,
     val pvcCount: Int,
-    val ecgSamples: List<Int>,
-    val rawSampleCount: Int = 0,
-    val syncStatus: String = "PENDING",
+    val ecgSamples: List<Int>,                 // 降采样波形（用于手表显示）
+    val rawEcgData: List<Int> = emptyList(),   // 完整原始波形（用于传送到手机，不降采样）
+    val syncedToPhone: Boolean = false,        // 是否已同步到手机
 )

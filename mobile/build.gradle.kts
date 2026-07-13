@@ -2,21 +2,19 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.ksp)
 }
 
 android {
-    namespace = "com.wearhealth.companion"
+    namespace = "com.wearhealth.companion.mobile"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.wearhealth.companion"
-        minSdk = 33          // Wear OS 3+ (Galaxy Watch 4+)
+        applicationId = "com.wearhealth.companion.mobile"
+        minSdk = 26
         targetSdk = 35
-        // 版本号：CI 构建时通过环境变量注入（github.run_number，保证递增 → 支持覆盖安装）
         versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
         versionName = System.getenv("VERSION_NAME") ?: "1.0.0"
-
-
     }
 
     buildTypes {
@@ -40,66 +38,48 @@ android {
                 "proguard-rules.pro"
             )
         }
-        debug {
-            isDebuggable = true
-        }
+        debug { isDebuggable = true }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true }
     packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-    }
-    lint {
-        disable += "InvalidFragmentVersionForActivityResult"
-        abortOnError = false
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 }
 
 dependencies {
-    // 共享模块：数据传输模型 + 序列化工具
     implementation(project(":shared"))
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
 
-    // Compose for Wear OS — Material 3
+    // Compose Material 3 (手机版)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
-    implementation(libs.androidx.compose.ui.tooling)
-    implementation(libs.androidx.wear.compose.foundation)
-    implementation(libs.androidx.wear.compose.material3)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
 
     // 协程
     implementation(libs.kotlinx.coroutines.android)
 
-    // Wear OS
-    implementation(libs.androidx.security.crypto)
+    // Wear OS Data Layer
+    implementation(libs.play.services.wearable)
 
-    // 网络：调用 HeartVoice ECG 分析 API
+    // Room 数据库
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
+    // Navigation
+    implementation(libs.androidx.navigation.compose)
+
+    // 网络（可能需要）
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("org.json:json:20240303")
-
-    // Samsung Health Sensor SDK（ECG 原始波形采集）
-    // .aar 文件放在 app/libs/ 目录，由 CI 从 GitHub Secret 解码
-    val samsungSdkAar = file("libs/samsung-health-sensor-api.aar")
-    if (samsungSdkAar.exists()) {
-        implementation(files(samsungSdkAar))
-        println(">>> Samsung Health Sensor SDK 已找到，启用 ECG 功能")
-    } else {
-        println(">>> 未找到 Samsung Health Sensor SDK，ECG 功能不可用")
-    }
 }

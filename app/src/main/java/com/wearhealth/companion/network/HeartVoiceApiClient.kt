@@ -1,8 +1,6 @@
 package com.wearhealth.companion.network
 
 import android.util.Log
-import com.wearhealth.companion.security.ApiKeyStore
-import android.content.Context
 import com.wearhealth.companion.model.EcgAnalysisResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -20,11 +18,11 @@ import java.util.concurrent.TimeUnit
  * 接口文档: https://www.heartvoice.com.cn/aiCloud/docs/api/ecg-basic/
  * 单导联分析: POST /api/v1/basic/ecg/1-lead/analyze
  *
- * API Key is configured on the paired phone and stored using Android Keystore-backed storage.
+ * API Key 通过构造函数传入（由 ApiKeyManager 提供，支持手机端远程下发）。
  */
-class HeartVoiceApiClient(context: Context) {
-    private val keyStore = ApiKeyStore(context.applicationContext)
-    private val apiKey: String get() = keyStore.get()
+class HeartVoiceApiClient(
+    private val apiKey: String,
+) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)

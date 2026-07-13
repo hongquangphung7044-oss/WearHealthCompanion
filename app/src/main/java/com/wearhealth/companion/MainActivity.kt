@@ -44,6 +44,12 @@ class MainActivity : ComponentActivity() {
         setupKeepScreenOnDuringMeasurement()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 刷新 API Key 状态（手机端可能在 App 后台期间下发了新 Key）
+        viewModel.refreshApiKeyStatus()
+    }
+
     /**
      * 监听 ECG 采集状态，测量中（预热/采集/分析）自动保持屏幕常亮
      */
