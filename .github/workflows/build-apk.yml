@@ -36,9 +36,11 @@ jobs:
       - name: Decode Samsung Health Sensor SDK (optional)
         run: |
           mkdir -p app/libs
-          if [ -n "${{ secrets.SAMSUNG_SDK_BASE64 }}" ]; then
-            echo "${{ secrets.SAMSUNG_SDK_BASE64 }}" | base64 -d > app/libs/samsung-health-sensor-api.aar
-            echo "Samsung SDK 已解码"
+          PART1="${{ secrets.SAMSUNG_SDK_B64_1 }}"
+          PART2="${{ secrets.SAMSUNG_SDK_B64_2 }}"
+          if [ -n "$PART1" ] && [ -n "$PART2" ]; then
+            echo "${PART1}${PART2}" | base64 -d > app/libs/samsung-health-sensor-api.aar
+            echo "Samsung SDK 已解码（从 SAMSUNG_SDK_B64_1 + SAMSUNG_SDK_B64_2 合并）"
             ls -lh app/libs/samsung-health-sensor-api.aar
           else
             echo "未配置 Samsung SDK Secret，编译基础版（无 ECG 功能）"

@@ -2,59 +2,63 @@ package com.wearhealth.companion.sensor
 
 import android.content.Context
 import android.util.Log
+import com.samsung.android.service.health.tracking.HealthTracker
+import com.samsung.android.service.health.tracking.HealthTrackingService
+import com.samsung.android.service.health.tracking.data.DataPoint
+import com.samsung.android.service.health.tracking.data.HealthTrackerType
+import com.samsung.android.service.health.tracking.data.ValueKey
 import com.wearhealth.companion.model.EcgCollectionState
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.lang.reflect.Method
+import kotlin.coroutines.resume
 
 /**
- * ECG 采集器：通过 Samsung Health Sensor SDK 采集原始 ECG 波形
+ * ECG 采集器：通过 Samsung Health Sensor SDK 直接调用采集原始 ECG 波形
  *
- * 由于 Samsung SDK 是可选依赖（.aar 文件可能不存在），
- * 这里使用反射调用 SDK API，保证没有 SDK 时也能编译通过。
+ * 工作流程（基于 Samsung SDK v1.4.1 实际 API）：
+ * 1. 创建 HealthTrackingService(ConnectionListener, Context) 并连接
+ * 2. 检查设备是否支持 ECG / ECG_ON_DEMAND
+ * 3. 通过 getHealthTracker(HealthTrackerType.ECG) 获取追踪器
+ * 4. 注册 TrackerEventListener，接收 DataPoint 列表
+ * 5. 通过 DataPoint.getValue(ValueKey.EcgSet.ECG_MV) 提取 ECG 毫伏值
+ * 6. ECG 采样率 = 500Hz
  *
- * SDK 工作流程（基于官方文档）：
- * 1. 创建 HealthTrackingService 连接 Health Platform
- * 2. 检查设备是否支持 ECG_ON_DEMAND
- * 3. 获取 HealthTracker 实例
- * 4. 设置 TrackerEventListener 接收 EcgSet 数据
- * 5. ECG 采样率 = 500Hz，每次回调返回一批 EcgSet 数据点
- *
- * 官方示例: https://developer.samsung.com/health/sensor/sample/ecg-monitor.html
+ * 编译依赖：samsung-health-sensor-api-1.4.1.aar（位于 app/libs/）
+ * 官方 SDK 包名：com.samsung.android.service.health.tracking
  */
 class EcgCollector(private val context: Context) {
 
     private val _state = MutableStateFlow<EcgCollectionState>(EcgCollectionState.Idle)
     val state: StateFlow<EcgCollectionState> = _state.asStateFlow()
 
-    /** 采集到的 ECG 原始数据（ADC 值） */
+    /** 采集到的 ECG 原始数据（毫伏值，Int 表示） */
     private val ecgData = mutableListOf<Int>()
 
-    /** SDK 反射对象 */
-    private var healthTrackingService: Any? = null
-    private var healthTracker: Any? = null
-    private var trackerEventListener: Any? = null
-    private var isSdkAvailable = false
+    /** SDK 相关实例（直接调用，无反射） */
+    private var healthTrackingService: HealthTrackingService? = null
+    private var healthTracker: HealthTracker? = null
 
     /**
      * 检查 Samsung Health Sensor SDK 是否可用
      */
     fun checkSdkAvailable(): Boolean {
         return try {
-            Class.forName("com.samsung.android.sdk.health.sensor.HealthTrackingService")
-            isSdkAvailable = true
-            Log.i(TAG, "Samsung Health Sensor SDK 可用")
+            Class.forName("com.samsung.android.service.health.tracking.HealthTrackingService")
+            Log.i(TAG, "Samsung Health Sensor SDK 可用（直接调用 v1.4.1）")
             true
         } catch (e: ClassNotFoundException) {
             Log.w(TAG, "Samsung Health Sensor SDK 不可用，ECG 功能需安装 SDK")
-            isSdkAvailable = false
             false
         }
     }
 
     /**
-     * 启动 ECG 采集（按需模式，采集约 30 秒 = 15000 个采样点 @ 500Hz）
+     * 启动 ECG 采集（按需模式，采集约 30 秒 ≈ 15000 个采样点 @ 500Hz）
+     *
+     * @param targetDurationSec 目标采集时长（秒）
+     * @return 采集到的 ECG 毫伏值列表
      */
     suspend fun startEcgCollection(targetDurationSec: Int = 30): List<Int> {
         if (!checkSdkAvailable()) {
@@ -66,21 +70,21 @@ class EcgCollector(private val context: Context) {
         ecgData.clear()
 
         try {
-            // 通过反射连接 Health Platform
+            // 连接 Health Platform（挂起直到连接成功或失败）
             connectHealthPlatform()
 
-            // 检查 ECG 能力
+            // 检查设备是否支持 ECG
             if (!checkEcgCapability()) {
                 _state.value = EcgCollectionState.Error("设备不支持 ECG 测量")
                 return emptyList()
             }
 
-            // 设置 ECG 追踪器
+            // 设置 ECG 追踪器并开始监听数据
             setupEcgTracker()
 
             _state.value = EcgCollectionState.Collecting(0)
 
-            // 等待采集完成（ECG 是 on-demand，SDK 会自动在测量完成后回调）
+            // 等待采集足够数据或超时
             val targetSamples = 500 * targetDurationSec
             var waitCount = 0
             while (ecgData.size < targetSamples && waitCount < targetDurationSec * 10) {
@@ -89,12 +93,11 @@ class EcgCollector(private val context: Context) {
                 waitCount++
             }
 
-            // 停止采集
+            // 停止追踪器
             stopEcgTracker()
 
             Log.i(TAG, "ECG 采集完成: ${ecgData.size} 个采样点")
             return ecgData.toList()
-
         } catch (e: Exception) {
             Log.e(TAG, "ECG 采集失败", e)
             _state.value = EcgCollectionState.Error(e.message ?: "采集失败")
@@ -103,196 +106,123 @@ class EcgCollector(private val context: Context) {
     }
 
     /**
-     * 通过反射连接 Health Platform
+     * 连接 Health Platform
+     *
+     * 使用 suspendCancellableCoroutine 将异步回调转为挂起函数。
+     * SDK v1.4.1 构造函数为 HealthTrackingService(ConnectionListener, Context)。
      */
-    private fun connectHealthPlatform() {
-        val serviceClass = Class.forName("com.samsung.android.sdk.health.sensor.HealthTrackingService")
+    private suspend fun connectHealthPlatform() = suspendCancellableCoroutine { cont ->
+        try {
+            val service = HealthTrackingService(
+                object : HealthTrackingService.ConnectionListener {
+                    override fun onConnectionSuccess() {
+                        Log.i(TAG, "Health Platform 连接成功")
+                        healthTrackingService = service
+                        if (cont.isActive) cont.resume(Unit)
+                    }
 
-        // 创建 ConnectionListener
-        val connectionListenerClass = Class.forName(
-            "com.samsung.android.sdk.health.sensor.HealthTrackingService\$ConnectionListener"
-        )
-        val connectionListener = java.lang.reflect.Proxy.newProxyInstance(
-            connectionListenerClass.classLoader,
-            arrayOf(connectionListenerClass)
-        ) { _, method, args ->
-            when (method.name) {
-                "onConnectionSuccess" -> {
-                    Log.i(TAG, "Health Platform 连接成功")
-                }
-                "onConnectionFailed" -> {
-                    val exception = args?.getOrNull(0)
-                    Log.e(TAG, "Health Platform 连接失败: $exception")
-                    _state.value = EcgCollectionState.Error("Health Platform 连接失败")
-                }
-                "onConnectionEnded" -> {
-                    Log.i(TAG, "Health Platform 连接断开")
-                }
-            }
-            null
+                    override fun onConnectionFailed(exception: com.samsung.android.service.health.tracking.HealthTrackerException?) {
+                        Log.e(TAG, "Health Platform 连接失败: $exception")
+                        healthTrackingService = null
+                        if (cont.isActive) cont.resume(Unit)
+                    }
+
+                    override fun onConnectionEnded() {
+                        Log.i(TAG, "Health Platform 连接断开")
+                    }
+                },
+                context
+            )
+            service.connectService()
+        } catch (e: Exception) {
+            Log.e(TAG, "创建 HealthTrackingService 失败", e)
+            if (cont.isActive) cont.resume(Unit)
         }
-
-        // 构造 HealthTrackingService(context, connectionListener)
-        val constructor = serviceClass.getConstructor(Context::class.java, connectionListenerClass)
-        healthTrackingService = constructor.newInstance(context, connectionListener)
-
-        // 调用 connectService()
-        val connectMethod = serviceClass.getMethod("connectService")
-        connectMethod.invoke(healthTrackingService)
-
-        // 等待连接
-        kotlinx.coroutines.runBlocking { kotlinx.coroutines.delay(2000) }
     }
 
     /**
-     * 检查设备是否支持 ECG
+     * 检查设备是否支持 ECG 测量
+     *
+     * SDK v1.4.1 的 trackingCapability 返回 HealthTrackerCapability，
+     * 通过 getSupportHealthTrackerTypes() 获取支持的 HealthTrackerType 列表。
      */
     private fun checkEcgCapability(): Boolean {
         val service = healthTrackingService ?: return false
-        val serviceClass = service.javaClass
-
-        // 获取 trackingCapability
-        val getCapabilityMethod = serviceClass.getMethod("getTrackingCapability")
-        val capability = getCapabilityMethod.invoke(service)
-
-        // 获取支持的 tracker 类型列表
-        val capabilityClass = capability.javaClass
-        val getSupportedMethod = capabilityClass.getMethod("getSupportHealthTrackerTypes")
+        val capability = service.trackingCapability ?: return false
         @Suppress("UNCHECKED_CAST")
-        val supportedTypes = getSupportedMethod.invoke(capability) as? List<Enum<*>> ?: emptyList()
-
-        // 检查是否包含 ECG_ON_DEMAND
-        val hasEcg = supportedTypes.any { it.name == "ECG_ON_DEMAND" }
-        Log.i(TAG, "设备支持 ECG: $hasEcg (支持类型: ${supportedTypes.map { it.name }})")
+        val supportedTypes = capability.supportHealthTrackerTypes as? List<HealthTrackerType> ?: emptyList()
+        val hasEcg = supportedTypes.any { it == HealthTrackerType.ECG || it == HealthTrackerType.ECG_ON_DEMAND }
+        Log.i(TAG, "设备支持 ECG: $hasEcg（支持类型: ${supportedTypes.map { it.name() }}）")
         return hasEcg
     }
 
     /**
-     * 设置 ECG 追踪器并开始接收数据
+     * 获取 ECG 追踪器并注册监听器
+     *
+     * SDK v1.4.1 使用 setEventListener（而非 setTrackerEventListener）。
+     * ECG DataPoint 通过 ValueKey.EcgSet.ECG_MV 获取毫伏值。
      */
     private fun setupEcgTracker() {
-        val service = healthTrackingService ?: throw IllegalStateException("未连接 Health Platform")
+        val service = healthTrackingService
+            ?: throw IllegalStateException("未连接 Health Platform")
 
-        // 获取 HealthTrackerType.ECG_ON_DEMAND 枚举
-        val trackerTypeClass = Class.forName(
-            "com.samsung.android.sdk.health.sensor.HealthTracker\$HealthTrackerType"
-        )
-        val ecgType = trackerTypeClass.enumConstants
-            .filterIsInstance<Enum<*>>()
-            .firstOrNull { it.name == "ECG_ON_DEMAND" }
-            ?: throw IllegalStateException("找不到 ECG_ON_DEMAND 类型")
+        // 获取 ECG 追踪器（使用 HealthTrackerType.ECG）
+        healthTracker = service.getHealthTracker(HealthTrackerType.ECG)
+        val tracker = healthTracker
+            ?: throw IllegalStateException("无法获取 ECG 追踪器")
 
-        // 获取 HealthTracker 实例
-        val serviceClass = service.javaClass
-        val getTrackerMethod = serviceClass.getMethod("getHealthTracker", trackerTypeClass)
-        healthTracker = getTrackerMethod.invoke(service, ecgType)
-
-        // 创建 TrackerEventListener（通过反射代理）
-        val listenerClass = Class.forName(
-            "com.samsung.android.sdk.health.sensor.HealthTracker\$TrackerEventListener"
-        )
-        trackerEventListener = java.lang.reflect.Proxy.newProxyInstance(
-            listenerClass.classLoader,
-            arrayOf(listenerClass)
-        ) { _, method, args ->
-            when (method.name) {
-                "onDataReceived" -> {
-                    // args[0] 是 List<DataPoint>
-                    val dataPoints = args?.getOrNull(0) as? List<*> ?: return@newProxyInstance null
-                    for (dp in dataPoints) {
-                        // 从 DataPoint 中提取 ECG 值
-                        val ecgValue = extractEcgValue(dp)
-                        if (ecgValue != null) {
-                            ecgData.add(ecgValue)
-                        }
+        // 注册数据监听器
+        tracker.setEventListener(object : HealthTracker.TrackerEventListener {
+            override fun onDataReceived(dataPoints: List<DataPoint>) {
+                for (dp in dataPoints) {
+                    // 从 DataPoint 中提取 ECG 毫伏值
+                    val ecgValue = dp.getValue<Float>(ValueKey.EcgSet.ECG_MV)
+                    if (ecgValue != null) {
+                        // 转换为整数毫伏（保留整数部分，或乘以比例因子）
+                        ecgData.add((ecgValue * 1000).toInt())
                     }
-                    Log.d(TAG, "收到 ECG 数据: +${dataPoints.size} 点 (总计 ${ecgData.size})")
                 }
-                "onFlushCompleted" -> Log.d(TAG, "ECG flush 完成")
-                "onError" -> {
-                    val error = args?.getOrNull(0)
-                    Log.e(TAG, "ECG 追踪错误: $error")
-                    _state.value = EcgCollectionState.Error("ECG 追踪错误: $error")
-                }
+                Log.d(TAG, "收到 ECG 数据: +${dataPoints.size} 点（总计 ${ecgData.size}）")
             }
-            null
-        }
 
-        // 调用 setTrackerEventListener(listener)
-        val tracker = healthTracker ?: throw IllegalStateException("无法获取 ECG Tracker")
-        val setListenerMethod = tracker.javaClass.getMethod("setTrackerEventListener", listenerClass)
-        setListenerMethod.invoke(tracker, trackerEventListener)
+            override fun onFlushCompleted() {
+                Log.d(TAG, "ECG flush 完成")
+            }
+
+            override fun onError(error: com.samsung.android.service.health.tracking.HealthTracker.TrackerError?) {
+                Log.e(TAG, "ECG 追踪错误: $error")
+                _state.value = EcgCollectionState.Error("ECG 追踪错误: $error")
+            }
+        })
     }
 
     /**
-     * 从 DataPoint 提取 ECG 值
-     * Samsung SDK 的 EcgSet 包含 ECG 波形数据
-     */
-    private fun extractEcgValue(dataPoint: Any?): Int? {
-        if (dataPoint == null) return null
-        return try {
-            // 尝试调用 getData() 或直接获取 ECG 值
-            val dpClass = dataPoint.javaClass
-            // Samsung SDK DataPoint 有 getValue(HealthDataKey) 方法
-            // ECG 数据键名可能因版本不同，尝试多种方式
-            try {
-                val getMethod = dpClass.getMethod("getData")
-                val data = getMethod.invoke(dataPoint)
-                // 如果 data 是数组或列表，取第一个值
-                when (data) {
-                    is IntArray -> data.firstOrNull() ?: 0
-                    is List<*> -> (data.firstOrNull() as? Int) ?: 0
-                    is Int -> data
-                    is Number -> data.toInt()
-                    else -> 0
-                }
-            } catch (e: NoSuchMethodException) {
-                // 尝试直接作为 Number
-                (dataPoint as? Number)?.toInt()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "提取 ECG 值失败: ${e.message}")
-            null
-        }
-    }
-
-    /**
-     * 停止 ECG 采集
+     * 停止 ECG 追踪器
      */
     private fun stopEcgTracker() {
         try {
-            val tracker = healthTracker ?: return
-            val trackerClass = tracker.javaClass
-            // 调用 unsetTrackerEventListener()
-            try {
-                val unsetMethod = trackerClass.getMethod("unsetTrackerEventListener")
-                unsetMethod.invoke(tracker)
-            } catch (e: NoSuchMethodException) {
-                // 某些版本方法名不同
-                val unsetMethod = trackerClass.methods.firstOrNull { it.name.startsWith("unset") }
-                unsetMethod?.invoke(tracker)
+            val tracker = healthTracker
+            if (tracker != null) {
+                tracker.unsetEventListener()
+                Log.i(TAG, "ECG 追踪器已停止")
             }
-            Log.i(TAG, "ECG 追踪器已停止")
         } catch (e: Exception) {
             Log.w(TAG, "停止 ECG 追踪器时出错: ${e.message}")
         }
     }
 
     /**
-     * 断开 Health Platform 连接
+     * 断开 Health Platform 连接并清理资源
      */
     fun disconnect() {
         try {
-            healthTrackingService?.let { service ->
-                val disconnectMethod = service.javaClass.getMethod("disconnectService")
-                disconnectMethod.invoke(service)
-            }
+            healthTrackingService?.disconnectService()
         } catch (e: Exception) {
             Log.w(TAG, "断开连接时出错: ${e.message}")
         }
         healthTrackingService = null
         healthTracker = null
-        trackerEventListener = null
+        ecgData.clear()
         _state.value = EcgCollectionState.Idle
     }
 
