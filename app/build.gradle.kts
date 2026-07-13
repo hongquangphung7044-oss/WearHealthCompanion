@@ -16,13 +16,7 @@ android {
         versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
         versionName = System.getenv("VERSION_NAME") ?: "1.0.0"
 
-        // HeartVoice ECG API Key
-        // CI 通过环境变量 HEARTVOICE_API_KEY 注入，本地构建用默认值
-        buildConfigField(
-            "String",
-            "HEARTVOICE_API_KEY",
-            "\"${System.getenv("HEARTVOICE_API_KEY") ?: "aiecg_sk_ONGAJEzHVxKoZzOMRZVQ5yztNVMBH5Pi"}\""
-        )
+
     }
 
     buildTypes {
@@ -91,6 +85,7 @@ dependencies {
 
     // Wear OS
     implementation(libs.play.services.wearable)
+    implementation(libs.androidx.security.crypto)
 
     // 网络：调用 HeartVoice ECG 分析 API
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

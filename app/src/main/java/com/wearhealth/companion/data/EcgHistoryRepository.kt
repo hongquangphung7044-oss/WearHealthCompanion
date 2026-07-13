@@ -19,9 +19,10 @@ class EcgHistoryRepository(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /** 保存一条测量记录 */
-    fun save(result: EcgAnalysisResult) {
+    fun save(result: EcgAnalysisResult, rawSampleCount: Int): HistoryItem {
         val list = getAll().toMutableList()
         list.add(0, HistoryItem(
+            recordId = java.util.UUID.randomUUID().toString(),
             timestamp = System.currentTimeMillis(),
             diagnosis = result.diagnosis,
             avgHeartRate = result.avgHeartRate,
@@ -36,10 +37,12 @@ class EcgHistoryRepository(context: Context) {
             pacCount = result.pacCount,
             pvcCount = result.pvcCount,
             ecgSamples = result.ecgSamples,
+            rawSampleCount = rawSampleCount,
         ))
         // 最多保留 50 条
         val trimmed = if (list.size > 50) list.take(50) else list
         prefs.edit().putString(KEY_HISTORY, toJson(trimmed)).apply()
+        return list.first()
     }
 
     fun getAll(): List<HistoryItem> {
@@ -52,8 +55,12 @@ class EcgHistoryRepository(context: Context) {
         prefs.edit().putString(KEY_HISTORY, toJson(list)).apply()
     }
 
-    fun deleteAll() {
-        prefs.edit().remove(KEY_HISTORY).apply()
+    fun deleteAll() { prefs.edit().remove(KEY_HISTORY).apply() }
+    fun markSynced(recordId: String) { update(recordId) { it.copy(syncStatus = "SENT") } }
+    fun markSending(recordId: String) { update(recordId) { it.copy(syncStatus = "SENDING") } }
+    fun markPending(recordId: String) { update(recordId) { it.copy(syncStatus = "PENDING") } }
+    private fun update(recordId: String, change: (HistoryItem) -> HistoryItem) {
+        prefs.edit().putString(KEY_HISTORY, toJson(getAll().map { if (it.recordId == recordId) change(it) else it })).apply()
     }
 
     private fun toJson(list: List<HistoryItem>): String {
@@ -64,6 +71,7 @@ class EcgHistoryRepository(context: Context) {
             val diag = JSONArray()
             item.diagnosis.forEach { diag.put(it) }
             arr.put(JSONObject().apply {
+                put("id", item.recordId)
                 put("ts", item.timestamp)
                 put("diag", diag)
                 put("hr", item.avgHeartRate)
@@ -78,6 +86,8 @@ class EcgHistoryRepository(context: Context) {
                 put("pac", item.pacCount)
                 put("pvc", item.pvcCount)
                 put("samples", samples)
+                put("rawCount", item.rawSampleCount)
+                put("sync", item.syncStatus)
             })
         }
         return arr.toString()
@@ -95,6 +105,7 @@ class EcgHistoryRepository(context: Context) {
             val samples = mutableListOf<Int>()
             for (j in 0 until samplesArr.length()) samples.add(samplesArr.getInt(j))
             list.add(HistoryItem(
+                recordId = o.optString("id", o.getLong("ts").toString()),
                 timestamp = o.getLong("ts"),
                 diagnosis = diag,
                 avgHeartRate = o.optInt("hr"),
@@ -109,6 +120,8 @@ class EcgHistoryRepository(context: Context) {
                 pacCount = o.optInt("pac"),
                 pvcCount = o.optInt("pvc"),
                 ecgSamples = samples,
+                rawSampleCount = o.optInt("rawCount", 0),
+                syncStatus = o.optString("sync", "PENDING"),
             ))
         }
         return list
@@ -126,6 +139,7 @@ class EcgHistoryRepository(context: Context) {
 }
 
 data class HistoryItem(
+    val recordId: String,
     val timestamp: Long,
     val diagnosis: List<String>,
     val avgHeartRate: Int,
@@ -140,4 +154,6 @@ data class HistoryItem(
     val pacCount: Int,
     val pvcCount: Int,
     val ecgSamples: List<Int>,
+    val rawSampleCount: Int = 0,
+    val syncStatus: String = "PENDING",
 )

@@ -11,6 +11,8 @@ import com.wearhealth.companion.model.computeMinMaxHeartRate
 import com.wearhealth.companion.model.localSignalQualityCheck
 import com.wearhealth.companion.network.HeartVoiceApiClient
 import com.wearhealth.companion.sensor.EcgCollector
+import com.wearhealth.companion.data.EcgRawArchive
+import com.wearhealth.companion.sync.WearEcgSync
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,7 +32,8 @@ data class EcgUiState(
 class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
     private val ecgCollector = EcgCollector(app.applicationContext)
-    private val heartVoiceApi = HeartVoiceApiClient()
+    private val heartVoiceApi = HeartVoiceApiClient(app.applicationContext)
+    private val rawArchive = EcgRawArchive(app.applicationContext)
     private val historyRepo = EcgHistoryRepository(app.applicationContext)
 
     private val _uiState = MutableStateFlow(EcgUiState())
@@ -104,7 +107,12 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                     },
                 )
                 // 保存到历史记录
-                historyRepo.save(finalResult)
+                val saved = historyRepo.save(finalResult, rawSampleCount = ecgData.size)
+                rawArchive.save(saved.recordId, ecgData)
+                // The status remains SENDING until the phone has persisted the record and sends an ACK.
+                if (WearEcgSync.send(getApplication<Application>().applicationContext, saved)) {
+                    historyRepo.markSending(saved.recordId)
+                }
                 _uiState.value = _uiState.value.copy(
                     ecgState = EcgCollectionState.Done(finalResult),
                     ecgResult = finalResult,
@@ -141,6 +149,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteHistory(timestamp: Long) {
+        historyRepo.getAll().firstOrNull { it.timestamp == timestamp }?.let { rawArchive.delete(it.recordId) }
         historyRepo.delete(timestamp)
         _uiState.value = _uiState.value.copy(
             history = historyRepo.getAll(),
@@ -149,8 +158,25 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteAllHistory() {
+        rawArchive.deleteAll()
         historyRepo.deleteAll()
         _uiState.value = _uiState.value.copy(history = emptyList(), historyDetail = null)
+    }
+
+
+    fun sendHistoryToPhone(item: HistoryItem) {
+        viewModelScope.launch {
+            if (WearEcgSync.send(getApplication<Application>().applicationContext, item)) {
+                historyRepo.markSending(item.recordId)
+            } else {
+                historyRepo.markPending(item.recordId)
+            }
+            val records = historyRepo.getAll()
+            _uiState.value = _uiState.value.copy(
+                history = records,
+                historyDetail = records.firstOrNull { it.recordId == item.recordId },
+            )
+        }
     }
 
     private fun downsample(data: List<Int>, targetSize: Int): List<Int> {
@@ -191,6 +217,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(
             ecgState = EcgCollectionState.Idle,
             ecgResult = null,
+            apiKeyConfigured = heartVoiceApi.isApiKeyConfigured,
             liveSamples = emptyList(),
         )
     }
