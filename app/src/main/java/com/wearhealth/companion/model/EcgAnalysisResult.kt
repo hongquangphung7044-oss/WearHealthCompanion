@@ -126,7 +126,8 @@ fun EcgAnalysisResult.toParamInfos(): List<EcgParamInfo> = buildList {
  */
 sealed class EcgCollectionState {
     object Idle : EcgCollectionState()
-    object Connecting : EcgCollectionState()                                    // 预热中 / 等待电极接触
+    object Connecting : EcgCollectionState()                                    // 连接传感器 / 等待电极接触
+    data class Preheating(val countdownSec: Int) : EcgCollectionState()         // 电极已接触，预热激活中（信号稳定期）
     data class Collecting(val samplesCollected: Int, val countdownSec: Int) : EcgCollectionState()
     object Analyzing : EcgCollectionState()
     data class Done(val result: EcgAnalysisResult) : EcgCollectionState()
@@ -263,24 +264,20 @@ fun computeMinMaxHeartRate(ecgData: List<Int>, sampleRateHz: Int): Pair<Int, Int
  * @return null=通过，非 null=失败原因
  */
 fun localSignalQualityCheck(ecgData: List<Int>, sampleRateHz: Int): String? {
+    // 预检只做最基本的检查：数据量 + 信号幅度
+    // 不做心跳检测——那是 API 的工作，本地算法不可靠
     if (ecgData.size < sampleRateHz * 10) {
         return "采集数据不足（仅 ${ecgData.size / sampleRateHz} 秒），需要至少 10 秒有效数据"
     }
 
-    // 检查信号幅度：太小说明电极接触不好（阈值放宽到 15）
+    // 检查信号幅度：太小说明电极完全没接触
     val mean = ecgData.average()
     val variance = ecgData.map { (it - mean) * (it - mean) }.average()
     val rms = Math.sqrt(variance)
-    if (rms < 15.0) {
+    if (rms < 10.0) {
         return "信号太弱，可能是电极接触不良。请确保手表戴紧、手指完全覆盖上方按键"
     }
 
-    // 心跳检测改为"建议但不强制"——检测不到也发 API 让专业算法判断
-    // 只在完全没信号波动时才拦截
-    val (minHr, maxHr) = computeMinMaxHeartRate(ecgData, sampleRateHz)
-    if (minHr == 0 && maxHr == 0) {
-        return "信号完全没有心跳波动特征，请保持静止重新测量"
-    }
-
-    return null  // 通过
+    // 通过——心跳检测、波形质量等交给 API 的 sqGrade 判断
+    return null
 }

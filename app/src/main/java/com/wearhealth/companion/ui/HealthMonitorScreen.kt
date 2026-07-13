@@ -81,7 +81,7 @@ fun HealthMonitorScreen(
 
         val state = uiState.ecgState
 
-        // 预热中提示
+        // 连接中 / 等待电极接触
         if (state is EcgCollectionState.Connecting) {
             item {
                 Column(
@@ -89,13 +89,36 @@ fun HealthMonitorScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        text = "预热中...",
+                        text = "连接中...",
                         style = MaterialTheme.typography.titleSmall,
                         color = Color(0xFF64B5F6),
                         textAlign = TextAlign.Center,
                     )
                     Text(
                         text = "请将手指轻触\n上方按键（不要按下）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+
+        // 预热激活中（电极已接触，信号稳定期倒计时）
+        if (state is EcgCollectionState.Preheating) {
+            item {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = "预热激活 ${state.countdownSec}s",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color(0xFFFF9800),
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        text = "信号稳定中\n请保持手指不动",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface,
                         textAlign = TextAlign.Center,

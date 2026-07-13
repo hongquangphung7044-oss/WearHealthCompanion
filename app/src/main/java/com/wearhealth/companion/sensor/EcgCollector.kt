@@ -22,9 +22,10 @@ import kotlin.coroutines.resume
  *
  * 采集流程：
  * 1. 连接 Health Platform
- * 2. 预热阶段：等待电极接触（最多 15 秒），检测到第一帧 ECG 数据后进入正式采集
- * 3. 正式采集：30 秒倒计时，实时输出波形数据
- * 4. 采样率 = 500Hz，30 秒 ≈ 15000 个采样点
+ * 2. 等待电极接触：最多 30 秒（检测 leadOff != 5）
+ * 3. 预热激活：5 秒信号稳定期（丢弃数据，类似 geminiman 激活预热）
+ * 4. 正式采集：30 秒倒计时，实时输出波形数据
+ * 5. 采样率 = 500Hz，30 秒 ≈ 15000 个采样点
  *
  * 电极说明（Galaxy Watch 4/5/6/7/Ultra）：
  * - 上方按键（Home 键）= ECG 电极，手指轻触即可（不要按下去）
@@ -46,8 +47,10 @@ class EcgCollector(private val context: Context) {
     private var healthTrackingService: HealthTrackingService? = null
     private var healthTracker: HealthTracker? = null
     @Volatile private var isConnected = false
-    @Volatile private var hasContact = false  // 是否检测到电极接触
+    @Volatile private var hasContact = false  // 接触是否稳定（持续 1 秒以上）
     @Volatile private var leadLost = false    // 采集中电极是否断开
+    @Volatile private var firstContactTime = 0L  // 首次接触时间戳（0=未接触）
+    @Volatile private var contactStable = false  // 接触稳定标志（持续 1 秒）
 
     fun checkSdkAvailable(): Boolean {
         return try {
@@ -112,7 +115,7 @@ class EcgCollector(private val context: Context) {
             // 3. 启动 ECG 追踪器
             setupEcgTracker()
 
-            // 4. 预热阶段：等待电极稳定接触，最多等 30 秒（给用户充分时间调整姿势）
+            // 4. 等待电极接触：最多 30 秒（给用户充分时间调整姿势）
             Log.i(TAG, "预热中：等待电极接触...")
             val preheatTicks = 300  // 30 秒 × 10 次/秒
             var preheatCount = 0
@@ -132,9 +135,23 @@ class EcgCollector(private val context: Context) {
                 fullyReleaseService()
                 return emptyList()
             }
-            Log.i(TAG, "电极接触检测成功，开始 30 秒采集")
+            Log.i(TAG, "电极接触检测成功")
 
-            // 5. 正式采集：30 秒倒计时
+            // 5. 预热激活阶段：5 秒信号稳定期（类似 geminiman 的激活预热）
+            // 电极刚接触时信号会有建立过程，前几秒数据不稳定，丢弃这段数据
+            // 期间显示倒计时让用户知道在激活
+            Log.i(TAG, "预热激活中：5 秒信号稳定期")
+            val activateSec = 5
+            for (sec in activateSec downTo 1) {
+                _state.value = EcgCollectionState.Preheating(sec)
+                delay(1000)
+            }
+            // 激活完成，清空激活期间的数据，确保 30 秒采集从稳定状态开始
+            ecgData.clear()
+            _liveSamples.value = emptyList()
+            Log.i(TAG, "预热激活完成，开始 30 秒正式采集")
+
+            // 6. 正式采集：30 秒倒计时
             // 注意：不在采集中检测"接触断开"——Samsung SDK 的 leadOff 值在测量过程中
             // 可能短暂波动，误判会导致测量失败。数据质量交给本地预检 + API sqGrade 判断
             val totalTicks = targetDurationSec * 10  // 100ms 一次
