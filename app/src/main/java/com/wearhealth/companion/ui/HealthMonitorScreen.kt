@@ -28,6 +28,9 @@ import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
 import com.wearhealth.companion.model.EcgCollectionState
 import com.wearhealth.companion.model.diagnosisLabelToText
+import com.wearhealth.companion.model.diagnosisSummary
+import com.wearhealth.companion.model.isDiagnosisSerious
+import com.wearhealth.companion.model.toParamInfos
 
 @Composable
 fun HealthMonitorScreen(
@@ -268,9 +271,10 @@ private fun EcgWaveform(
 
 @Composable
 private fun EcgResultCard(result: com.wearhealth.companion.model.EcgAnalysisResult) {
-    val diagColor = if (result.isAbnormal) Color(0xFFEF5350) else Color(0xFF4CAF50)
+    val hasSerious = result.diagnosis.any { isDiagnosisSerious(it) }
+    val summaryColor = if (hasSerious) Color(0xFFEF5350) else Color(0xFF4CAF50)
     Column(
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // ECG 波形
@@ -283,47 +287,76 @@ private fun EcgResultCard(result: com.wearhealth.companion.model.EcgAnalysisResu
                 color = Color(0xFF4CAF50),
             )
         }
-        // 诊断结果
+
+        // 通俗解读（最重要，放最前面）
         Text(
-            text = result.diagnosis.joinToString(" ") { diagnosisLabelToText(it) },
+            text = diagnosisSummary(result.diagnosis),
             style = MaterialTheme.typography.titleSmall,
-            color = diagColor,
+            color = summaryColor,
             textAlign = TextAlign.Center,
         )
-        // 心率
-        if (result.avgHeartRate > 0) {
+
+        // 诊断明细
+        if (result.diagnosis.isNotEmpty()) {
             Text(
-                text = "心率: ${result.avgHeartRate} bpm",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "诊断: " + result.diagnosis.joinToString("、") { diagnosisLabelToText(it) },
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
             )
         }
+
         // 信号质量
         Text(
-            text = "信号质量: ${"%.0f%%".format(result.signalQuality * 100)}",
+            text = "信号质量: ${"%.0f%%".format(result.signalQuality * 100)}" +
+                    if (result.signalQuality < 0.7) "（偏低，建议重测）" else "（良好）",
             style = MaterialTheme.typography.bodySmall,
             color = if (result.signalQuality >= 0.7) Color(0xFF4CAF50) else Color(0xFFFF9800),
         )
-        // 间期参数
-        if (result.avgQrs > 0) {
+
+        // 参数列表（带通俗说明）
+        val params = result.toParamInfos()
+        if (params.isNotEmpty()) {
             Text(
-                text = "QRS:${result.avgQrs}ms  PR:${result.prInterval}ms",
+                text = "—— 详细参数 ——",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFFB0BEC5),
+                color = Color(0xFF607D8B),
             )
-            Text(
-                text = "QT:${result.avgQt}ms  QTc:${result.avgQtc}ms",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFFB0BEC5),
-            )
+            params.forEach { p ->
+                Text(
+                    text = "${p.label}: ${p.value}（正常 ${p.normal}）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFB0BEC5),
+                )
+                Text(
+                    text = p.desc,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF78909C),
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
+
         // 早搏计数
         if (result.pacCount > 0 || result.pvcCount > 0) {
             Text(
-                text = "房早:${result.pacCount}  室早:${result.pvcCount}",
+                text = "房早 ${result.pacCount} 次 / 室早 ${result.pvcCount} 次",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFFFF9800),
+                color = if (result.pacCount + result.pvcCount > 10) Color(0xFFEF5350) else Color(0xFFFF9800),
+            )
+            Text(
+                text = "（偶发早搏正常，频繁需就医）",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF78909C),
             )
         }
+
+        // 免责提示
+        Text(
+            text = "仅供参考，不能替代医生诊断",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF607D8B),
+            textAlign = TextAlign.Center,
+        )
     }
 }

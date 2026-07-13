@@ -33,7 +33,84 @@ fun diagnosisLabelToText(label: String): String = when (label) {
     "AVB" -> "房室传导阻滞"
     "ST" -> "ST 段异常"
     "QT" -> "QT 间期异常"
+    "WPW" -> "预激综合征"
     else -> label
+}
+
+/**
+ * 诊断标签 → 是否严重（true = 需要就医）
+ */
+fun isDiagnosisSerious(label: String): Boolean = when (label) {
+    "SN" -> false        // 窦性心律，正常
+    "SNT" -> false       // 心动过速，可能是暂时的
+    "SNB" -> false       // 心动过缓，运动员常见
+    "AF" -> true         // 房颤，需就医
+    "AFL" -> true        // 房扑，需就医
+    "VPB" -> false       // 偶发室早通常无害
+    "APB" -> false       // 偶发房早通常无害
+    "BBB" -> true        // 传导阻滞，需进一步检查
+    "AVB" -> true        // 房室传导阻滞，需就医
+    "ST" -> true         // ST 异常，需就医
+    "QT" -> true         // QT 异常，需就医
+    "WPW" -> true        // 预激综合征，需就医确认
+    else -> false
+}
+
+/**
+ * 诊断结果 → 通俗解读（给普通用户看的总结）
+ */
+fun diagnosisSummary(diagnosis: List<String>): String {
+    if (diagnosis.isEmpty()) return "未检测到异常"
+    val hasNormal = diagnosis.any { it == "SN" }
+    val seriousList = diagnosis.filter { isDiagnosisSerious(it) }
+    return when {
+        hasNormal && seriousList.isEmpty() ->
+            "心律正常（窦性心律），这是健康的心跳节奏"
+        hasNormal && seriousList.isNotEmpty() ->
+            "基础心律正常，但检测到 ${seriousList.size} 项需关注的异常，建议咨询医生"
+        seriousList.isNotEmpty() ->
+            "检测到 ${seriousList.size} 项异常，建议尽快咨询医生确认"
+        else ->
+            "检测到轻微异常，一般无需担心，可定期复查"
+    }
+}
+
+/**
+ * ECG 参数 → 通俗说明
+ */
+data class EcgParamInfo(val label: String, val value: String, val normal: String, val desc: String)
+
+fun EcgAnalysisResult.toParamInfos(): List<EcgParamInfo> = buildList {
+    if (avgHeartRate > 0) {
+        add(EcgParamInfo(
+            "心率", "$avgHeartRate bpm", "60-100",
+            "每分钟心跳次数。运动/紧张会升高，睡眠时降低"
+        ))
+    }
+    if (avgQrs > 0) {
+        add(EcgParamInfo(
+            "QRS 宽度", "$avgQrs ms", "80-120",
+            "心室收缩时间。过宽可能提示心室传导问题"
+        ))
+    }
+    if (prInterval > 0) {
+        add(EcgParamInfo(
+            "PR 间期", "$prInterval ms", "120-200",
+            "心房到心室的传导时间。WPW 综合征时会偏短"
+        ))
+    }
+    if (avgQt > 0) {
+        add(EcgParamInfo(
+            "QT 间期", "$avgQt ms", "随心率变化",
+            "心室收缩+恢复的总时间"
+        ))
+    }
+    if (avgQtc > 0) {
+        add(EcgParamInfo(
+            "QTc", "$avgQtc ms", "男<450 / 女<460",
+            "校正心率后的 QT。过长可能有心律风险"
+        ))
+    }
 }
 
 /**

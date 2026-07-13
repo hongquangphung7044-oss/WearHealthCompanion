@@ -77,10 +77,24 @@ class EcgCollector(private val context: Context) {
         isConnected = false
 
         try {
-            // 1. 连接 Health Platform
-            connectHealthPlatform()
-            if (!isConnected) {
-                _state.value = EcgCollectionState.Error("无法连接传感器服务")
+            // 1. 连接 Health Platform（带重试，最多 3 次）
+            var connected = false
+            for (attempt in 1..3) {
+                Log.i(TAG, "连接 Health Platform 第 $attempt 次尝试")
+                connectHealthPlatform()
+                if (isConnected) {
+                    connected = true
+                    break
+                }
+                // 连接失败，断开后重试
+                try { healthTrackingService?.disconnectService() } catch (_: Exception) {}
+                healthTrackingService = null
+                delay(500)
+            }
+            if (!connected) {
+                _state.value = EcgCollectionState.Error(
+                    "无法连接传感器服务，请重试。如多次失败请重启手表后重试"
+                )
                 return emptyList()
             }
 
