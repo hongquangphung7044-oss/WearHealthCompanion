@@ -86,8 +86,8 @@ dependencies {
     // 协程
     implementation(libs.kotlinx.coroutines.android)
 
-    // Wear OS
-    implementation(libs.androidx.security.crypto)
+    // Wear OS Data Layer（与手机端通信）
+    implementation(libs.play.services.wearable)
 
     // 网络：调用 HeartVoice ECG 分析 API
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
