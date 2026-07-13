@@ -339,15 +339,16 @@ private fun EcgResultCard(result: com.wearhealth.companion.model.EcgAnalysisResu
         verticalArrangement = Arrangement.spacedBy(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // ECG 波形（全局缩略图）
+        // ECG 波形（可交互：拖动+缩放）
         if (result.ecgSamples.isNotEmpty()) {
-            EcgWaveform(
+            InteractiveEcgChart(
                 samples = result.ecgSamples,
-                modifier = Modifier.fillMaxWidth().height(70.dp),
+                modifier = Modifier.fillMaxWidth().height(100.dp),
                 color = Color(0xFF4CAF50),
+                interactive = true,
             )
             Text(
-                text = "（30 秒心电图缩略）",
+                text = "（30 秒心电图，可拖动查看/双指缩放）",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF78909C),
             )
@@ -447,10 +448,11 @@ private fun HistoryItemRow(
                 color = Color(0xFFB0BEC5),
             )
             if (item.ecgSamples.isNotEmpty()) {
-                EcgWaveform(
+                InteractiveEcgChart(
                     samples = item.ecgSamples,
                     modifier = Modifier.fillMaxWidth().height(40.dp),
                     color = diagColor,
+                    interactive = false,
                 )
             }
             Text(
@@ -483,15 +485,16 @@ private fun HistoryDetailCard(item: HistoryItem) {
             style = MaterialTheme.typography.bodyMedium,
             color = Color(0xFFB0BEC5),
         )
-        // 完整波形
+        // 完整波形（可交互：拖动+缩放）
         if (item.ecgSamples.isNotEmpty()) {
-            EcgWaveform(
+            InteractiveEcgChart(
                 samples = item.ecgSamples,
-                modifier = Modifier.fillMaxWidth().height(80.dp),
+                modifier = Modifier.fillMaxWidth().height(120.dp),
                 color = diagColor,
+                interactive = true,
             )
             Text(
-                text = "（30 秒心电图）",
+                text = "（30 秒心电图，可拖动查看/双指缩放）",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF78909C),
             )
