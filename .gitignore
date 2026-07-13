@@ -15,3 +15,6 @@ local.properties
 .keystore/*.keystore
 .keystore/*.jks
 .keystore/upload_secrets.py
+
+# Samsung Health Sensor SDK 不提交（机密，只作为 GitHub Secret）
+app/libs/*.aar

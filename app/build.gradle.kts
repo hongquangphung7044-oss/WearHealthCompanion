@@ -93,4 +93,19 @@ dependencies {
     // Wear OS / Health Services
     implementation(libs.play.services.wearable)
     implementation(libs.health.services.client)
+
+    // 网络：调用 HeartVoice ECG 分析 API
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.json:json:20240303")
+
+    // Samsung Health Sensor SDK（可选：ECG 原始波形采集）
+    // .aar 文件放在 app/libs/ 目录，由 CI 从 GitHub Secret 解码
+    // 没有 SDK 时编译基础版（只有心率/HRV），有 SDK 时编译完整 ECG 版
+    val samsungSdkAar = file("libs/samsung-health-sensor-api.aar")
+    if (samsungSdkAar.exists()) {
+        implementation(files(samsungSdkAar))
+        println(">>> Samsung Health Sensor SDK 已找到，启用 ECG 功能")
+    } else {
+        println(">>> 未找到 Samsung Health Sensor SDK，编译基础版（无 ECG）")
+    }
 }

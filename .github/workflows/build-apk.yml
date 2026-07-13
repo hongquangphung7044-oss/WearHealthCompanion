@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # 用于创建 Release 和回写版本号
+      contents: write
 
     steps:
       - name: Checkout
@@ -33,6 +33,17 @@ jobs:
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /home/runner/.keystore/release.keystore
           ls -lh /home/runner/.keystore/release.keystore
 
+      - name: Decode Samsung Health Sensor SDK (optional)
+        run: |
+          mkdir -p app/libs
+          if [ -n "${{ secrets.SAMSUNG_SDK_BASE64 }}" ]; then
+            echo "${{ secrets.SAMSUNG_SDK_BASE64 }}" | base64 -d > app/libs/samsung-health-sensor-api.aar
+            echo "Samsung SDK 已解码"
+            ls -lh app/libs/samsung-health-sensor-api.aar
+          else
+            echo "未配置 Samsung SDK Secret，编译基础版（无 ECG 功能）"
+          fi
+
       - name: Build Release APK
         env:
           VERSION_CODE: ${{ github.run_number }}
@@ -41,13 +52,20 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          HEARTVOICE_API_KEY: ${{ secrets.HEARTVOICE_API_KEY }}
         run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Rename APK
         run: |
           mkdir -p artifacts
           APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          cp "$APK_PATH" "artifacts/WearHealthCompanion-v1.0.${{ github.run_number }}-code${{ github.run_number }}.apk"
+          # 检查是否有 Samsung SDK 来命名
+          if [ -f app/libs/samsung-health-sensor-api.aar ]; then
+            APK_NAME="WearHealthCompanion-v1.0.${{ github.run_number }}-code${{ github.run_number }}-ecg.apk"
+          else
+            APK_NAME="WearHealthCompanion-v1.0.${{ github.run_number }}-code${{ github.run_number }}-basic.apk"
+          fi
+          cp "$APK_PATH" "artifacts/$APK_NAME"
           ls -lh artifacts/
 
       - name: Upload APK artifact
@@ -56,14 +74,6 @@ jobs:
           name: WearHealthCompanion-apk
           path: artifacts/*.apk
           retention-days: 30
-
-      - name: Create GitHub Release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*.apk
-          generate_release_notes: true
-          tag_name: ${{ github.ref_name }}
 
       - name: Create GitHub Release (on push to main)
         if: github.ref_type == 'branch'
@@ -74,3 +84,11 @@ jobs:
           tag_name: "build-${{ github.run_number }}"
           generate_release_notes: true
           prerelease: false
+
+      - name: Create GitHub Release (on tag)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.apk
+          generate_release_notes: true
+          tag_name: ${{ github.ref_name }}
