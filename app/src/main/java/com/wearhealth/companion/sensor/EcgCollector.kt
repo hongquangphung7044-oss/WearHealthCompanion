@@ -304,8 +304,9 @@ class EcgCollector(private val context: Context) {
             override fun onFlushCompleted() {}
 
             override fun onError(error: HealthTracker.TrackerError) {
-                Log.e(TAG, "ECG 追踪错误: $error")
-                _state.value = EcgCollectionState.Error("ECG 追踪错误: $error")
+                // 只记录日志，不中断采集——某些 TrackerError 是可恢复的
+                // 采集循环会继续，最终数据质量交给本地预检 + API 判断
+                Log.w(TAG, "ECG 追踪警告（不中断采集）: $error")
             }
         }
 

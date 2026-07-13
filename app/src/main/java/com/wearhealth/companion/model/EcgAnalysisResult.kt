@@ -267,18 +267,19 @@ fun localSignalQualityCheck(ecgData: List<Int>, sampleRateHz: Int): String? {
         return "采集数据不足（仅 ${ecgData.size / sampleRateHz} 秒），需要至少 10 秒有效数据"
     }
 
-    // 检查信号幅度：太小说明电极接触不好
+    // 检查信号幅度：太小说明电极接触不好（阈值放宽到 15）
     val mean = ecgData.average()
     val variance = ecgData.map { (it - mean) * (it - mean) }.average()
     val rms = Math.sqrt(variance)
-    if (rms < 30.0) {
+    if (rms < 15.0) {
         return "信号太弱，可能是电极接触不良。请确保手表戴紧、手指完全覆盖上方按键"
     }
 
-    // 检查心跳数量
+    // 心跳检测改为"建议但不强制"——检测不到也发 API 让专业算法判断
+    // 只在完全没信号波动时才拦截
     val (minHr, maxHr) = computeMinMaxHeartRate(ecgData, sampleRateHz)
-    if (minHr == 0 || maxHr == 0) {
-        return "无法检测到清晰的心跳信号，请保持静止重新测量"
+    if (minHr == 0 && maxHr == 0) {
+        return "信号完全没有心跳波动特征，请保持静止重新测量"
     }
 
     return null  // 通过
