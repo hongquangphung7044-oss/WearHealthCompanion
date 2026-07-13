@@ -25,6 +25,8 @@ class EcgHistoryRepository(context: Context) {
             timestamp = System.currentTimeMillis(),
             diagnosis = result.diagnosis,
             avgHeartRate = result.avgHeartRate,
+            minHeartRate = result.minHeartRate,
+            maxHeartRate = result.maxHeartRate,
             signalQuality = result.signalQuality,
             isAbnormal = result.isAbnormal,
             avgQrs = result.avgQrs,
@@ -65,6 +67,8 @@ class EcgHistoryRepository(context: Context) {
                 put("ts", item.timestamp)
                 put("diag", diag)
                 put("hr", item.avgHeartRate)
+                put("minhr", item.minHeartRate)
+                put("maxhr", item.maxHeartRate)
                 put("sq", item.signalQuality)
                 put("ab", item.isAbnormal)
                 put("qrs", item.avgQrs)
@@ -94,6 +98,8 @@ class EcgHistoryRepository(context: Context) {
                 timestamp = o.getLong("ts"),
                 diagnosis = diag,
                 avgHeartRate = o.optInt("hr"),
+                minHeartRate = o.optInt("minhr"),
+                maxHeartRate = o.optInt("maxhr"),
                 signalQuality = o.optDouble("sq", 0.0),
                 isAbnormal = o.optBoolean("ab"),
                 avgQrs = o.optInt("qrs"),
@@ -123,6 +129,8 @@ data class HistoryItem(
     val timestamp: Long,
     val diagnosis: List<String>,
     val avgHeartRate: Int,
+    val minHeartRate: Int = 0,
+    val maxHeartRate: Int = 0,
     val signalQuality: Double,
     val isAbnormal: Boolean,
     val avgQrs: Int,

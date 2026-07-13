@@ -1,7 +1,9 @@
 package com.wearhealth.companion.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -11,6 +13,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -23,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.material3.AlertDialog
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.MaterialTheme
@@ -168,38 +174,71 @@ fun HealthMonitorScreen(
 
         // 历史记录界面
         if (uiState.showHistory) {
-            item {
-                Text(
-                    text = "测量历史",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            if (uiState.history.isEmpty()) {
+            // 历史详情页
+            if (uiState.historyDetail != null) {
                 item {
                     Text(
-                        text = "暂无历史记录",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFB0BEC5),
+                        text = "测量详情",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
-            } else {
-                items(uiState.history) { item ->
-                    HistoryItemRow(
-                        item = item,
-                        onDelete = { viewModel.deleteHistory(item.timestamp) },
-                    )
-                }
+                item { HistoryDetailCard(item = uiState.historyDetail!!) }
                 item {
                     Button(
-                        onClick = { viewModel.deleteAllHistory() },
+                        onClick = { viewModel.deleteHistory(uiState.historyDetail!!.timestamp) },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350)),
-                    ) { Text("清空全部", style = MaterialTheme.typography.bodySmall) }
+                    ) { Text("删除此记录", style = MaterialTheme.typography.bodySmall) }
                 }
-            }
-            item {
-                Button(onClick = { viewModel.hideHistory() }) {
-                    Text("返回", style = MaterialTheme.typography.bodySmall)
+                item {
+                    Button(onClick = { viewModel.hideHistoryDetail() }) {
+                        Text("返回列表", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            } else {
+                // 历史列表
+                item {
+                    Text(
+                        text = "测量历史",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (uiState.history.isEmpty()) {
+                    item {
+                        Text(
+                            text = "暂无历史记录",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFB0BEC5),
+                        )
+                    }
+                } else {
+                    item {
+                        Text(
+                            text = "点击查看详情，长按删除",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF78909C),
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                    items(uiState.history) { item ->
+                        HistoryItemRow(
+                            item = item,
+                            onClick = { viewModel.showHistoryDetail(item) },
+                            onLongClick = { viewModel.deleteHistory(item.timestamp) },
+                        )
+                    }
+                    item {
+                        Button(
+                            onClick = { viewModel.deleteAllHistory() },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350)),
+                        ) { Text("清空全部", style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+                item {
+                    Button(onClick = { viewModel.hideHistory() }) {
+                        Text("返回", style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
         }
@@ -376,8 +415,13 @@ private fun EcgResultCard(result: com.wearhealth.companion.model.EcgAnalysisResu
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun HistoryItemRow(item: HistoryItem, onDelete: () -> Unit) {
+private fun HistoryItemRow(
+    item: HistoryItem,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     val diagColor = if (item.isAbnormal) Color(0xFFEF5350) else Color(0xFF4CAF50)
     Column(
         modifier = Modifier
@@ -386,36 +430,130 @@ private fun HistoryItemRow(item: HistoryItem, onDelete: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // 整个卡片可点击/长按
+        Column(
+            modifier = Modifier
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                )
+                .padding(4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = EcgHistoryRepository.formatTime(item.timestamp),
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFB0BEC5),
+            )
+            if (item.ecgSamples.isNotEmpty()) {
+                EcgWaveform(
+                    samples = item.ecgSamples,
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                    color = diagColor,
+                )
+            }
+            Text(
+                text = item.diagnosis.joinToString("、") { diagnosisLabelToText(it) },
+                style = MaterialTheme.typography.bodySmall,
+                color = diagColor,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = "心率 ${item.avgHeartRate} bpm | 质量 ${"%.0f%%".format(item.signalQuality * 100)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF78909C),
+            )
+        }
+    }
+}
+
+/**
+ * 历史详情卡片：显示完整波形 + 所有参数
+ */
+@Composable
+private fun HistoryDetailCard(item: HistoryItem) {
+    val diagColor = if (item.isAbnormal) Color(0xFFEF5350) else Color(0xFF4CAF50)
+    Column(
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Text(
             text = EcgHistoryRepository.formatTime(item.timestamp),
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodyMedium,
             color = Color(0xFFB0BEC5),
         )
-        // 缩略波形
+        // 完整波形
         if (item.ecgSamples.isNotEmpty()) {
             EcgWaveform(
                 samples = item.ecgSamples,
-                modifier = Modifier.fillMaxWidth().height(40.dp),
+                modifier = Modifier.fillMaxWidth().height(80.dp),
                 color = diagColor,
             )
+            Text(
+                text = "（30 秒心电图）",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF78909C),
+            )
         }
+        // 诊断
         Text(
-            text = item.diagnosis.joinToString("、") { diagnosisLabelToText(it) },
-            style = MaterialTheme.typography.bodySmall,
+            text = diagnosisSummary(item.diagnosis),
+            style = MaterialTheme.typography.titleSmall,
             color = diagColor,
             textAlign = TextAlign.Center,
         )
+        if (item.diagnosis.isNotEmpty()) {
+            Text(
+                text = "诊断: " + item.diagnosis.joinToString("、") { diagnosisLabelToText(it) },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+            )
+        }
+        // 信号质量
         Text(
-            text = "心率 ${item.avgHeartRate} bpm | 质量 ${"%.0f%%".format(item.signalQuality * 100)}",
+            text = "信号质量: ${"%.0f%%".format(item.signalQuality * 100)}",
             style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF78909C),
+            color = if (item.signalQuality >= 0.7) Color(0xFF4CAF50) else Color(0xFFFF9800),
         )
-        Button(
-            onClick = onDelete,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350)),
-            modifier = Modifier.padding(top = 2.dp),
-        ) {
-            Text("删除", style = MaterialTheme.typography.bodySmall)
+        // 心率
+        if (item.avgHeartRate > 0) {
+            Text("平均心率: ${item.avgHeartRate} bpm（正常 60-100）",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+            Text("30 秒测量期间的平均心跳次数",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
+        }
+        if (item.minHeartRate > 0 && item.maxHeartRate > 0) {
+            Text("心率范围: ${item.minHeartRate} ~ ${item.maxHeartRate} bpm",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+            Text("测量期间最低到最高心率，波动大可能心律不齐",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
+        }
+        // 间期参数
+        if (item.avgQrs > 0) {
+            Text("QRS 宽度: ${item.avgQrs} ms（正常 80-120）",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+            Text("心室收缩时间，过宽可能传导问题",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
+        }
+        if (item.prInterval > 0) {
+            Text("PR 间期: ${item.prInterval} ms（正常 120-200）",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+        }
+        if (item.avgQt > 0) {
+            Text("QT 间期: ${item.avgQt} ms",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+        }
+        if (item.avgQtc > 0) {
+            Text("QTc: ${item.avgQtc} ms（男<450 / 女<460）",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+        }
+        // 早搏
+        if (item.pacCount > 0 || item.pvcCount > 0) {
+            Text("房早 ${item.pacCount} 次 / 室早 ${item.pvcCount} 次",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (item.pacCount + item.pvcCount > 10) Color(0xFFEF5350) else Color(0xFFFF9800))
         }
     }
 }

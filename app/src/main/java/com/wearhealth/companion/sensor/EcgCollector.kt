@@ -136,8 +136,8 @@ class EcgCollector(private val context: Context) {
                 tick++
                 val countdown = targetDurationSec - (tick / 10)
                 _state.value = EcgCollectionState.Collecting(ecgData.size, countdown)
-                // 实时波形：显示最近 500 个采样点 ≈ 1 秒（更清晰，能看到心跳周期）
-                val startIdx = maxOf(0, ecgData.size - 500)
+                // 实时波形：显示最近 250 个采样点 ≈ 0.5 秒，清晰显示一个心跳周期
+                val startIdx = maxOf(0, ecgData.size - 250)
                 _liveSamples.value = ecgData.subList(startIdx, ecgData.size).toList()
             }
 
@@ -263,26 +263,24 @@ class EcgCollector(private val context: Context) {
             override fun onDataReceived(dataPoints: List<DataPoint>) {
                 for (dp in dataPoints) {
                     try {
-                        // 检查 LEAD_OFF（电极接触状态）
-                        // 不再因 LEAD_OFF 跳过数据 —— 收集所有数据，让 API 的 sqGrade 判断质量
-                        // 仅用 LEAD_OFF 来判断是否"已接触"（用于预热阶段）
                         val leadOff = dp.getValue(ValueKey.EcgSet.LEAD_OFF)
                         val ecgMv = dp.getValue(ValueKey.EcgSet.ECG_MV)
                         if (ecgMv != null) {
-                            // 放大 1000 倍存为整数（adcGain=1000.0 对应）
-                            ecgData.add((ecgMv * 1000).toInt())
-                            // 只要收到非零 ECG 数据，就认为已接触
+                            // 关键修复：预热阶段（电极未稳定接触）的数据是噪声/平线
+                            // 检测到稳定接触瞬间清空之前的数据，只保留接触后的有效数据
                             if (!hasContact && leadOff != null && leadOff != 5) {
                                 hasContact = true
-                                Log.i(TAG, "检测到电极接触 (LEAD_OFF=$leadOff)")
+                                ecgData.clear()  // 丢弃预热阶段噪声数据
+                                Log.i(TAG, "检测到电极接触 (LEAD_OFF=$leadOff)，清空预热数据")
+                            }
+                            // 只在接触后才记录数据
+                            if (hasContact) {
+                                ecgData.add((ecgMv * 1000).toInt())
                             }
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "提取 ECG 值失败: ${e.message}")
                     }
-                }
-                if (dataPoints.isNotEmpty() && ecgData.size % 500 < dataPoints.size) {
-                    Log.d(TAG, "ECG 数据: 总计 ${ecgData.size} 点")
                 }
             }
 

@@ -8,6 +8,8 @@ data class EcgAnalysisResult(
     val signalQuality: Double,   // sqGrade, 0~1, 建议 ≥0.7 才信任结果
     val diagnosis: List<String>,  // 诊断标签列表，如 ["SN"]=窦性心律, ["AF"]=房颤
     val avgHeartRate: Int,        // 平均心率
+    val minHeartRate: Int = 0,    // 最低心率（本地 R-R 间期计算，API 不返回）
+    val maxHeartRate: Int = 0,    // 最高心率（本地 R-R 间期计算，API 不返回）
     val avgQrs: Int,              // QRS 宽度 ms
     val prInterval: Int,          // PR 间期 ms
     val avgQt: Int,               // QT 间期 ms
@@ -83,8 +85,14 @@ data class EcgParamInfo(val label: String, val value: String, val normal: String
 fun EcgAnalysisResult.toParamInfos(): List<EcgParamInfo> = buildList {
     if (avgHeartRate > 0) {
         add(EcgParamInfo(
-            "心率", "$avgHeartRate bpm", "60-100",
-            "每分钟心跳次数。运动/紧张会升高，睡眠时降低"
+            "平均心率", "$avgHeartRate bpm", "60-100",
+            "30 秒测量期间的平均每分钟心跳次数"
+        ))
+    }
+    if (minHeartRate > 0 && maxHeartRate > 0) {
+        add(EcgParamInfo(
+            "心率范围", "$minHeartRate ~ $maxHeartRate bpm", "60-100",
+            "测量期间最低到最高心率。波动大可能提示心律不齐"
         ))
     }
     if (avgQrs > 0) {
@@ -142,4 +150,77 @@ fun hasDiagnosisConflict(result: EcgAnalysisResult): String? {
         }
     }
     return null
+}
+
+/**
+ * 本地 R 波检测：从 ECG 数据计算最低/最高心率
+ *
+ * 算法：自适应阈值峰值检测
+ * 1. 去基线（减均值）
+ * 2. 计算信号包络（滑动最大值）
+ * 3. 用包络的 60% 作为动态阈值检测 R 波峰值
+ * 4. 相邻 R 峰间隔 = R-R 间期 → 瞬时心率 = 60000 / RR_ms
+ * 5. 取所有瞬时心率的 min/max
+ *
+ * @param ecgData ECG 数据（mV×1000 整数）
+ * @param sampleRateHz 采样率（Samsung SDK = 500Hz）
+ * @return Pair(minHeartRate, maxHeartRate)，检测失败返回 (0,0)
+ */
+fun computeMinMaxHeartRate(ecgData: List<Int>, sampleRateHz: Int): Pair<Int, Int> {
+    if (ecgData.size < sampleRateHz * 5) return 0 to 0  // 至少 5 秒数据
+
+    // 1. 去基线
+    val mean = ecgData.average()
+    val centered = ecgData.map { (it - mean) }
+
+    // 2. 滑动最大值包络（窗口 ~0.5 秒）
+    val windowSize = sampleRateHz / 2
+    val envelope = DoubleArray(centered.size)
+    for (i in centered.indices) {
+        val from = maxOf(0, i - windowSize / 2)
+        val to = minOf(centered.size, i + windowSize / 2)
+        var mx = 0.0
+        for (j in from until to) if (centered[j] > mx) mx = centered[j]
+        envelope[i] = mx
+    }
+
+    // 3. 检测 R 峰：信号 > 动态阈值 且 为局部最大值
+    val rPeaks = mutableListOf<Int>()
+    val refractoryMs = 250  // 不应期 250ms（最多 240bpm）
+    val refractorySamples = (refractoryMs * sampleRateHz / 1000)
+    var lastPeakIdx = -refractorySamples * 2
+
+    for (i in centered.indices) {
+        val threshold = envelope[i] * 0.6
+        if (centered[i] > threshold && threshold > 0) {
+            // 检查局部最大值（±5 样本）
+            val lo = maxOf(0, i - 5)
+            val hi = minOf(centered.size, i + 6)
+            var isLocalMax = true
+            for (j in lo until hi) {
+                if (j != i && centered[j] > centered[i]) { isLocalMax = false; break }
+            }
+            if (isLocalMax && (i - lastPeakIdx) > refractorySamples) {
+                rPeaks.add(i)
+                lastPeakIdx = i
+            }
+        }
+    }
+
+    if (rPeaks.size < 3) return 0 to 0
+
+    // 4. 计算 R-R 间期 → 瞬时心率
+    val instantHrs = mutableListOf<Int>()
+    for (i in 1 until rPeaks.size) {
+        val rrSamples = rPeaks[i] - rPeaks[i - 1]
+        val rrMs = rrSamples * 1000.0 / sampleRateHz
+        if (rrMs in 300.0..2000.0) {  // 30~200 bpm 范围合理
+            val hr = (60000.0 / rrMs).toInt()
+            if (hr in 30..200) instantHrs.add(hr)
+        }
+    }
+
+    if (instantHrs.isEmpty()) return 0 to 0
+    // 去掉最高最低各 1 个异常值（可选，更稳健）
+    return instantHrs.min() to instantHrs.max()
 }

@@ -7,6 +7,7 @@ import com.wearhealth.companion.data.EcgHistoryRepository
 import com.wearhealth.companion.data.HistoryItem
 import com.wearhealth.companion.model.EcgAnalysisResult
 import com.wearhealth.companion.model.EcgCollectionState
+import com.wearhealth.companion.model.computeMinMaxHeartRate
 import com.wearhealth.companion.network.HeartVoiceApiClient
 import com.wearhealth.companion.sensor.EcgCollector
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +23,7 @@ data class EcgUiState(
     val liveSamples: List<Int> = emptyList(),    // 实时/最终 ECG 波形（用于 UI 绘制）
     val showHistory: Boolean = false,
     val history: List<HistoryItem> = emptyList(),
+    val historyDetail: HistoryItem? = null,      // 点击进入的历史详情
 )
 
 class HealthViewModel(app: Application) : AndroidViewModel(app) {
@@ -75,7 +77,13 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
             result.onSuccess { analysis ->
                 val waveform = downsample(ecgData, 300)
-                val finalResult = analysis.copy(ecgSamples = waveform)
+                // 本地计算 min/max 心率（API 只返回平均心率）
+                val (minHr, maxHr) = computeMinMaxHeartRate(ecgData, sampleRateHz = 500)
+                val finalResult = analysis.copy(
+                    ecgSamples = waveform,
+                    minHeartRate = minHr,
+                    maxHeartRate = maxHr,
+                )
                 // 保存到历史记录
                 historyRepo.save(finalResult)
                 _uiState.value = _uiState.value.copy(
@@ -97,21 +105,33 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(
             showHistory = true,
             history = historyRepo.getAll(),
+            historyDetail = null,
         )
     }
 
     fun hideHistory() {
-        _uiState.value = _uiState.value.copy(showHistory = false)
+        _uiState.value = _uiState.value.copy(showHistory = false, historyDetail = null)
+    }
+
+    fun showHistoryDetail(item: HistoryItem) {
+        _uiState.value = _uiState.value.copy(historyDetail = item)
+    }
+
+    fun hideHistoryDetail() {
+        _uiState.value = _uiState.value.copy(historyDetail = null)
     }
 
     fun deleteHistory(timestamp: Long) {
         historyRepo.delete(timestamp)
-        _uiState.value = _uiState.value.copy(history = historyRepo.getAll())
+        _uiState.value = _uiState.value.copy(
+            history = historyRepo.getAll(),
+            historyDetail = null,
+        )
     }
 
     fun deleteAllHistory() {
         historyRepo.deleteAll()
-        _uiState.value = _uiState.value.copy(history = emptyList())
+        _uiState.value = _uiState.value.copy(history = emptyList(), historyDetail = null)
     }
 
     private fun downsample(data: List<Int>, targetSize: Int): List<Int> {
