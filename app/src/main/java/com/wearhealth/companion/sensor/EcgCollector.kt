@@ -137,21 +137,21 @@ class EcgCollector(private val context: Context) {
             // 5. 正式采集：30 秒倒计时，期间检测接触断开
             val totalTicks = targetDurationSec * 10  // 100ms 一次
             var tick = 0
-            var contactLostTicks = 0  // 接触断开计数（连续断开超过 5 秒提示）
+            var contactLostTicks = 0  // 接触断开计数（连续断开超过 15 秒才提示）
             while (tick < totalTicks) {
                 delay(100)
                 tick++
                 val countdown = targetDurationSec - (tick / 10)
                 _state.value = EcgCollectionState.Collecting(ecgData.size, countdown)
-                // 实时波形：显示最近 150 个采样点 ≈ 0.3 秒，清晰显示一个完整心跳
-                val startIdx = maxOf(0, ecgData.size - 150)
+                // 实时波形：显示最近 250 个采样点 ≈ 0.5 秒，清晰显示一个心跳周期
+                val startIdx = maxOf(0, ecgData.size - 250)
                 _liveSamples.value = ecgData.subList(startIdx, ecgData.size).toList()
                 // 检测接触是否断开（leadLost 标志由 listener 更新）
                 if (leadLost) {
                     contactLostTicks++
-                    if (contactLostTicks >= 50) {  // 连续 5 秒断开
+                    if (contactLostTicks >= 150) {  // 连续 15 秒断开才报错
                         _state.value = EcgCollectionState.Error(
-                            "采集中电极接触断开超过 5 秒。请保持手指轻触上方按键不要移动，重新测量"
+                            "采集中电极接触断开超过 15 秒。请保持手指轻触上方按键不要移动，重新测量"
                         )
                         fullyReleaseService()
                         return emptyList()
@@ -286,13 +286,15 @@ class EcgCollector(private val context: Context) {
                         val leadOff = dp.getValue(ValueKey.EcgSet.LEAD_OFF)
                         val ecgMv = dp.getValue(ValueKey.EcgSet.ECG_MV)
                         if (ecgMv != null && leadOff != null) {
-                            val isContact = (leadOff == 0)  // 0=接触，5=未接触
+                            // Samsung SDK: leadOff=0 表示接触，leadOff=5 表示未接触
+                            // 只要不是 5 就算接触（避免中间值误判）
+                            val isContact = (leadOff != 5)
                             if (!hasContact && isContact) {
                                 // 首次检测到接触，清空预热噪声
                                 hasContact = true
                                 ecgData.clear()
                                 leadLost = false
-                                Log.i(TAG, "检测到电极接触，清空预热数据，开始正式记录")
+                                Log.i(TAG, "检测到电极接触 (leadOff=$leadOff)，清空预热数据，开始正式记录")
                             }
                             // 关键：接触断开时不记录数据（避免噪声污染缩略图）
                             if (hasContact) {
