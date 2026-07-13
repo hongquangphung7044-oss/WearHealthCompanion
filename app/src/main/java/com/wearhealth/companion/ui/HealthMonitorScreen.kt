@@ -276,7 +276,8 @@ fun HealthMonitorScreen(
                     is EcgCollectionState.Idle -> "开始测量"
                     is EcgCollectionState.Error -> "重试"
                     is EcgCollectionState.Done -> "再测一次"
-                    is EcgCollectionState.Connecting -> "预热中..."
+                    is EcgCollectionState.Connecting -> "连接中..."
+                    is EcgCollectionState.Preheating -> "预热激活中"
                     is EcgCollectionState.Collecting -> "采集中"
                     is EcgCollectionState.Analyzing -> "分析中..."
                 }

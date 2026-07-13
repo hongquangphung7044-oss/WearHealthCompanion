@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
                 .distinctUntilChanged()
                 .collect { state ->
                     val keepOn = state is EcgCollectionState.Connecting ||
+                            state is EcgCollectionState.Preheating ||
                             state is EcgCollectionState.Collecting ||
                             state is EcgCollectionState.Analyzing
                     runOnUiThread {
