@@ -77,6 +77,10 @@ class EcgCollector(private val context: Context) {
         isConnected = false
 
         try {
+            // 0. 每次新连接前，彻底释放上次的资源（防止"第二次连不上"）
+            fullyReleaseService()
+            delay(300)  // 给系统时间清理
+
             // 1. 连接 Health Platform（带重试，最多 3 次）
             var connected = false
             for (attempt in 1..3) {
@@ -86,9 +90,8 @@ class EcgCollector(private val context: Context) {
                     connected = true
                     break
                 }
-                // 连接失败，断开后重试
-                try { healthTrackingService?.disconnectService() } catch (_: Exception) {}
-                healthTrackingService = null
+                // 失败：彻底释放后重试
+                fullyReleaseService()
                 delay(500)
             }
             if (!connected) {
@@ -101,7 +104,7 @@ class EcgCollector(private val context: Context) {
             // 2. 检查 ECG 能力
             if (!checkEcgCapability()) {
                 _state.value = EcgCollectionState.Error("设备不支持 ECG 测量")
-                disconnect()
+                fullyReleaseService()
                 return emptyList()
             }
 
@@ -120,7 +123,7 @@ class EcgCollector(private val context: Context) {
                 _state.value = EcgCollectionState.Error(
                     "未检测到电极接触。请将手指轻触上方按键（不要按下去），手表戴紧手腕"
                 )
-                disconnect()
+                fullyReleaseService()
                 return emptyList()
             }
             Log.i(TAG, "电极接触检测成功，开始 30 秒采集")
@@ -133,16 +136,16 @@ class EcgCollector(private val context: Context) {
                 tick++
                 val countdown = targetDurationSec - (tick / 10)
                 _state.value = EcgCollectionState.Collecting(ecgData.size, countdown)
-                // 更新实时波形（最近 1000 点 ≈ 2 秒）
-                val startIdx = maxOf(0, ecgData.size - 1000)
+                // 实时波形：显示最近 500 个采样点 ≈ 1 秒（更清晰，能看到心跳周期）
+                val startIdx = maxOf(0, ecgData.size - 500)
                 _liveSamples.value = ecgData.subList(startIdx, ecgData.size).toList()
             }
 
-            // 6. 停止
+            // 6. 停止追踪器但保持 service（下次测量复用）
             stopEcgTracker()
 
-            // 最终波形（降采样到最多 600 点用于结果显示）
-            val finalWaveform = downsample(ecgData, 600)
+            // 最终波形（降采样到 300 点用于结果页全局缩略图）
+            val finalWaveform = downsample(ecgData, 300)
             _liveSamples.value = finalWaveform
 
             Log.i(TAG, "ECG 采集完成: ${ecgData.size} 个采样点")
@@ -150,8 +153,30 @@ class EcgCollector(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "ECG 采集失败", e)
             _state.value = EcgCollectionState.Error(e.message ?: "采集失败")
+            fullyReleaseService()
             return emptyList()
         }
+    }
+
+    /**
+     * 彻底释放 Samsung SDK 资源
+     * 这是解决"测完一次后第二次连不上"的关键：
+     * 1. 停止 tracker listener
+     * 2. 断开 service
+     * 3. 置 null 让 GC 回收
+     * 4. 给系统时间清理
+     */
+    private fun fullyReleaseService() {
+        try {
+            healthTracker?.unsetEventListener()
+        } catch (_: Exception) {}
+        try {
+            healthTrackingService?.disconnectService()
+        } catch (_: Exception) {}
+        healthTrackingService = null
+        healthTracker = null
+        isConnected = false
+        hasContact = false
     }
 
     /** 降采样：从原数据中均匀取样 */
@@ -283,16 +308,7 @@ class EcgCollector(private val context: Context) {
     }
 
     fun disconnect() {
-        try {
-            stopEcgTracker()
-            healthTrackingService?.disconnectService()
-        } catch (e: Exception) {
-            Log.w(TAG, "断开连接时出错: ${e.message}")
-        }
-        healthTrackingService = null
-        healthTracker = null
-        isConnected = false
-        hasContact = false
+        fullyReleaseService()
         ecgData.clear()
         _liveSamples.value = emptyList()
         _state.value = EcgCollectionState.Idle

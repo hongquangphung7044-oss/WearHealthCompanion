@@ -124,3 +124,22 @@ sealed class EcgCollectionState {
     data class Done(val result: EcgAnalysisResult) : EcgCollectionState()
     data class Error(val message: String) : EcgCollectionState()
 }
+
+/**
+ * 检测诊断标签是否与实测参数矛盾
+ *
+ * WPW 典型三联征：PR<120ms + QRS>120ms + delta 波
+ * 若诊断含 WPW 但 PR≥120 或 QRS≤120，则与数据矛盾 → 提示可能误判
+ */
+fun hasDiagnosisConflict(result: EcgAnalysisResult): String? {
+    if (result.diagnosis.contains("WPW")) {
+        // WPW 需要 PR<120 且 QRS>120，否则矛盾
+        val prNormal = result.prInterval in 120..200
+        val qrsNormal = result.avgQrs in 80..120
+        if (prNormal && qrsNormal && result.prInterval > 0 && result.avgQrs > 0) {
+            return "WPW 诊断与你的参数矛盾（PR=${result.prInterval}ms 正常，QRS=${result.avgQrs}ms 正常），" +
+                    "典型 WPW 应 PR<120ms 且 QRS>120ms，可能是 AI 误判，请咨询医生确认"
+        }
+    }
+    return null
+}
