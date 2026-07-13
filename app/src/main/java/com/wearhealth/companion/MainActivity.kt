@@ -2,6 +2,7 @@ package com.wearhealth.companion
 
 import android.Manifest
 import android.os.Bundle
+import android.os.Build
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -70,6 +71,7 @@ class MainActivity : ComponentActivity() {
         permissionLauncher.launch(
             arrayOf(
                 Manifest.permission.BODY_SENSORS,
+                *if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT) else emptyArray(),
             )
         )
     }

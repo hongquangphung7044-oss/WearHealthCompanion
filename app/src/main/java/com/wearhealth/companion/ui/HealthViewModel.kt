@@ -12,6 +12,8 @@ import com.wearhealth.companion.model.localSignalQualityCheck
 import com.wearhealth.companion.network.HeartVoiceApiClient
 import com.wearhealth.companion.sensor.EcgCollector
 import com.wearhealth.companion.data.EcgRawArchive
+import com.wearhealth.companion.ble.BleEcgUploader
+import com.wearhealth.companion.security.ApiKeyStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,6 +36,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     private val heartVoiceApi = HeartVoiceApiClient(app.applicationContext)
     private val rawArchive = EcgRawArchive(app.applicationContext)
     private val historyRepo = EcgHistoryRepository(app.applicationContext)
+    private val bleUploader = BleEcgUploader(app.applicationContext)
+    private val apiKeyStore = ApiKeyStore(app.applicationContext)
 
     private val _uiState = MutableStateFlow(EcgUiState())
     val uiState: StateFlow<EcgUiState> = _uiState.asStateFlow()
@@ -108,8 +112,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 // 保存到历史记录
                 val saved = historyRepo.save(finalResult, rawSampleCount = ecgData.size)
                 rawArchive.save(saved.recordId, ecgData)
-                // Full-resolution archive is retained locally. Direct BLE transfer is implemented separately
-                // because mainland Galaxy Watch firmware does not ship Google Play services / Data Layer.
+                bleUploader.upload(saved) { sent -> if (sent) historyRepo.markSynced(saved.recordId) else historyRepo.markPending(saved.recordId) }
                 _uiState.value = _uiState.value.copy(
                     ecgState = EcgCollectionState.Done(finalResult),
                     ecgResult = finalResult,
@@ -161,17 +164,18 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
 
-    /**
-     * Direct Bluetooth synchronization is intentionally not started until a compatible
-     * GATT transport is paired. The record remains locally archived and pending.
-     */
     fun sendHistoryToPhone(item: HistoryItem) {
-        historyRepo.markPending(item.recordId)
-        val records = historyRepo.getAll()
-        _uiState.value = _uiState.value.copy(
-            history = records,
-            historyDetail = records.firstOrNull { it.recordId == item.recordId },
-        )
+        historyRepo.markSending(item.recordId)
+        bleUploader.upload(item) { sent ->
+            if (sent) historyRepo.markSynced(item.recordId) else historyRepo.markPending(item.recordId)
+            val records = historyRepo.getAll()
+            _uiState.value = _uiState.value.copy(history = records, historyDetail = records.firstOrNull { it.recordId == item.recordId })
+        }
+    }
+
+    fun saveLocalApiKey(value: String) {
+        apiKeyStore.save(value)
+        _uiState.value = _uiState.value.copy(apiKeyConfigured = value.isNotBlank())
     }
 
 

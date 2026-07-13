@@ -209,10 +209,10 @@ fun HealthMonitorScreen(
                 item { HistoryDetailCard(item = uiState.historyDetail!!) }
                 item {
                     val detail = uiState.historyDetail!!
-                    val label = "蓝牙同步器待接入"
+                    val label = when (detail.syncStatus) { "SENT" -> "已发送 · 重新发送"; "SENDING" -> "正在发送…"; else -> "发送到手机" }
                     Button(
                         onClick = { viewModel.sendHistoryToPhone(detail) },
-                        enabled = false,
+                        enabled = detail.syncStatus != "SENDING",
                     ) { Text(label, style = MaterialTheme.typography.bodySmall) }
                 }
                 item {
