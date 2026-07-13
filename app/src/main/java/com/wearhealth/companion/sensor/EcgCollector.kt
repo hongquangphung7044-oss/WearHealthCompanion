@@ -2,6 +2,7 @@ package com.wearhealth.companion.sensor
 
 import android.content.Context
 import android.util.Log
+import com.samsung.android.service.health.tracking.ConnectionListener
 import com.samsung.android.service.health.tracking.HealthTracker
 import com.samsung.android.service.health.tracking.HealthTrackingService
 import com.samsung.android.service.health.tracking.HealthTrackerException
@@ -119,7 +120,7 @@ class EcgCollector(private val context: Context) {
      */
     private suspend fun connectHealthPlatform() = suspendCancellableCoroutine { cont ->
         try {
-            val connectionListener = object : HealthTrackingService.ConnectionListener {
+            val connectionListener = object : ConnectionListener {
                 override fun onConnectionSuccess() {
                     Log.i(TAG, "Health Platform 连接成功")
                     isConnected = true
