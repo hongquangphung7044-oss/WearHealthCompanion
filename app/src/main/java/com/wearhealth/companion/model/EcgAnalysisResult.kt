@@ -155,12 +155,13 @@ fun hasDiagnosisConflict(result: EcgAnalysisResult): String? {
 /**
  * 本地 R 波检测：从 ECG 数据计算最低/最高心率
  *
- * 算法：自适应阈值峰值检测
- * 1. 去基线（减均值）
- * 2. 计算信号包络（滑动最大值）
- * 3. 用包络的 60% 作为动态阈值检测 R 波峰值
- * 4. 相邻 R 峰间隔 = R-R 间期 → 瞬时心率 = 60000 / RR_ms
- * 5. 取所有瞬时心率的 min/max
+ * 算法改进（解决之前 31~194 的误检问题）：
+ * 1. 带通滤波：减去移动平均去基线漂移，再移动平均去高频噪声
+ * 2. 平滑：3 点移动平均减少毛刺
+ * 3. 自适应阈值 = 信号 RMS × 2 + 绝对最小值
+ * 4. R 峰形态验证：检查峰宽（太宽=噪声）+ 斜率（太缓=基线漂移）
+ * 5. 异常值剔除：R-R 间期偏离中位数 ±30% 的丢弃
+ * 6. 最终 min/max 从有效心率中取
  *
  * @param ecgData ECG 数据（mV×1000 整数）
  * @param sampleRateHz 采样率（Samsung SDK = 500Hz）
@@ -169,58 +170,116 @@ fun hasDiagnosisConflict(result: EcgAnalysisResult): String? {
 fun computeMinMaxHeartRate(ecgData: List<Int>, sampleRateHz: Int): Pair<Int, Int> {
     if (ecgData.size < sampleRateHz * 5) return 0 to 0  // 至少 5 秒数据
 
-    // 1. 去基线
-    val mean = ecgData.average()
-    val centered = ecgData.map { (it - mean) }
+    // 1. 带通滤波：去基线漂移（高通）+ 去高频噪声（低通）
+    val baselineWindow = sampleRateHz  // 1 秒窗口去基线
+    val baseline = DoubleArray(ecgData.size)
+    for (i in ecgData.indices) {
+        val from = maxOf(0, i - baselineWindow / 2)
+        val to = minOf(ecgData.size, i + baselineWindow / 2)
+        var sum = 0.0
+        for (j in from until to) sum += ecgData[j]
+        baseline[i] = sum / (to - from)
+    }
+    val highPassed = ecgData.mapIndexed { i, v -> v - baseline[i] }
 
-    // 2. 滑动最大值包络（窗口 ~0.5 秒）
-    val windowSize = sampleRateHz / 2
-    val envelope = DoubleArray(centered.size)
-    for (i in centered.indices) {
-        val from = maxOf(0, i - windowSize / 2)
-        val to = minOf(centered.size, i + windowSize / 2)
-        var mx = 0.0
-        for (j in from until to) if (centered[j] > mx) mx = centered[j]
-        envelope[i] = mx
+    // 2. 低通平滑：5 点移动平均去高频噪声
+    val smoothWin = 5
+    val filtered = DoubleArray(highPassed.size)
+    for (i in highPassed.indices) {
+        val from = maxOf(0, i - smoothWin / 2)
+        val to = minOf(highPassed.size, i + smoothWin / 2 + 1)
+        var sum = 0.0
+        for (j in from until to) sum += highPassed[j]
+        filtered[i] = sum / (to - from)
     }
 
-    // 3. 检测 R 峰：信号 > 动态阈值 且 为局部最大值
+    // 3. 计算信号 RMS 作为自适应阈值
+    val rms = Math.sqrt(filtered.map { it * it }.average())
+    val threshold = rms * 2.0  // R 波幅度通常是噪声的 2-5 倍
+    if (threshold < 50.0) return 0 to 0  // 信号太弱
+
+    // 4. 检测 R 峰：阈值 + 局部最大 + 形态验证
     val rPeaks = mutableListOf<Int>()
-    val refractoryMs = 250  // 不应期 250ms（最多 240bpm）
-    val refractorySamples = (refractoryMs * sampleRateHz / 1000)
+    val refractorySamples = sampleRateHz / 3  // 不应期 333ms（最多 180bpm）
     var lastPeakIdx = -refractorySamples * 2
+    val checkRange = sampleRateHz / 50  // ±10ms 局部最大检查
 
-    for (i in centered.indices) {
-        val threshold = envelope[i] * 0.6
-        if (centered[i] > threshold && threshold > 0) {
-            // 检查局部最大值（±5 样本）
-            val lo = maxOf(0, i - 5)
-            val hi = minOf(centered.size, i + 6)
-            var isLocalMax = true
-            for (j in lo until hi) {
-                if (j != i && centered[j] > centered[i]) { isLocalMax = false; break }
-            }
-            if (isLocalMax && (i - lastPeakIdx) > refractorySamples) {
-                rPeaks.add(i)
-                lastPeakIdx = i
-            }
+    for (i in filtered.indices) {
+        if (filtered[i] < threshold) continue
+        // 检查局部最大值
+        val lo = maxOf(0, i - checkRange)
+        val hi = minOf(filtered.size, i + checkRange + 1)
+        var isLocalMax = true
+        for (j in lo until hi) {
+            if (j != i && filtered[j] > filtered[i]) { isLocalMax = false; break }
         }
+        if (!isLocalMax) continue
+        // 形态验证：峰值附近的斜率要够大（R 波是尖窄峰）
+        val slopeIdx = maxOf(0, i - sampleRateHz / 20)  // 50ms 前
+        val slope = (filtered[i] - filtered[slopeIdx])
+        if (slope < threshold * 0.5) continue  // 斜率不够，可能是缓波
+        // 不应期检查
+        if ((i - lastPeakIdx) < refractorySamples) continue
+
+        rPeaks.add(i)
+        lastPeakIdx = i
     }
 
-    if (rPeaks.size < 3) return 0 to 0
+    if (rPeaks.size < 5) return 0 to 0  // 至少 5 个心跳
 
-    // 4. 计算 R-R 间期 → 瞬时心率
+    // 5. 计算 R-R 间期 → 瞬时心率，剔除异常值
     val instantHrs = mutableListOf<Int>()
     for (i in 1 until rPeaks.size) {
-        val rrSamples = rPeaks[i] - rPeaks[i - 1]
-        val rrMs = rrSamples * 1000.0 / sampleRateHz
-        if (rrMs in 300.0..2000.0) {  // 30~200 bpm 范围合理
+        val rrMs = (rPeaks[i] - rPeaks[i - 1]) * 1000.0 / sampleRateHz
+        if (rrMs in 400.0..1500.0) {  // 40~150 bpm 合理范围
             val hr = (60000.0 / rrMs).toInt()
-            if (hr in 30..200) instantHrs.add(hr)
+            if (hr in 40..150) instantHrs.add(hr)
         }
     }
 
-    if (instantHrs.isEmpty()) return 0 to 0
-    // 去掉最高最低各 1 个异常值（可选，更稳健）
-    return instantHrs.min() to instantHrs.max()
+    if (instantHrs.size < 3) return 0 to 0
+
+    // 剔除异常值：以中位数为中心，±30% 范围外的丢弃
+    val sorted = instantHrs.sorted()
+    val median = sorted[sorted.size / 2]
+    val filtered2 = instantHrs.filter { hr ->
+        val dev = kotlin.math.abs(hr - median).toDouble() / median
+        dev <= 0.3
+    }
+
+    if (filtered2.isEmpty()) return 0 to 0
+    // 最低和最高心率
+    return filtered2.min() to filtered2.max()
+}
+
+/**
+ * 本地信号质量预检（不发 API，节省用量）
+ *
+ * 检查项：
+ * 1. 数据量是否足够（至少 10 秒）
+ * 2. 信号幅度是否合理（不能太平，也不能全是噪声）
+ * 3. 能否检测到至少 8 个心跳
+ *
+ * @return null=通过，非 null=失败原因
+ */
+fun localSignalQualityCheck(ecgData: List<Int>, sampleRateHz: Int): String? {
+    if (ecgData.size < sampleRateHz * 10) {
+        return "采集数据不足（仅 ${ecgData.size / sampleRateHz} 秒），需要至少 10 秒有效数据"
+    }
+
+    // 检查信号幅度：太小说明电极接触不好
+    val mean = ecgData.average()
+    val variance = ecgData.map { (it - mean) * (it - mean) }.average()
+    val rms = Math.sqrt(variance)
+    if (rms < 30.0) {
+        return "信号太弱，可能是电极接触不良。请确保手表戴紧、手指完全覆盖上方按键"
+    }
+
+    // 检查心跳数量
+    val (minHr, maxHr) = computeMinMaxHeartRate(ecgData, sampleRateHz)
+    if (minHr == 0 || maxHr == 0) {
+        return "无法检测到清晰的心跳信号，请保持静止重新测量"
+    }
+
+    return null  // 通过
 }

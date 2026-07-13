@@ -47,6 +47,7 @@ class EcgCollector(private val context: Context) {
     private var healthTracker: HealthTracker? = null
     @Volatile private var isConnected = false
     @Volatile private var hasContact = false  // 是否检测到电极接触
+    @Volatile private var leadLost = false    // 采集中电极是否断开
 
     fun checkSdkAvailable(): Boolean {
         return try {
@@ -111,9 +112,9 @@ class EcgCollector(private val context: Context) {
             // 3. 启动 ECG 追踪器
             setupEcgTracker()
 
-            // 4. 预热阶段：等待第一帧数据（电极接触检测），最多等 15 秒
+            // 4. 预热阶段：等待电极稳定接触，最多等 30 秒（给用户充分时间调整姿势）
             Log.i(TAG, "预热中：等待电极接触...")
-            val preheatTicks = 150  // 15 秒 × 10 次/秒
+            val preheatTicks = 300  // 30 秒 × 10 次/秒
             var preheatCount = 0
             while (!hasContact && preheatCount < preheatTicks) {
                 delay(100)
@@ -121,24 +122,43 @@ class EcgCollector(private val context: Context) {
             }
             if (!hasContact || ecgData.isEmpty()) {
                 _state.value = EcgCollectionState.Error(
-                    "未检测到电极接触。请将手指轻触上方按键（不要按下去），手表戴紧手腕"
+                    "30 秒内未检测到电极接触。可能原因：\n" +
+                    "1. 手指太干 → 涂点护手霜\n" +
+                    "2. 手指没完全覆盖上方按键\n" +
+                    "3. 手表戴太松 → 戴紧一点\n" +
+                    "4. 手指太冷 → 搓热手指再试\n" +
+                    "5. 手腕有汗水/毛发 → 清洁后重试"
                 )
                 fullyReleaseService()
                 return emptyList()
             }
             Log.i(TAG, "电极接触检测成功，开始 30 秒采集")
 
-            // 5. 正式采集：30 秒倒计时
+            // 5. 正式采集：30 秒倒计时，期间检测接触断开
             val totalTicks = targetDurationSec * 10  // 100ms 一次
             var tick = 0
+            var contactLostTicks = 0  // 接触断开计数（连续断开超过 5 秒提示）
             while (tick < totalTicks) {
                 delay(100)
                 tick++
                 val countdown = targetDurationSec - (tick / 10)
                 _state.value = EcgCollectionState.Collecting(ecgData.size, countdown)
-                // 实时波形：显示最近 250 个采样点 ≈ 0.5 秒，清晰显示一个心跳周期
-                val startIdx = maxOf(0, ecgData.size - 250)
+                // 实时波形：显示最近 150 个采样点 ≈ 0.3 秒，清晰显示一个完整心跳
+                val startIdx = maxOf(0, ecgData.size - 150)
                 _liveSamples.value = ecgData.subList(startIdx, ecgData.size).toList()
+                // 检测接触是否断开（leadLost 标志由 listener 更新）
+                if (leadLost) {
+                    contactLostTicks++
+                    if (contactLostTicks >= 50) {  // 连续 5 秒断开
+                        _state.value = EcgCollectionState.Error(
+                            "采集中电极接触断开超过 5 秒。请保持手指轻触上方按键不要移动，重新测量"
+                        )
+                        fullyReleaseService()
+                        return emptyList()
+                    }
+                } else {
+                    contactLostTicks = 0
+                }
             }
 
             // 6. 停止追踪器但保持 service（下次测量复用）
@@ -265,17 +285,24 @@ class EcgCollector(private val context: Context) {
                     try {
                         val leadOff = dp.getValue(ValueKey.EcgSet.LEAD_OFF)
                         val ecgMv = dp.getValue(ValueKey.EcgSet.ECG_MV)
-                        if (ecgMv != null) {
-                            // 关键修复：预热阶段（电极未稳定接触）的数据是噪声/平线
-                            // 检测到稳定接触瞬间清空之前的数据，只保留接触后的有效数据
-                            if (!hasContact && leadOff != null && leadOff != 5) {
+                        if (ecgMv != null && leadOff != null) {
+                            val isContact = (leadOff == 0)  // 0=接触，5=未接触
+                            if (!hasContact && isContact) {
+                                // 首次检测到接触，清空预热噪声
                                 hasContact = true
-                                ecgData.clear()  // 丢弃预热阶段噪声数据
-                                Log.i(TAG, "检测到电极接触 (LEAD_OFF=$leadOff)，清空预热数据")
+                                ecgData.clear()
+                                leadLost = false
+                                Log.i(TAG, "检测到电极接触，清空预热数据，开始正式记录")
                             }
-                            // 只在接触后才记录数据
+                            // 关键：接触断开时不记录数据（避免噪声污染缩略图）
                             if (hasContact) {
-                                ecgData.add((ecgMv * 1000).toInt())
+                                if (isContact) {
+                                    leadLost = false
+                                    ecgData.add((ecgMv * 1000).toInt())
+                                } else {
+                                    leadLost = true
+                                    // 不记录断开期间的噪声数据
+                                }
                             }
                         }
                     } catch (e: Exception) {

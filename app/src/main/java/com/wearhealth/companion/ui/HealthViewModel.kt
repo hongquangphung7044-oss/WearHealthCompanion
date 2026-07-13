@@ -8,6 +8,7 @@ import com.wearhealth.companion.data.HistoryItem
 import com.wearhealth.companion.model.EcgAnalysisResult
 import com.wearhealth.companion.model.EcgCollectionState
 import com.wearhealth.companion.model.computeMinMaxHeartRate
+import com.wearhealth.companion.model.localSignalQualityCheck
 import com.wearhealth.companion.network.HeartVoiceApiClient
 import com.wearhealth.companion.sensor.EcgCollector
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -69,6 +70,15 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
             if (ecgData.isEmpty()) return@launch
 
+            // 本地信号质量预检（不发 API，节省用量）
+            val qualityError = localSignalQualityCheck(ecgData, sampleRateHz = 500)
+            if (qualityError != null) {
+                _uiState.value = _uiState.value.copy(
+                    ecgState = EcgCollectionState.Error(qualityError)
+                )
+                return@launch
+            }
+
             _uiState.value = _uiState.value.copy(
                 ecgState = EcgCollectionState.Analyzing,
             )
@@ -76,13 +86,22 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
             val result = heartVoiceApi.analyzeEcg(ecgData, sampleRate = 500)
 
             result.onSuccess { analysis ->
-                val waveform = downsample(ecgData, 300)
+                val waveform = downsample(ecgData, 400)
                 // 本地计算 min/max 心率（API 只返回平均心率）
                 val (minHr, maxHr) = computeMinMaxHeartRate(ecgData, sampleRateHz = 500)
+
+                // WPW 误判过滤：如果 API 返回 WPW 但 PR/QRS 都正常，移除 WPW 诊断
+                val filteredDiagnosis = filterWpwIfConflict(analysis.diagnosis,
+                    analysis.prInterval, analysis.avgQrs)
+
                 val finalResult = analysis.copy(
                     ecgSamples = waveform,
                     minHeartRate = minHr,
                     maxHeartRate = maxHr,
+                    diagnosis = filteredDiagnosis,
+                    isAbnormal = filteredDiagnosis.any {
+                        it != "SN" && it != "SNT" && it != "SNB"
+                    },
                 )
                 // 保存到历史记录
                 historyRepo.save(finalResult)
@@ -144,6 +163,27 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
             idx += step
         }
         return result
+    }
+
+    /**
+     * WPW 误判过滤
+     *
+     * WPW 典型三联征：PR<120ms + QRS>120ms + delta 波
+     * 如果 API 返回 WPW 但 PR 和 QRS 都在正常范围，很可能是误判 → 移除 WPW 诊断
+     * 保留其他诊断标签
+     */
+    private fun filterWpwIfConflict(diagnosis: List<String>, prInterval: Int, avgQrs: Int): List<String> {
+        if (!diagnosis.contains("WPW")) return diagnosis
+        // PR 正常 (120-200) 且 QRS 正常 (80-120) → WPW 矛盾，移除
+        val prNormal = prInterval in 120..200
+        val qrsNormal = avgQrs in 80..120
+        return if (prNormal && qrsNormal && prInterval > 0 && avgQrs > 0) {
+            // 移除 WPW，如果没有其他诊断则标记为窦性心律
+            val filtered = diagnosis.filter { it != "WPW" }
+            if (filtered.isEmpty()) listOf("SN") else filtered
+        } else {
+            diagnosis  // 参数确实异常，保留 WPW 诊断
+        }
     }
 
     fun resetEcg() {
