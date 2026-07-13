@@ -17,6 +17,7 @@ data class EcgUiState(
     val ecgResult: EcgAnalysisResult? = null,
     val sdkAvailable: Boolean = false,
     val apiKeyConfigured: Boolean = false,
+    val liveSamples: List<Int> = emptyList(),    // 实时/最终 ECG 波形（用于 UI 绘制）
 )
 
 class HealthViewModel(app: Application) : AndroidViewModel(app) {
@@ -35,22 +36,36 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 启动 ECG 测量：采集 30 秒 ECG 波形 → 发送到 HeartVoice API 分析
+     * 启动 ECG 测量：预热 → 30 秒采集 → HeartVoice API 分析
      */
     fun startEcgMeasurement() {
-        if (_uiState.value.ecgState is EcgCollectionState.Collecting ||
-            _uiState.value.ecgState is EcgCollectionState.Connecting ||
-            _uiState.value.ecgState is EcgCollectionState.Analyzing
+        val current = _uiState.value.ecgState
+        if (current is EcgCollectionState.Connecting ||
+            current is EcgCollectionState.Collecting ||
+            current is EcgCollectionState.Analyzing
         ) return
 
         viewModelScope.launch {
-            // 1. 采集 ECG 原始波形
+            // 同步 EcgCollector 的实时状态到 UI
+            val stateJob = launch {
+                ecgCollector.state.collect { state ->
+                    _uiState.value = _uiState.value.copy(ecgState = state)
+                }
+            }
+            val sampleJob = launch {
+                ecgCollector.liveSamples.collect { samples ->
+                    _uiState.value = _uiState.value.copy(liveSamples = samples)
+                }
+            }
+
+            // 采集 ECG
             val ecgData = ecgCollector.startEcgCollection(targetDurationSec = 30)
 
+            stateJob.cancel()
+            sampleJob.cancel()
+
             if (ecgData.isEmpty()) {
-                _uiState.value = _uiState.value.copy(
-                    ecgState = EcgCollectionState.Error("ECG 采集失败，请确保手指按住上方按键")
-                )
+                // 错误状态已由 EcgCollector 设置
                 return@launch
             }
 
@@ -58,13 +73,17 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 ecgState = EcgCollectionState.Analyzing,
             )
 
-            // 2. 发送到 HeartVoice API 分析
+            // 发送到 HeartVoice API 分析
             val result = heartVoiceApi.analyzeEcg(ecgData, sampleRate = 500)
 
             result.onSuccess { analysis ->
+                // 降采样波形存入结果
+                val waveform = downsample(ecgData, 600)
+                val finalResult = analysis.copy(ecgSamples = waveform)
                 _uiState.value = _uiState.value.copy(
-                    ecgState = EcgCollectionState.Done(analysis),
-                    ecgResult = analysis,
+                    ecgState = EcgCollectionState.Done(finalResult),
+                    ecgResult = finalResult,
+                    liveSamples = waveform,
                 )
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
@@ -74,11 +93,24 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun downsample(data: List<Int>, targetSize: Int): List<Int> {
+        if (data.size <= targetSize) return data
+        val step = data.size.toFloat() / targetSize
+        val result = mutableListOf<Int>()
+        var idx = 0f
+        while (idx < data.size && result.size < targetSize) {
+            result.add(data[idx.toInt()])
+            idx += step
+        }
+        return result
+    }
+
     fun resetEcg() {
         ecgCollector.disconnect()
         _uiState.value = _uiState.value.copy(
             ecgState = EcgCollectionState.Idle,
             ecgResult = null,
+            liveSamples = emptyList(),
         )
     }
 

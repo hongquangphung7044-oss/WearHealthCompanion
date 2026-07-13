@@ -15,6 +15,7 @@ data class EcgAnalysisResult(
     val pacCount: Int,            // 房性早搏次数
     val pvcCount: Int,            // 室性早搏次数
     val rawData: String,          // 原始 API 响应（调试用）
+    val ecgSamples: List<Int> = emptyList(),  // ECG 波形数据（降采样后，用于结果显示）
 )
 
 /**
@@ -40,8 +41,8 @@ fun diagnosisLabelToText(label: String): String = when (label) {
  */
 sealed class EcgCollectionState {
     object Idle : EcgCollectionState()
-    object Connecting : EcgCollectionState()
-    data class Collecting(val samplesCollected: Int) : EcgCollectionState()
+    object Connecting : EcgCollectionState()                                    // 预热中 / 等待电极接触
+    data class Collecting(val samplesCollected: Int, val countdownSec: Int) : EcgCollectionState()
     object Analyzing : EcgCollectionState()
     data class Done(val result: EcgAnalysisResult) : EcgCollectionState()
     data class Error(val message: String) : EcgCollectionState()

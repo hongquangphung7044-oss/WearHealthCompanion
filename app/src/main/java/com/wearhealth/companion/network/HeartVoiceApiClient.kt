@@ -49,7 +49,9 @@ class HeartVoiceApiClient(
                 val jsonBody = JSONObject().apply {
                     put("ecgData", jsonArray)
                     put("ecgSampleRate", sampleRate)
-                    put("adcGain", 1.0)
+                    // EcgCollector 将 mV 值放大 1000 倍存为整数，因此 adcGain=1000.0
+                    // API 公式: voltage_mV = (sampleValue - adcZero) / adcGain
+                    put("adcGain", 1000.0)
                     put("adcZero", 0.0)
                 }
 

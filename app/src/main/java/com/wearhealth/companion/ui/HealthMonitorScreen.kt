@@ -1,19 +1,26 @@
 package com.wearhealth.companion.ui
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
-import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.MaterialTheme
@@ -33,7 +40,7 @@ fun HealthMonitorScreen(
         modifier = modifier,
         state = listState,
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         // 标题
         item {
@@ -45,20 +52,16 @@ fun HealthMonitorScreen(
             )
         }
 
-        // SDK / API Key 状态
+        // 状态行
         item {
             val sdkOk = uiState.sdkAvailable
             val apiOk = uiState.apiKeyConfigured
             val statusText = when {
-                sdkOk && apiOk -> "系统就绪"
                 !sdkOk -> "缺 Samsung SDK"
                 !apiOk -> "缺 API Key"
-                else -> ""
+                else -> "系统就绪"
             }
-            val color = when {
-                sdkOk && apiOk -> Color(0xFF4CAF50)
-                else -> Color(0xFFFF9800)
-            }
+            val color = if (sdkOk && apiOk) Color(0xFF4CAF50) else Color(0xFFFF9800)
             Text(
                 text = statusText,
                 style = MaterialTheme.typography.bodySmall,
@@ -66,8 +69,73 @@ fun HealthMonitorScreen(
             )
         }
 
+        // 预热中提示（Connecting 状态）
+        if (uiState.ecgState is EcgCollectionState.Connecting) {
+            item {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = "预热中...",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color(0xFF64B5F6),
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        text = "请将手指轻触\n上方按键（不要按下）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+
+        // 采集状态 + 倒计时 + 实时波形
+        val state = uiState.ecgState
+        if (state is EcgCollectionState.Collecting) {
+            item {
+                Text(
+                    text = "倒计时 ${state.countdownSec}s",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color(0xFFFF9800),
+                    textAlign = TextAlign.Center,
+                )
+            }
+            item {
+                Text(
+                    text = "${state.samplesCollected} 点",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFB0BEC5),
+                )
+            }
+            // 实时 ECG 波形
+            item {
+                EcgWaveform(
+                    samples = uiState.liveSamples,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(80.dp),
+                    color = Color(0xFF4CAF50),
+                )
+            }
+        }
+
+        // 分析中
+        if (state is EcgCollectionState.Analyzing) {
+            item {
+                Text(
+                    text = "AI 分析中...",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color(0xFF64B5F6),
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+
         // 空闲时显示用户引导
-        if (uiState.ecgState is EcgCollectionState.Idle && uiState.sdkAvailable) {
+        if (state is EcgCollectionState.Idle && uiState.sdkAvailable) {
             item {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -85,33 +153,34 @@ fun HealthMonitorScreen(
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = "2. 另一只手食指\n轻触上方按键",
+                        text = "2. 手指轻触上方按键\n（不要按下去）",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface,
                         textAlign = TextAlign.Center,
                     )
                     Text(
-                        text = "3. 保持30秒不动",
+                        text = "3. 保持 30 秒不动",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "注意：轻触即可，\n不要按下去",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFFF9800),
-                        textAlign = TextAlign.Center,
                     )
                 }
             }
         }
 
-        // ECG 采集状态
-        item {
-            EcgStateCard(state = uiState.ecgState)
+        // 错误提示
+        if (state is EcgCollectionState.Error) {
+            item {
+                Text(
+                    text = state.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFEF5350),
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
 
-        // ECG 分析结果
-        if (uiState.ecgResult != null) {
+        // 测量完成：结果 + 波形
+        if (state is EcgCollectionState.Done && uiState.ecgResult != null) {
             item {
                 EcgResultCard(result = uiState.ecgResult!!)
             }
@@ -119,15 +188,15 @@ fun HealthMonitorScreen(
 
         // 操作按钮
         item {
-            val canMeasure = uiState.ecgState is EcgCollectionState.Idle ||
-                    uiState.ecgState is EcgCollectionState.Error ||
-                    uiState.ecgState is EcgCollectionState.Done
-            val buttonText = when (uiState.ecgState) {
+            val canMeasure = state is EcgCollectionState.Idle ||
+                    state is EcgCollectionState.Error ||
+                    state is EcgCollectionState.Done
+            val buttonText = when (state) {
                 is EcgCollectionState.Idle -> "开始测量"
                 is EcgCollectionState.Error -> "重试"
                 is EcgCollectionState.Done -> "再测一次"
-                is EcgCollectionState.Connecting -> "连接中..."
-                is EcgCollectionState.Collecting -> "采集中 ${uiState.ecgState.let { (it as EcgCollectionState.Collecting).samplesCollected }}点"
+                is EcgCollectionState.Connecting -> "预热中..."
+                is EcgCollectionState.Collecting -> "采集中"
                 is EcgCollectionState.Analyzing -> "分析中..."
             }
             Button(
@@ -142,22 +211,38 @@ fun HealthMonitorScreen(
     }
 }
 
+/**
+ * ECG 波形绘制（Canvas）
+ */
 @Composable
-private fun EcgStateCard(state: EcgCollectionState) {
-    val (text, color) = when (state) {
-        is EcgCollectionState.Idle -> "就绪" to Color(0xFF9E9E9E)
-        is EcgCollectionState.Connecting -> "连接传感器..." to Color(0xFF64B5F6)
-        is EcgCollectionState.Collecting -> "采集中 ${state.samplesCollected} 点" to Color(0xFFFF9800)
-        is EcgCollectionState.Analyzing -> "AI 分析中..." to Color(0xFF64B5F6)
-        is EcgCollectionState.Done -> "测量完成" to Color(0xFF4CAF50)
-        is EcgCollectionState.Error -> "错误: ${state.message}" to Color(0xFFEF5350)
+private fun EcgWaveform(
+    samples: List<Int>,
+    modifier: Modifier = Modifier,
+    color: Color = Color(0xFF4CAF50),
+) {
+    Canvas(
+        modifier = modifier
+            .background(Color(0xFF1A1A2E), RoundedCornerShape(8.dp)),
+    ) {
+        if (samples.isEmpty()) return@Canvas
+
+        val w = size.width
+        val h = size.height
+        val midY = h / 2f
+
+        // 计算缩放
+        val maxAbs = samples.maxOfOrNull { kotlin.math.abs(it) }?.toFloat() ?: 1f
+        val scale = if (maxAbs > 0) (h * 0.4f) / maxAbs else 1f
+
+        val path = Path()
+        val stepX = if (samples.size > 1) w / (samples.size - 1) else w
+        for (i in samples.indices) {
+            val x = i * stepX
+            val y = midY - (samples[i] * scale)
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(path, color = color, style = Stroke(width = 2f, cap = StrokeCap.Round))
     }
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodyMedium,
-        color = color,
-        textAlign = TextAlign.Center,
-    )
 }
 
 @Composable
@@ -167,6 +252,16 @@ private fun EcgResultCard(result: com.wearhealth.companion.model.EcgAnalysisResu
         verticalArrangement = Arrangement.spacedBy(3.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // ECG 波形
+        if (result.ecgSamples.isNotEmpty()) {
+            EcgWaveform(
+                samples = result.ecgSamples,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(70.dp),
+                color = Color(0xFF4CAF50),
+            )
+        }
         // 诊断结果
         Text(
             text = result.diagnosis.joinToString(" ") { diagnosisLabelToText(it) },

@@ -20,46 +20,49 @@ import kotlin.coroutines.resume
 /**
  * ECG 采集器：通过 Samsung Health Sensor SDK 直接调用采集原始 ECG 波形
  *
- * 工作流程（基于 Samsung SDK v1.4.1 官方示例）：
- * 1. 创建 HealthTrackingService(ConnectionListener, Context) 并连接
- * 2. 检查设备是否支持 ECG_ON_DEMAND
- * 3. 通过 getHealthTracker(HealthTrackerType.ECG_ON_DEMAND) 获取追踪器
- * 4. 注册 TrackerEventListener，接收 DataPoint 列表
- * 5. 通过 DataPoint.getValue(ValueKey.EcgSet.ECG_MV) 提取 ECG 毫伏值
- * 6. ECG 采样率 = 500Hz
+ * 采集流程：
+ * 1. 连接 Health Platform
+ * 2. 预热阶段：等待电极接触（最多 15 秒），检测到第一帧 ECG 数据后进入正式采集
+ * 3. 正式采集：30 秒倒计时，实时输出波形数据
+ * 4. 采样率 = 500Hz，30 秒 ≈ 15000 个采样点
  *
- * 编译依赖：samsung-health-sensor-api.aar（位于 app/libs/）
- * 官方 SDK 包名：com.samsung.android.service.health.tracking
+ * 电极说明（Galaxy Watch 4/5/6/7/Ultra）：
+ * - 上方按键（Home 键）= ECG 电极，手指轻触即可（不要按下去）
+ * - 手表背面 = 另一电极，需紧贴手腕皮肤
+ * - 下方按键（Back 键）不是电极
  */
 class EcgCollector(private val context: Context) {
 
     private val _state = MutableStateFlow<EcgCollectionState>(EcgCollectionState.Idle)
     val state: StateFlow<EcgCollectionState> = _state.asStateFlow()
 
-    /** 采集到的 ECG 原始数据（毫伏值，Int 表示） */
+    /** 实时 ECG 波形数据（仅保留最近 1000 点用于滚动显示） */
+    private val _liveSamples = MutableStateFlow<List<Int>>(emptyList())
+    val liveSamples: StateFlow<List<Int>> = _liveSamples.asStateFlow()
+
+    /** 采集到的完整 ECG 数据（mV × 1000，整数） */
     private val ecgData = mutableListOf<Int>()
 
-    /** SDK 相关实例（直接调用，无反射） */
     private var healthTrackingService: HealthTrackingService? = null
     private var healthTracker: HealthTracker? = null
     @Volatile private var isConnected = false
+    @Volatile private var hasContact = false  // 是否检测到电极接触
 
-    /**
-     * 检查 Samsung Health Sensor SDK 是否可用
-     */
     fun checkSdkAvailable(): Boolean {
         return try {
             Class.forName("com.samsung.android.service.health.tracking.HealthTrackingService")
-            Log.i(TAG, "Samsung Health Sensor SDK 可用（直接调用 v1.4.1）")
+            Log.i(TAG, "Samsung Health Sensor SDK 可用")
             true
         } catch (e: ClassNotFoundException) {
-            Log.w(TAG, "Samsung Health Sensor SDK 不可用，ECG 功能需安装 SDK")
+            Log.w(TAG, "Samsung Health Sensor SDK 不可用")
             false
         }
     }
 
     /**
-     * 启动 ECG 采集（按需模式，采集约 30 秒 ≈ 15000 个采样点 @ 500Hz）
+     * 启动 ECG 采集
+     * 阶段 1: 连接 + 预热（等待电极接触）
+     * 阶段 2: 30 秒正式采集（带倒计时）
      */
     suspend fun startEcgCollection(targetDurationSec: Int = 30): List<Int> {
         if (!checkSdkAvailable()) {
@@ -67,41 +70,66 @@ class EcgCollector(private val context: Context) {
             return emptyList()
         }
 
-        _state.value = EcgCollectionState.Connecting
+        _state.value = EcgCollectionState.Connecting  // 预热中
         ecgData.clear()
+        hasContact = false
+        _liveSamples.value = emptyList()
         isConnected = false
 
         try {
             // 1. 连接 Health Platform
             connectHealthPlatform()
             if (!isConnected) {
-                _state.value = EcgCollectionState.Error("Health Platform 连接失败")
+                _state.value = EcgCollectionState.Error("无法连接传感器服务")
                 return emptyList()
             }
 
-            // 2. 检查设备是否支持 ECG
+            // 2. 检查 ECG 能力
             if (!checkEcgCapability()) {
                 _state.value = EcgCollectionState.Error("设备不支持 ECG 测量")
                 disconnect()
                 return emptyList()
             }
 
-            // 3. 设置 ECG 追踪器并开始监听
+            // 3. 启动 ECG 追踪器
             setupEcgTracker()
 
-            _state.value = EcgCollectionState.Collecting(0)
-
-            // 4. 等待采集足够数据或超时
-            val targetSamples = 500 * targetDurationSec
-            var waitCount = 0
-            while (ecgData.size < targetSamples && waitCount < targetDurationSec * 10) {
+            // 4. 预热阶段：等待第一帧数据（电极接触检测），最多等 15 秒
+            Log.i(TAG, "预热中：等待电极接触...")
+            val preheatTicks = 150  // 15 秒 × 10 次/秒
+            var preheatCount = 0
+            while (!hasContact && preheatCount < preheatTicks) {
                 delay(100)
-                _state.value = EcgCollectionState.Collecting(ecgData.size)
-                waitCount++
+                preheatCount++
+            }
+            if (!hasContact || ecgData.isEmpty()) {
+                _state.value = EcgCollectionState.Error(
+                    "未检测到电极接触。请将手指轻触上方按键（不要按下去），手表戴紧手腕"
+                )
+                disconnect()
+                return emptyList()
+            }
+            Log.i(TAG, "电极接触检测成功，开始 30 秒采集")
+
+            // 5. 正式采集：30 秒倒计时
+            val totalTicks = targetDurationSec * 10  // 100ms 一次
+            var tick = 0
+            while (tick < totalTicks) {
+                delay(100)
+                tick++
+                val countdown = targetDurationSec - (tick / 10)
+                _state.value = EcgCollectionState.Collecting(ecgData.size, countdown)
+                // 更新实时波形（最近 1000 点 ≈ 2 秒）
+                val startIdx = maxOf(0, ecgData.size - 1000)
+                _liveSamples.value = ecgData.subList(startIdx, ecgData.size).toList()
             }
 
-            // 5. 停止追踪器
+            // 6. 停止
             stopEcgTracker()
+
+            // 最终波形（降采样到最多 600 点用于结果显示）
+            val finalWaveform = downsample(ecgData, 600)
+            _liveSamples.value = finalWaveform
 
             Log.i(TAG, "ECG 采集完成: ${ecgData.size} 个采样点")
             return ecgData.toList()
@@ -112,12 +140,19 @@ class EcgCollector(private val context: Context) {
         }
     }
 
-    /**
-     * 连接 Health Platform
-     *
-     * 官方 API：HealthTrackingService(ConnectionListener, Context)
-     * ConnectionListener 是独立接口，三个回调：onConnectionSuccess/onConnectionEnded/onConnectionFailed
-     */
+    /** 降采样：从原数据中均匀取样 */
+    private fun downsample(data: List<Int>, targetSize: Int): List<Int> {
+        if (data.size <= targetSize) return data
+        val step = data.size.toFloat() / targetSize
+        val result = mutableListOf<Int>()
+        var idx = 0f
+        while (idx < data.size && result.size < targetSize) {
+            result.add(data[idx.toInt()])
+            idx += step
+        }
+        return result
+    }
+
     private suspend fun connectHealthPlatform() = suspendCancellableCoroutine { cont ->
         try {
             val connectionListener = object : ConnectionListener {
@@ -143,7 +178,7 @@ class EcgCollector(private val context: Context) {
             healthTrackingService = service
             service.connectService()
 
-            // 额外超时保护：10 秒还没连接成功就继续
+            // 超时保护：10 秒
             Thread {
                 try {
                     Thread.sleep(10000)
@@ -156,9 +191,6 @@ class EcgCollector(private val context: Context) {
         }
     }
 
-    /**
-     * 检查设备是否支持 ECG 测量
-     */
     private fun checkEcgCapability(): Boolean {
         val service = healthTrackingService ?: return false
         return try {
@@ -175,17 +207,10 @@ class EcgCollector(private val context: Context) {
         }
     }
 
-    /**
-     * 获取 ECG 追踪器并注册监听器
-     *
-     * 官方示例：setEventListener(TrackerEventListener)
-     * ECG DataPoint 通过 ValueKey.EcgSet.ECG_MV 获取毫伏值
-     */
     private fun setupEcgTracker() {
         val service = healthTrackingService
             ?: throw IllegalStateException("未连接 Health Platform")
 
-        // 获取 ECG 追踪器（优先 ECG_ON_DEMAND，回退 ECG）
         val trackerType = try {
             HealthTrackerType.ECG_ON_DEMAND
         } catch (e: Exception) {
@@ -195,35 +220,34 @@ class EcgCollector(private val context: Context) {
         val tracker = healthTracker
             ?: throw IllegalStateException("无法获取 ECG 追踪器")
 
-        // 注册数据监听器（官方 API）
         val listener = object : HealthTracker.TrackerEventListener {
             override fun onDataReceived(dataPoints: List<DataPoint>) {
                 for (dp in dataPoints) {
                     try {
-                        // 先检查 LEAD_OFF 状态（电极是否接触良好）
+                        // 检查 LEAD_OFF（电极接触状态）
+                        // 不再因 LEAD_OFF 跳过数据 —— 收集所有数据，让 API 的 sqGrade 判断质量
+                        // 仅用 LEAD_OFF 来判断是否"已接触"（用于预热阶段）
                         val leadOff = dp.getValue(ValueKey.EcgSet.LEAD_OFF)
-                        if (leadOff != null && leadOff == 5) {
-                            // LEAD_OFF == 5 表示电极未接触，跳过无效数据
-                            continue
-                        }
-                        // 提取 ECG 毫伏值
                         val ecgMv = dp.getValue(ValueKey.EcgSet.ECG_MV)
                         if (ecgMv != null) {
-                            // 转换为整数（放大 1000 倍保留精度，用于 API 传输）
+                            // 放大 1000 倍存为整数（adcGain=1000.0 对应）
                             ecgData.add((ecgMv * 1000).toInt())
+                            // 只要收到非零 ECG 数据，就认为已接触
+                            if (!hasContact && leadOff != null && leadOff != 5) {
+                                hasContact = true
+                                Log.i(TAG, "检测到电极接触 (LEAD_OFF=$leadOff)")
+                            }
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "提取 ECG 值失败: ${e.message}")
                     }
                 }
-                if (dataPoints.isNotEmpty()) {
-                    Log.d(TAG, "收到 ECG 数据: +${dataPoints.size} 点（总计 ${ecgData.size}）")
+                if (dataPoints.isNotEmpty() && ecgData.size % 500 < dataPoints.size) {
+                    Log.d(TAG, "ECG 数据: 总计 ${ecgData.size} 点")
                 }
             }
 
-            override fun onFlushCompleted() {
-                Log.d(TAG, "ECG flush 完成")
-            }
+            override fun onFlushCompleted() {}
 
             override fun onError(error: HealthTracker.TrackerError) {
                 Log.e(TAG, "ECG 追踪错误: $error")
@@ -235,24 +259,15 @@ class EcgCollector(private val context: Context) {
         Log.i(TAG, "ECG 追踪器已启动，等待数据...")
     }
 
-    /**
-     * 停止 ECG 追踪器
-     */
     private fun stopEcgTracker() {
         try {
-            val tracker = healthTracker
-            if (tracker != null) {
-                tracker.unsetEventListener()
-                Log.i(TAG, "ECG 追踪器已停止")
-            }
+            healthTracker?.unsetEventListener()
+            Log.i(TAG, "ECG 追踪器已停止")
         } catch (e: Exception) {
             Log.w(TAG, "停止 ECG 追踪器时出错: ${e.message}")
         }
     }
 
-    /**
-     * 断开 Health Platform 连接并清理资源
-     */
     fun disconnect() {
         try {
             stopEcgTracker()
@@ -263,7 +278,9 @@ class EcgCollector(private val context: Context) {
         healthTrackingService = null
         healthTracker = null
         isConnected = false
+        hasContact = false
         ecgData.clear()
+        _liveSamples.value = emptyList()
         _state.value = EcgCollectionState.Idle
     }
 
