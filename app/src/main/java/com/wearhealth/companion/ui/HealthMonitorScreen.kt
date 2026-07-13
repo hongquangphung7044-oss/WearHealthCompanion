@@ -14,6 +14,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -213,6 +214,11 @@ fun HealthMonitorScreen(
 
 /**
  * ECG 波形绘制（Canvas）
+ *
+ * 关键：先去基线（减均值），再用动态范围自适应缩放。
+ * ECG 信号通常带直流偏移（基线电压），如果直接用 maxAbs 缩放，
+ * 直流分量会让交流波动（PQRST 波）被压缩成一条直线。
+ * 去基线后用 (max - min) 范围缩放，能完整显示心电波形。
  */
 @Composable
 private fun EcgWaveform(
@@ -230,18 +236,33 @@ private fun EcgWaveform(
         val h = size.height
         val midY = h / 2f
 
-        // 计算缩放
-        val maxAbs = samples.maxOfOrNull { kotlin.math.abs(it) }?.toFloat() ?: 1f
-        val scale = if (maxAbs > 0) (h * 0.4f) / maxAbs else 1f
+        // 1. 去基线：减去均值，消除直流偏移
+        val mean = samples.average()
+        val centered = samples.map { (it - mean).toFloat() }
 
+        // 2. 自适应缩放：用去基线后的峰峰值范围
+        val maxVal = centered.maxOrNull() ?: 1f
+        val minVal = centered.minOrNull() ?: -1f
+        val range = (maxVal - minVal).coerceAtLeast(1f)  // 防止除零
+        val scale = (h * 0.8f) / range  // 占满 80% 高度
+
+        // 3. 绘制波形
         val path = Path()
         val stepX = if (samples.size > 1) w / (samples.size - 1) else w
-        for (i in samples.indices) {
+        for (i in centered.indices) {
             val x = i * stepX
-            val y = midY - (samples[i] * scale)
+            val y = midY - (centered[i] * scale)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
         drawPath(path, color = color, style = Stroke(width = 2f, cap = StrokeCap.Round))
+
+        // 4. 绘制基线（中线，淡色）
+        drawLine(
+            color = Color(0xFF334155),
+            start = Offset(0f, midY),
+            end = Offset(w, midY),
+            strokeWidth = 1f,
+        )
     }
 }
 
