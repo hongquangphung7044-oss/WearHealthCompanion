@@ -22,12 +22,15 @@ import com.wearhealth.companion.model.EcgCollectionState
 import com.wearhealth.companion.model.diagnosisLabelToText
 
 @Composable
-fun HealthMonitorScreen(viewModel: HealthViewModel) {
+fun HealthMonitorScreen(
+    viewModel: HealthViewModel,
+    modifier: Modifier = Modifier,
+) {
     val uiState by viewModel.uiState.collectAsState()
     val listState = rememberScalingLazyListState()
 
     ScalingLazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier,
         state = listState,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
