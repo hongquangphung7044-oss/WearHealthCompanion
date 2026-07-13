@@ -53,20 +53,31 @@ class BleSyncServer(private val context: Context) {
         }
     }
 
-    private fun receive(frame: ByteArray): Boolean = try {
-        if (frame.isEmpty()) return false
-        when (frame[0]) {
-            BleProtocol.TYPE_BEGIN -> {
-                val buffer = ByteBuffer.wrap(frame, 1, frame.size - 1)
-                val idBytes = ByteArray(16).also(buffer::get); val total = buffer.int
-                val meta = JSONObject(String(ByteArray(buffer.remaining()).also(buffer::get)))
-                transfer = Transfer(BleProtocol.uuidFrom(idBytes), total, meta)
+    private fun receive(frame: ByteArray): Boolean {
+        return try {
+            if (frame.isEmpty()) return false
+            when (frame[0]) {
+                BleProtocol.TYPE_BEGIN -> {
+                    val buffer = ByteBuffer.wrap(frame, 1, frame.size - 1)
+                    val idBytes = ByteArray(16).also(buffer::get)
+                    val total = buffer.int
+                    val meta = JSONObject(String(ByteArray(buffer.remaining()).also(buffer::get)))
+                    transfer = Transfer(BleProtocol.uuidFrom(idBytes), total, meta)
+                    true
+                }
+                BleProtocol.TYPE_CHUNK -> {
+                    val active = transfer ?: return false
+                    active.output.write(frame, 1, frame.size - 1)
+                    true
+                }
+                BleProtocol.TYPE_END -> persist()
+                else -> false
             }
-            BleProtocol.TYPE_CHUNK -> transfer?.output?.write(frame, 1, frame.size - 1) ?: return false
-            BleProtocol.TYPE_END -> persist() ?: return false
-            else -> return false
-        }; true
-    } catch (e: Exception) { Log.e("BleSyncServer", "Bad transfer frame", e); false }
+        } catch (e: Exception) {
+            Log.e("BleSyncServer", "Bad transfer frame", e)
+            false
+        }
+    }
 
     private fun persist(): Boolean {
         val item = transfer ?: return false
