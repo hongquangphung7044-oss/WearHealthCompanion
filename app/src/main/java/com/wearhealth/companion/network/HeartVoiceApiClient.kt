@@ -1,6 +1,7 @@
 package com.wearhealth.companion.network
 
 import android.util.Log
+import com.wearhealth.companion.BuildConfig
 import com.wearhealth.companion.model.EcgAnalysisResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -18,22 +19,22 @@ import java.util.concurrent.TimeUnit
  * 接口文档: https://www.heartvoice.com.cn/aiCloud/docs/api/ecg-basic/
  * 单导联分析: POST /api/v1/basic/ecg/1-lead/analyze
  *
- * API Key 通过环境变量 HEARTVOICE_API_KEY 注入（CI 中从 Secret 读取）
- * 或在 BuildConfig 中配置
+ * API Key 通过 BuildConfig.HEARTVOICE_API_KEY 编译时注入
  */
 class HeartVoiceApiClient(
-    private val apiKey: String,
+    private val apiKey: String = BuildConfig.HEARTVOICE_API_KEY,
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    val isApiKeyConfigured: Boolean get() = apiKey.isNotBlank()
+
     /**
      * 分析单导联 ECG 信号
      * @param ecgData ECG 信号数组（ADC 值）
      * @param sampleRate 采样率 Hz（Samsung SDK ECG = 500Hz）
-     * @return 分析结果，失败返回 null
      */
     suspend fun analyzeEcg(ecgData: List<Int>, sampleRate: Int = 500): Result<EcgAnalysisResult> =
         withContext(Dispatchers.IO) {
@@ -42,7 +43,6 @@ class HeartVoiceApiClient(
             }
 
             try {
-                // 构造请求 JSON
                 val jsonArray = JSONArray()
                 ecgData.forEach { jsonArray.put(it) }
 
@@ -83,7 +83,6 @@ class HeartVoiceApiClient(
                 val data = json.optJSONObject("data")
                     ?: return@withContext Result.failure(RuntimeException("响应缺少 data 字段"))
 
-                // 解析诊断标签数组
                 val diagnosisList = mutableListOf<String>()
                 val diagArray = data.optJSONArray("diagnosis")
                 if (diagArray != null) {

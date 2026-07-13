@@ -1,20 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">健康伴侣</string>
-    <string name="monitoring_active">监测中</string>
-    <string name="monitoring_stopped">已停止</string>
-    <string name="start_monitoring">开始监测</string>
-    <string name="stop_monitoring">停止监测</string>
-    <string name="heart_rate_label">心率</string>
-    <string name="hrv_label">HRV</string>
-    <string name="spo2_label">血氧</string>
-    <string name="status_label">状态</string>
-    <string name="service_notification_title">健康监测运行中</string>
-    <string name="service_notification_text">正在采集传感器数据</string>
-    <string name="channel_name">健康监测</string>
-    <string name="channel_description">健康数据采集通知</string>
-    <string name="alert_high_hr">⚠️ 心率过高</string>
-    <string name="alert_low_hr">⚠️ 心率过低</string>
-    <string name="alert_irregular">⚠️ 疑似心律不齐</string>
-    <string name="alert_normal">✓ 指标正常</string>
+    <string name="app_name">ECG 心电图</string>
 </resources>
