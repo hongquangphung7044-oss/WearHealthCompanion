@@ -25,6 +25,6 @@ dependencies {
     implementation("org.json:json:20240303")
     // Wear OS Data Layer API
     implementation(libs.play.services.wearable)
-    // 协程
-    implementation(libs.kotlinx.coroutines.android)
+    // Unit tests cover binary framing/CRC/ACK and payload round trips without device hardware.
+    testImplementation("junit:junit:4.13.2")
 }

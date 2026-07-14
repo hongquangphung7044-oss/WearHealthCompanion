@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -100,7 +101,7 @@ fun HealthMonitorScreen(
             }
         }
 
-        // API Key 输入界面：未配置时显示
+        // API Key 输入界面：未配置时显示完整输入卡；已有 Key 时仍保留 BLE 更新入口。
         if (!uiState.apiKeyConfigured && !uiState.showHistory) {
             item {
                 ApiKeyInputCard(
@@ -108,6 +109,19 @@ fun HealthMonitorScreen(
                     onFetchFromPhone = { viewModel.fetchApiKeyFromPhone() },
                     syncing = uiState.syncingToPhone,
                 )
+            }
+        } else if (uiState.apiKeyConfigured && !uiState.showHistory) {
+            item {
+                Button(
+                    onClick = { viewModel.fetchApiKeyFromPhone() },
+                    enabled = !uiState.syncingToPhone,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                ) {
+                    Text(
+                        if (uiState.syncingToPhone) "正在查找手机…" else "从手机 BLE 更新 Key",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
 
@@ -690,6 +704,7 @@ private fun ApiKeyInputCard(
                 fontSize = 12.sp,
             ),
             cursorBrush = SolidColor(Color(0xFF64B5F6)),
+            visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
             decorationBox = { innerTextField ->
                 if (apiKeyInput.isEmpty()) {

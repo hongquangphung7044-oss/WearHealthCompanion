@@ -101,7 +101,7 @@ class BleEcgUploader(private val context: Context) {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (terminal) return
             if (result.device.bondState != BluetoothDevice.BOND_BONDED) {
-                Log.w(TAG, "忽略未与手表配对的 BLE 设备")
+                Log.w(TAG, "忽略未与手表配对的 BLE 设备（bondState=${result.device.bondState}）")
                 return
             }
             scanner?.stopScan(this)

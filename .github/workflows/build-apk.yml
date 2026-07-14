@@ -33,18 +33,18 @@ jobs:
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /home/runner/.keystore/release.keystore
           ls -lh /home/runner/.keystore/release.keystore
 
-      - name: Decode Samsung Health Sensor SDK (optional)
+      - name: Decode Samsung Health Sensor SDK
         run: |
+          set -euo pipefail
           mkdir -p app/libs
           PART1="${{ secrets.SAMSUNG_SDK_B64_1 }}"
           PART2="${{ secrets.SAMSUNG_SDK_B64_2 }}"
-          if [ -n "$PART1" ] && [ -n "$PART2" ]; then
-            echo "${PART1}${PART2}" | base64 -d > app/libs/samsung-health-sensor-api.aar
-            echo "Samsung SDK 已解码（从 SAMSUNG_SDK_B64_1 + SAMSUNG_SDK_B64_2 合并）"
-            ls -lh app/libs/samsung-health-sensor-api.aar
-          else
-            echo "未配置 Samsung SDK Secret，编译基础版（无 ECG 功能）"
-          fi
+          test -n "$PART1"
+          test -n "$PART2"
+          printf '%s%s' "$PART1" "$PART2" | base64 -d > app/libs/samsung-health-sensor-api.aar
+          test -s app/libs/samsung-health-sensor-api.aar
+          echo "Samsung SDK 已解码"
+          ls -lh app/libs/samsung-health-sensor-api.aar
 
       - name: Build Release APKs（手表 + 手机）
         env:
@@ -54,32 +54,29 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          HEARTVOICE_API_KEY: ${{ secrets.HEARTVOICE_API_KEY }}
-        run: ./gradlew :app:assembleRelease :mobile:assembleRelease --no-daemon --stacktrace
+        run: ./gradlew :shared:testReleaseUnitTest :app:assembleRelease :mobile:assembleRelease --no-daemon --stacktrace
 
-      - name: Rename APKs
+      - name: Rename and verify APKs
         run: |
+          set -euo pipefail
           mkdir -p artifacts
           VER="${{ github.run_number }}"
 
-          # 手表 APK
-          WATCH_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
-          if [ -f app/libs/samsung-health-sensor-api.aar ]; then
-            WATCH_NAME="WearHealthCompanion-watch-v1.0.${VER}-code${VER}-ecg.apk"
-          else
-            WATCH_NAME="WearHealthCompanion-watch-v1.0.${VER}-code${VER}-basic.apk"
-          fi
-          cp "$WATCH_APK" "artifacts/$WATCH_NAME"
+          mapfile -t WATCH_APKS < <(find app/build/outputs/apk/release -type f -name "*.apk")
+          mapfile -t MOBILE_APKS < <(find mobile/build/outputs/apk/release -type f -name "*.apk")
+          test "${#WATCH_APKS[@]}" -eq 1
+          test "${#MOBILE_APKS[@]}" -eq 1
+          test -s app/libs/samsung-health-sensor-api.aar
 
-          # 手机 APK
-          MOBILE_APK=$(find mobile/build/outputs/apk/release -name "*.apk" | head -1)
-          if [ -f "$MOBILE_APK" ]; then
-            MOBILE_NAME="WearHealthCompanion-mobile-v1.0.${VER}-code${VER}.apk"
-            cp "$MOBILE_APK" "artifacts/$MOBILE_NAME"
-          else
-            echo "警告：手机 APK 构建失败或未找到"
-          fi
+          WATCH_NAME="WearHealthCompanion-watch-v1.0.${VER}-code${VER}-ecg.apk"
+          MOBILE_NAME="WearHealthCompanion-mobile-v1.0.${VER}-code${VER}.apk"
+          cp "${WATCH_APKS[0]}" "artifacts/$WATCH_NAME"
+          cp "${MOBILE_APKS[0]}" "artifacts/$MOBILE_NAME"
 
+          test -s "artifacts/$WATCH_NAME"
+          test -s "artifacts/$MOBILE_NAME"
+          test "$(find artifacts -maxdepth 1 -type f -name '*.apk' | wc -l)" -eq 2
+          sha256sum artifacts/*.apk
           ls -lh artifacts/
 
       - name: Upload APK artifacts
@@ -96,6 +93,7 @@ jobs:
           files: artifacts/*.apk
           name: "Build #${{ github.run_number }} (v1.0.${{ github.run_number }})"
           tag_name: "build-${{ github.run_number }}"
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           prerelease: false
 

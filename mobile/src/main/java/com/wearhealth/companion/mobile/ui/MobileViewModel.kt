@@ -125,6 +125,10 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
             _apiKeySendResult.value = "API Key 不能为空"
             return
         }
+        if (trimmed.toByteArray(Charsets.UTF_8).size > MAX_API_KEY_BYTES) {
+            _apiKeySendResult.value = "API Key 长度无效"
+            return
+        }
         mobileApiKeyStore.save(trimmed)
         _apiKeySendResult.value = "API Key 已保存到手机；请在手表点“从手机 BLE 获取”"
         viewModelScope.launch {
@@ -191,5 +195,6 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "MobileViewModel"
+        private const val MAX_API_KEY_BYTES = 512
     }
 }

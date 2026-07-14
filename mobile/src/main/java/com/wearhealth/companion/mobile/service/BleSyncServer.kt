@@ -191,7 +191,7 @@ class BleSyncServer(private val context: Context) {
                 newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED -> {
                     if (device.bondState != BluetoothDevice.BOND_BONDED) {
                         server?.cancelConnection(device)
-                        _status.value = "拒绝未配对的 BLE 设备"
+                        _status.value = "拒绝未配对的 BLE 设备（bondState=${device.bondState}）"
                     } else if (activeDevice == null || activeDevice?.address == device.address) {
                         activeDevice = device
                         _status.value = "手表已通过 BLE 连接，等待 ECG 数据"
@@ -238,7 +238,10 @@ class BleSyncServer(private val context: Context) {
             offset: Int,
             value: ByteArray,
         ) {
-            val valid = descriptor.characteristic.uuid == BleSyncProtocol.ACK_UUID &&
+            val valid = !preparedWrite && offset == 0 &&
+                device.bondState == BluetoothDevice.BOND_BONDED &&
+                device.address == activeDevice?.address &&
+                descriptor.characteristic.uuid == BleSyncProtocol.ACK_UUID &&
                 descriptor.uuid == BleSyncProtocol.CLIENT_CHARACTERISTIC_CONFIG_UUID &&
                 value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
             if (responseNeeded) {
@@ -336,7 +339,7 @@ class BleSyncServer(private val context: Context) {
                 PhoneWearableListenerService.notifyMeasurementUpdated(context)
                 measurement.timestamp
             } catch (e: Exception) {
-                Log.e(TAG, "BLE ECG 落库失败", e)
+                Log.e(TAG, "BLE ECG transfer failed before ACK", e)
                 null
             }
             if (device != null && timestamp != null) {

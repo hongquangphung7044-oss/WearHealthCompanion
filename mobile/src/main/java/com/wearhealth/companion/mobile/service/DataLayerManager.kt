@@ -44,7 +44,7 @@ class DataLayerManager(private val context: Context) {
             Log.i(TAG, "API Key 已发送到手表")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "发送 API Key 失败: ${e.message}", e)
+            Log.e(TAG, "发送 API Key 失败", e)
             false
         }
     }

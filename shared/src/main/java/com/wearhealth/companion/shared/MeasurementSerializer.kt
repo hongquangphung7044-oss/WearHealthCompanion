@@ -34,6 +34,9 @@ object MeasurementSerializer {
         putInt(DataLayerPaths.KEY_PAC_COUNT, data.pacCount)
         putInt(DataLayerPaths.KEY_PVC_COUNT, data.pvcCount)
         putInt(DataLayerPaths.KEY_SAMPLE_RATE, data.sampleRate)
+        // A retry with the same timestamp and ECG bytes must still generate TYPE_CHANGED so the
+        // phone can persist idempotently and resend an ACK that may have been lost previously.
+        putString(DataLayerPaths.KEY_TRANSFER_NONCE, java.util.UUID.randomUUID().toString())
         // 原始波形用二进制编码（60KB），比 JSON 文本小 40%
         if (data.rawEcgData.isNotEmpty()) {
             putByteArray(DataLayerPaths.KEY_RAW_ECG, EcgBinaryCodec.encode(data.rawEcgData))

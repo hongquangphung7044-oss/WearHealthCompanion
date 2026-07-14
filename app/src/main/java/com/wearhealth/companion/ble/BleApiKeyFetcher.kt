@@ -27,6 +27,7 @@ class BleApiKeyFetcher(private val context: Context) {
     private var gatt: BluetoothGatt? = null
     private var callback: ((Result<String>) -> Unit)? = null
     private var finished = false
+    private var observedUnbondedState: Int? = null
 
     fun fetch(done: (Result<String>) -> Unit) {
         if (callback != null) {
@@ -45,6 +46,7 @@ class BleApiKeyFetcher(private val context: Context) {
         }
         callback = done
         finished = false
+        observedUnbondedState = null
         try {
             scanner.startScan(
                 listOf(ScanFilter.Builder().setServiceUuid(android.os.ParcelUuid(BleSyncProtocol.SERVICE_UUID)).build()),
@@ -60,7 +62,12 @@ class BleApiKeyFetcher(private val context: Context) {
     @SuppressLint("MissingPermission")
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            if (finished || result.device.bondState != BluetoothDevice.BOND_BONDED) return
+            if (finished) return
+            if (result.device.bondState != BluetoothDevice.BOND_BONDED) {
+                observedUnbondedState = result.device.bondState
+                android.util.Log.w(TAG, "忽略未与手表配对的 BLE 设备（bondState=${result.device.bondState}）")
+                return
+            }
             manager?.adapter?.bluetoothLeScanner?.stopScan(this)
             gatt = result.device.connectGatt(context, false, gattCallback)
             if (gatt == null) finish(Result.failure(IllegalStateException("无法连接手机 BLE 同步器")))
@@ -104,11 +111,15 @@ class BleApiKeyFetcher(private val context: Context) {
             status: Int,
         ) {
             if (finished || characteristic.uuid != BleSyncProtocol.API_KEY_UUID) return
-            val key = if (status == BluetoothGatt.GATT_SUCCESS) {
-                characteristic.value?.toString(Charsets.UTF_8)?.trim().orEmpty()
-            } else ""
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                finish(Result.failure(IllegalStateException("手机拒绝读取 Key（GATT $status）；请确认系统配对与链路加密")))
+                return
+            }
+            val key = characteristic.value?.toString(Charsets.UTF_8)?.trim().orEmpty()
             if (key.isBlank()) {
                 finish(Result.failure(IllegalStateException("手机端尚未保存 API Key")))
+            } else if (key.toByteArray(Charsets.UTF_8).size > MAX_API_KEY_BYTES) {
+                finish(Result.failure(IllegalStateException("手机端 API Key 长度无效")))
             } else {
                 finish(Result.success(key))
             }
@@ -116,7 +127,13 @@ class BleApiKeyFetcher(private val context: Context) {
     }
 
     private val timeout = Runnable {
-        finish(Result.failure(IllegalStateException("未发现手机 BLE 同步器；请保持手机 App 前台")))
+        val state = observedUnbondedState
+        val message = if (state != null) {
+            "已发现手机 BLE 广播，但系统报告未配对（bondState=$state）；请检查 Galaxy Wearable 配对状态"
+        } else {
+            "未发现手机 BLE 同步器；请保持手机 App 前台"
+        }
+        finish(Result.failure(IllegalStateException(message)))
     }
 
     @SuppressLint("MissingPermission")
@@ -144,5 +161,7 @@ class BleApiKeyFetcher(private val context: Context) {
 
     companion object {
         private const val TIMEOUT_MS = 25_000L
+        private const val MAX_API_KEY_BYTES = 512
+        private const val TAG = "BleApiKeyFetcher"
     }
 }

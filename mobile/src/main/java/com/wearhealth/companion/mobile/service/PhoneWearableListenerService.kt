@@ -48,7 +48,7 @@ class PhoneWearableListenerService : WearableListenerService() {
             val transfer = try {
                 MeasurementSerializer.fromDataMap(dataMap)
             } catch (e: Exception) {
-                Log.e(TAG, "反序列化 ECG 数据失败: ${e.message}", e)
+                Log.e(TAG, "反序列化 ECG 数据失败", e)
                 continue
             }
 

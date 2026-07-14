@@ -46,6 +46,8 @@ object DataLayerPaths {
     const val KEY_PVC_COUNT = "pvc"
     const val KEY_RAW_ECG = "rawEcg"             // 完整原始波形，ByteArray（二进制 int 数组）
     const val KEY_SAMPLE_RATE = "sampleRate"
+    /** Non-secret per-submission value; makes an identical retry emit a new DataItem event. */
+    const val KEY_TRANSFER_NONCE = "transferNonce"
     const val KEY_DOWNSAMPLED_ECG = "downsampledEcg"  // 降采样波形（用于列表缩略图）
 
     // API Key 字段
