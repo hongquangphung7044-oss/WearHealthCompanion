@@ -58,6 +58,7 @@ fun SettingsScreen(
     var apiKey by remember { mutableStateOf("") }
     val watchName by viewModel.connectedWatchName.collectAsState()
     val bleStatus by viewModel.bleSyncStatus.collectAsState()
+    val bleConnected by viewModel.bleConnected.collectAsState()
     val apiKeyResult by viewModel.apiKeySendResult.collectAsState()
     val syncResult by viewModel.syncResult.collectAsState()
 
@@ -112,8 +113,13 @@ fun SettingsScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("国行 BLE 直连同步", style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = if (bleConnected) "BLE 状态：已连接" else "BLE 状态：待机，当前未连接",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (bleConnected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Spacer(Modifier.height(4.dp))
                     Text(
                         text = bleStatus,
                         style = MaterialTheme.typography.bodySmall,
@@ -123,9 +129,9 @@ fun SettingsScreen(
                     OutlinedButton(
                         onClick = { viewModel.restartBleSync() },
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("重启 BLE 同步器") }
+                    ) { Text("重新连接（重启 BLE 监听）") }
                     Text(
-                        text = "使用方法：先在下方保存 API Key。手表无 Key 时点“从手机 BLE 获取”；测量完成后在手表“历史记录 > 详情”点“传送到手机”。请保持手机 App 前台。",
+                        text = "手表不会常驻连接：获取 Key 或传 ECG 时才主动连接，完成后会断开。若传送失败，先点上方重新连接，再立即从手表详情重试。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
@@ -170,7 +176,7 @@ fun SettingsScreen(
                 onClick = { viewModel.requestSync() },
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("请求手表同步数据")
+                Text("仅通过 Google 通道请求同步")
             }
             syncResult?.let { msg ->
                 Text(

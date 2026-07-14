@@ -51,10 +51,16 @@ class BleSyncServer(private val context: Context) {
     private var advertiser: BluetoothLeAdvertiser? = null
     private var ackCharacteristic: BluetoothGattCharacteristic? = null
     private var activeDevice: BluetoothDevice? = null
+    private var ackSubscribedAddress: String? = null
+    private var pendingAckAddress: String? = null
+    private var pendingAckSuccess = false
+    private var lastOutcome: String? = null
     private var transfer: IncomingTransfer? = null
 
-    private val _status = MutableStateFlow("BLE 同步器未启动")
+    private val _status = MutableStateFlow("BLE 监听未启动")
     val status: StateFlow<String> = _status.asStateFlow()
+    private val _connected = MutableStateFlow(false)
+    val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     private data class IncomingTransfer(
         val totalBytes: Int,
@@ -145,8 +151,13 @@ class BleSyncServer(private val context: Context) {
         server = null
         ackCharacteristic = null
         activeDevice = null
+        ackSubscribedAddress = null
+        pendingAckAddress = null
+        pendingAckSuccess = false
+        lastOutcome = null
         transfer = null
-        _status.value = "BLE 同步器已停止"
+        _connected.value = false
+        _status.value = "BLE 监听已停止；点“重新连接”恢复等待"
     }
 
     @SuppressLint("MissingPermission")
@@ -184,10 +195,9 @@ class BleSyncServer(private val context: Context) {
             when {
                 status != BluetoothGatt.GATT_SUCCESS -> {
                     if (device.address == activeDevice?.address) {
-                        clearTransfer()
-                        activeDevice = null
+                        clearConnectionState()
                     }
-                    _status.value = "BLE 连接异常（$status），可重试"
+                    _status.value = "BLE 已断开（异常 $status）；手机仍在监听，可在手表重试"
                 }
                 newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED -> {
                     if (device.bondState != BluetoothDevice.BOND_BONDED) {
@@ -195,16 +205,20 @@ class BleSyncServer(private val context: Context) {
                         _status.value = "拒绝未配对的 BLE 设备（bondState=${device.bondState}）"
                     } else if (activeDevice == null || activeDevice?.address == device.address) {
                         activeDevice = device
-                        _status.value = "手表已通过 BLE 连接，等待 ECG 数据"
+                        ackSubscribedAddress = null
+                        lastOutcome = null
+                        _connected.value = true
+                        _status.value = "BLE 已连接到手表；正在建立 ECG 通道…"
                     } else {
                         server?.cancelConnection(device)
                     }
                 }
                 newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED -> {
                     if (device.address == activeDevice?.address) {
-                        clearTransfer()
-                        activeDevice = null
-                        _status.value = "BLE 同步器就绪，等待手表传送"
+                        clearConnectionState()
+                        _status.value = lastOutcome
+                            ?.let { "$it；当前 BLE 已断开并继续监听" }
+                            ?: "BLE 待机：当前未连接；正在监听手表主动连接"
                     }
                 }
             }
@@ -239,12 +253,14 @@ class BleSyncServer(private val context: Context) {
             offset: Int,
             value: ByteArray,
         ) {
-            val valid = !preparedWrite && offset == 0 &&
+            val authorized = !preparedWrite && offset == 0 &&
                 device.bondState == BluetoothDevice.BOND_BONDED &&
                 device.address == activeDevice?.address &&
                 descriptor.characteristic.uuid == BleSyncProtocol.ACK_UUID &&
-                descriptor.uuid == BleSyncProtocol.CLIENT_CHARACTERISTIC_CONFIG_UUID &&
-                value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
+                descriptor.uuid == BleSyncProtocol.CLIENT_CHARACTERISTIC_CONFIG_UUID
+            val enabling = authorized && value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
+            val disabling = authorized && value.contentEquals(BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)
+            val valid = enabling || disabling
             if (responseNeeded) {
                 server?.sendResponse(
                     device,
@@ -254,7 +270,16 @@ class BleSyncServer(private val context: Context) {
                     null,
                 )
             }
-            if (valid) _status.value = "BLE 通道已就绪，正在等待 ECG 数据"
+            when {
+                enabling -> {
+                    ackSubscribedAddress = device.address
+                    _status.value = "BLE 已连接，ECG 与 ACK 通道就绪；等待手表分片"
+                }
+                disabling -> {
+                    ackSubscribedAddress = null
+                    _status.value = "BLE 已连接，但手表已关闭 ACK 通道"
+                }
+            }
         }
 
         override fun onCharacteristicWriteRequest(
@@ -268,7 +293,9 @@ class BleSyncServer(private val context: Context) {
         ) {
             val accepted = !preparedWrite && offset == 0 &&
                 characteristic.uuid == BleSyncProtocol.UPLOAD_UUID &&
-                device.address == activeDevice?.address && receiveFrame(value)
+                device.address == activeDevice?.address &&
+                device.address == ackSubscribedAddress &&
+                receiveFrame(value)
             if (responseNeeded) {
                 server?.sendResponse(
                     device,
@@ -277,6 +304,26 @@ class BleSyncServer(private val context: Context) {
                     0,
                     null,
                 )
+            }
+        }
+
+        override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+            if (device.address != pendingAckAddress) return
+            val wasSuccessAck = pendingAckSuccess
+            pendingAckAddress = null
+            pendingAckSuccess = false
+            if (status == BluetoothGatt.GATT_SUCCESS && wasSuccessAck) {
+                lastOutcome = "ECG 已保存，ACK 已送达手表"
+                _status.value = lastOutcome!!
+            } else if (status == BluetoothGatt.GATT_SUCCESS) {
+                _status.value = "保存失败信息已送达手表；可重试"
+            } else {
+                lastOutcome = if (wasSuccessAck) {
+                    "Room 已保存，但 ACK 发送失败（GATT $status）；可重传且不会重复"
+                } else {
+                    "保存失败且 ACK 发送失败（GATT $status）；请重试"
+                }
+                _status.value = lastOutcome!!
             }
         }
     }
@@ -305,7 +352,8 @@ class BleSyncServer(private val context: Context) {
         val crc = buffer.long
         if (totalBytes !in 1..BleSyncProtocol.MAX_TRANSFER_BYTES) return false
         transfer = IncomingTransfer(totalBytes = totalBytes, expectedCrc = crc)
-        _status.value = "正在通过 BLE 接收 ECG 数据…"
+        lastOutcome = null
+        _status.value = "已收到 ECG BEGIN；准备接收 $totalBytes 字节"
         return true
     }
 
@@ -319,6 +367,10 @@ class BleSyncServer(private val context: Context) {
         if (current.output.size() + payload.size > current.totalBytes) return false
         current.output.write(payload)
         current.nextSequence++
+        val percent = (current.output.size().toLong() * 100L / current.totalBytes).coerceIn(0L, 100L)
+        if (current.nextSequence == 1 || current.nextSequence % 25 == 0 || percent == 100L) {
+            _status.value = "正在接收 ECG 分片：$percent%（${current.output.size()}/${current.totalBytes} 字节）"
+        }
         return true
     }
 
@@ -344,32 +396,56 @@ class BleSyncServer(private val context: Context) {
                 null
             }
             if (device != null && timestamp != null) {
-                sendAck(device, success = true, timestamp = timestamp)
-                _status.value = "ECG 已保存并确认给手表"
+                if (!sendAck(device, success = true, timestamp = timestamp)) {
+                    lastOutcome = "Room 已保存，但 ACK 未能发出；可重传且不会重复"
+                    _status.value = lastOutcome!!
+                }
             } else if (device != null) {
-                sendAck(device, success = false, timestamp = 0L)
-                _status.value = "保存 ECG 失败，手表可重试"
+                if (!sendAck(device, success = false, timestamp = 0L)) {
+                    _status.value = "保存 ECG 失败且错误 ACK 未能发出；请在手表重试"
+                }
             }
         }
         return true
     }
 
     @SuppressLint("MissingPermission")
-    private fun sendAck(device: BluetoothDevice, success: Boolean, timestamp: Long) {
-        val characteristic = ackCharacteristic ?: return
+    private fun sendAck(device: BluetoothDevice, success: Boolean, timestamp: Long): Boolean {
+        val characteristic = ackCharacteristic ?: return false
+        if (device.address != activeDevice?.address || device.address != ackSubscribedAddress) return false
         characteristic.value = BleSyncProtocol.ackFrame(success, timestamp)
-        if (!server.orFalse { notifyCharacteristicChanged(device, characteristic, true) }) {
+        pendingAckAddress = device.address
+        pendingAckSuccess = success
+        _status.value = if (success) {
+            "Room 已保存 ECG；正在等待 ACK indication 送达手表…"
+        } else {
+            "保存 ECG 失败；正在把失败 ACK 送达手表…"
+        }
+        val queued = server.orFalse { notifyCharacteristicChanged(device, characteristic, true) }
+        if (!queued) {
+            pendingAckAddress = null
+            pendingAckSuccess = false
             Log.w(TAG, "无法发送 BLE ACK indication")
         }
+        return queued
     }
 
     private fun clearTransfer() {
         transfer = null
     }
 
+    private fun clearConnectionState() {
+        clearTransfer()
+        activeDevice = null
+        ackSubscribedAddress = null
+        pendingAckAddress = null
+        pendingAckSuccess = false
+        _connected.value = false
+    }
+
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-            _status.value = "BLE 同步器就绪，等待手表传送"
+            _status.value = "BLE 待机：当前未连接；正在监听手表主动连接"
         }
 
         override fun onStartFailure(errorCode: Int) {

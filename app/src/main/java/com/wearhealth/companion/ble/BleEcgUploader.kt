@@ -45,6 +45,7 @@ class BleEcgUploader(private val context: Context) {
     private var adapter: BluetoothAdapter? = null
     private var gatt: BluetoothGatt? = null
     private var uploadCharacteristic: BluetoothGattCharacteristic? = null
+    private var ackCharacteristic: BluetoothGattCharacteristic? = null
     private var transferPayload: ByteArray? = null
     private var frames: List<ByteArray> = emptyList()
     private var nextFrame = 0
@@ -59,6 +60,7 @@ class BleEcgUploader(private val context: Context) {
     private val bondedCandidates = ArrayDeque<BluetoothDevice>()
     private var tryingBondedCandidate = false
     private var matchedService = false
+    private var reconnectAttempted = false
 
     fun upload(transfer: EcgMeasurementTransfer, done: (BleUploadResult) -> Unit) {
         if (completion != null) {
@@ -94,6 +96,7 @@ class BleEcgUploader(private val context: Context) {
         targetConnectionStarted = false
         tryingBondedCandidate = false
         matchedService = false
+        reconnectAttempted = false
         this.adapter = adapter
         this.scanner = scanner
         bondedCandidates.clear()
@@ -248,6 +251,7 @@ class BleEcgUploader(private val context: Context) {
                 return
             }
             if (status != BluetoothGatt.GATT_SUCCESS || newState != BluetoothProfile.STATE_CONNECTED) {
+                if (matchedService && retryCurrentPhone("连接中断（GATT $status）")) return
                 if (tryingBondedCandidate && !matchedService) {
                     connectNextBondedCandidate()
                 } else {
@@ -256,24 +260,24 @@ class BleEcgUploader(private val context: Context) {
                 return
             }
             this@BleEcgUploader.gatt = gatt
-            if (!gatt.requestMtu(BleSyncProtocol.PREFERRED_MTU)) {
+            // Confirm that this bonded device is our phone before MTU negotiation. On One UI
+            // Watch 8 the MTU callback can be delayed; the old order let the 5-second candidate
+            // timer discard the correct phone even though API-key service discovery worked.
+            if (!gatt.discoverServices()) {
                 if (tryingBondedCandidate && !matchedService) connectNextBondedCandidate()
-                else finish(BleUploadResult.Failure("无法协商 ECG BLE 所需的数据包大小"))
+                else finish(BleUploadResult.Failure("无法发现手机 BLE 服务"))
             }
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             if (terminal || gatt !== this@BleEcgUploader.gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS || mtu < BleSyncProtocol.MIN_ECG_MTU) {
-                if (tryingBondedCandidate && !matchedService) connectNextBondedCandidate()
-                else finish(BleUploadResult.Failure("手机 BLE MTU 不足，无法可靠传送完整 ECG"))
+                if (retryCurrentPhone("MTU 协商失败（status=$status, mtu=$mtu）")) return
+                finish(BleUploadResult.Failure("手机 BLE MTU 不足，无法可靠传送完整 ECG"))
                 return
             }
             buildFramesForMtu(mtu)
-            if (!gatt.discoverServices()) {
-                if (tryingBondedCandidate && !matchedService) connectNextBondedCandidate()
-                else finish(BleUploadResult.Failure("无法发现手机 BLE 服务"))
-            }
+            enableAckIndications(gatt)
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
@@ -298,24 +302,17 @@ class BleEcgUploader(private val context: Context) {
             handler.removeCallbacks(bondedCandidateTimeout)
             phoneStore.save(gatt.device)
             uploadCharacteristic = upload
-            if (!gatt.setCharacteristicNotification(ack, true)) {
-                finish(BleUploadResult.Failure("无法订阅手机确认通知"))
-                return
-            }
-            val descriptor = ack.getDescriptor(BleSyncProtocol.CLIENT_CHARACTERISTIC_CONFIG_UUID)
-            if (descriptor == null) {
-                finish(BleUploadResult.Failure("手机同步器缺少确认通道"))
-                return
-            }
-            descriptor.value = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-            if (!gatt.writeDescriptor(descriptor)) {
-                finish(BleUploadResult.Failure("无法启用手机确认通道"))
+            ackCharacteristic = ack
+            if (!gatt.requestMtu(BleSyncProtocol.PREFERRED_MTU)) {
+                if (retryCurrentPhone("无法发起 MTU 协商")) return
+                finish(BleUploadResult.Failure("无法协商 ECG BLE 所需的数据包大小"))
             }
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             if (terminal || gatt !== this@BleEcgUploader.gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                if (retryCurrentPhone("ACK 通道建立失败（GATT $status）")) return
                 finish(BleUploadResult.Failure("手机确认通道建立失败（$status）"))
                 return
             }
@@ -329,6 +326,7 @@ class BleEcgUploader(private val context: Context) {
         ) {
             if (terminal || gatt !== this@BleEcgUploader.gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                if (retryCurrentPhone("分片写入失败（GATT $status）")) return
                 finish(BleUploadResult.Failure("ECG BLE 分片发送失败（$status）"))
                 return
             }
@@ -385,8 +383,62 @@ class BleEcgUploader(private val context: Context) {
         characteristic.value = frames[nextFrame]
         nextFrame++
         if (!currentGatt.writeCharacteristic(characteristic)) {
-            finish(BleUploadResult.Failure("无法发送 ECG BLE 分片"))
+            if (!retryCurrentPhone("系统拒绝发送 ECG 分片")) {
+                finish(BleUploadResult.Failure("无法发送 ECG BLE 分片"))
+            }
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun enableAckIndications(gatt: BluetoothGatt) {
+        val ack = ackCharacteristic
+        if (ack == null) {
+            finish(BleUploadResult.Failure("手机同步器缺少确认通道"))
+            return
+        }
+        if (!gatt.setCharacteristicNotification(ack, true)) {
+            if (!retryCurrentPhone("无法订阅 ACK indication")) {
+                finish(BleUploadResult.Failure("无法订阅手机确认通知"))
+            }
+            return
+        }
+        val descriptor = ack.getDescriptor(BleSyncProtocol.CLIENT_CHARACTERISTIC_CONFIG_UUID)
+        if (descriptor == null) {
+            finish(BleUploadResult.Failure("手机同步器缺少确认通道"))
+            return
+        }
+        descriptor.value = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+        if (!gatt.writeDescriptor(descriptor) && !retryCurrentPhone("无法写入 ACK CCCD")) {
+            finish(BleUploadResult.Failure("无法启用手机确认通道"))
+        }
+    }
+
+    /** Reconnects the already-verified phone once; Room timestamp upsert makes replay idempotent. */
+    @SuppressLint("MissingPermission")
+    private fun retryCurrentPhone(reason: String): Boolean {
+        if (terminal || reconnectAttempted) return false
+        val device = gatt?.device ?: return false
+        if (device.bondState != BluetoothDevice.BOND_BONDED) return false
+        reconnectAttempted = true
+        Log.w(TAG, "$reason；自动重连并从 BEGIN 重传一次")
+        handler.removeCallbacks(bondedCandidateTimeout)
+        try {
+            gatt?.disconnect()
+            gatt?.close()
+        } catch (_: Exception) {
+        }
+        gatt = null
+        uploadCharacteristic = null
+        ackCharacteristic = null
+        frames = emptyList()
+        nextFrame = 0
+        matchedService = false
+        tryingBondedCandidate = false
+        targetConnectionStarted = false
+        bondedCandidates.clear()
+        bondedCandidates.add(device)
+        connectNextBondedCandidate()
+        return true
     }
 
     private val bondedCandidateTimeout = Runnable {
@@ -397,6 +449,8 @@ class BleEcgUploader(private val context: Context) {
 
     private val timeout = Runnable {
         val message = when {
+            matchedService ->
+                "已连接兼容手机，但 ECG 的 MTU、分片上传或 Room ACK 未在 45 秒内完成"
             observedUnbondedState != null ->
                 "已发现手机同步器，但系统报告未配对（bondState=$observedUnbondedState）"
             observedTarget ->
@@ -431,6 +485,7 @@ class BleEcgUploader(private val context: Context) {
         }
         gatt = null
         uploadCharacteristic = null
+        ackCharacteristic = null
         transferPayload = null
         frames = emptyList()
         nextFrame = 0

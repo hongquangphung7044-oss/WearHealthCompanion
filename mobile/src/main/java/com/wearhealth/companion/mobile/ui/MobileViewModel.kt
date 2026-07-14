@@ -44,6 +44,7 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Direct BLE receiver state. This remains useful when Google Data Layer is absent. */
     val bleSyncStatus: StateFlow<String> = bleSyncServer.status
+    val bleConnected: StateFlow<Boolean> = bleSyncServer.connected
 
     /** 全部测量记录（按时间倒序，Room 自动响应插入/删除） */
     val measurements: StateFlow<List<EcgMeasurementEntity>> =
@@ -143,8 +144,8 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val sent = dataLayer.requestSyncFromWatch()
             _syncResult.value = when {
-                sent > 0 -> "已向 $sent 个手表发送同步请求"
-                else -> "没有已连接的手表"
+                sent > 0 -> "已通过 Google 通道向 $sent 个手表发送同步请求"
+                else -> "Google 通道未发现手表；国行 BLE 请从手表详情点“传送到手机”"
             }
         }
     }
