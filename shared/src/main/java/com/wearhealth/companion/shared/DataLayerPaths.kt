@@ -8,6 +8,12 @@ package com.wearhealth.companion.shared
  */
 object DataLayerPaths {
 
+    // ===== Capability names =====
+    // Both APKs use the same applicationId and signing certificate. Capabilities identify
+    // the compatible companion app/version among reachable Data Layer nodes.
+    const val CAPABILITY_PHONE_SYNC = "wearhealth_phone_sync_v1"
+    const val CAPABILITY_WATCH_SYNC = "wearhealth_watch_sync_v1"
+
     // ===== DataItem 路径 =====
 
     /** 手表 → 手机：发送 ECG 测量数据。完整路径: /ecg_measurement/{timestamp} */

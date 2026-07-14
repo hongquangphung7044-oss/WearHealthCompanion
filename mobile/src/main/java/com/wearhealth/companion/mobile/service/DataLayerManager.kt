@@ -2,6 +2,7 @@ package com.wearhealth.companion.mobile.service
 
 import android.content.Context
 import android.util.Log
+import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.Node
 import com.google.android.gms.wearable.PutDataMapRequest
@@ -26,7 +27,6 @@ class DataLayerManager(private val context: Context) {
 
     private val messageClient: MessageClient get() = Wearable.getMessageClient(context)
     private val dataClient get() = Wearable.getDataClient(context)
-    private val nodeClient get() = Wearable.getNodeClient(context)
 
     /**
      * 发送 API Key 到手表
@@ -77,14 +77,19 @@ class DataLayerManager(private val context: Context) {
     }
 
     /**
-     * 获取已连接的手表节点列表
+     * 获取可达且声明了 WearHealth 同步协议的手表节点。
+     * Do not use generic connectedNodes: it can include a node without this companion app.
      */
     suspend fun getConnectedNodes(): List<Node> = withContext(Dispatchers.IO) {
         try {
-            val nodeList = awaitTask { nodeClient.connectedNodes }
-            nodeList
+            awaitTask {
+                Wearable.getCapabilityClient(context).getCapability(
+                    DataLayerPaths.CAPABILITY_WATCH_SYNC,
+                    CapabilityClient.FILTER_REACHABLE,
+                )
+            }.nodes.toList()
         } catch (e: Exception) {
-            Log.e(TAG, "获取已连接节点失败: ${e.message}", e)
+            Log.e(TAG, "获取兼容手表节点失败: ${e.message}", e)
             emptyList()
         }
     }

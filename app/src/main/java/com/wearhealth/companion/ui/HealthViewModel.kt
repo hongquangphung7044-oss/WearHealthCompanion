@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.tasks.Tasks
+import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import com.wearhealth.companion.data.ApiKeyManager
@@ -204,14 +205,20 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             try {
-                // 先检测是否有已连接的手机节点
-                val nodes = withContext(Dispatchers.IO) {
-                    Tasks.await(Wearable.getNodeClient(getApplication()).connectedNodes)
+                // Only accept a reachable node that explicitly advertises this phone sync protocol.
+                // This mirrors Authenticator/Stratum and avoids treating unrelated Wear nodes as a companion.
+                val phoneNodes = withContext(Dispatchers.IO) {
+                    Tasks.await(
+                        Wearable.getCapabilityClient(getApplication()).getCapability(
+                            DataLayerPaths.CAPABILITY_PHONE_SYNC,
+                            CapabilityClient.FILTER_REACHABLE,
+                        )
+                    ).nodes
                 }
-                if (nodes == null || nodes.isEmpty()) {
+                if (phoneNodes.isEmpty()) {
                     _uiState.value = _uiState.value.copy(
                         syncingToPhone = false,
-                        syncMessage = "未检测到已连接的手机，请确认手机同步器已打开并蓝牙已连接",
+                        syncMessage = "未检测到可用手机同步器，请确认新版手机 App 已安装、已打开且手表与手机保持连接",
                     )
                     return@launch
                 }

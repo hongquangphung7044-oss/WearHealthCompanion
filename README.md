@@ -21,7 +21,7 @@
 | 模块 | 说明 | applicationId | minSdk |
 |---|---|---|---|
 | `:app` | Wear OS 手表端 ECG 应用 | `com.wearhealth.companion` | 33 (Wear OS 3+) |
-| `:mobile` | Android 手机端同步器 | `com.wearhealth.companion.mobile` | 26 (Android 8.0+) |
+| `:mobile` | Android 手机端同步器 | `com.wearhealth.companion`（与手表相同） | 26 (Android 8.0+) |
 | `:shared` | 共享数据模型 + Data Layer 协议 | (library) | 26 |
 
 ---
@@ -99,6 +99,8 @@ AI 分析中(调用 HeartVoice API)
 ## Wearable Data Layer 通信协议
 
 手表与手机之间使用 **Google Wearable Data Layer API** 通信（不直接操作蓝牙）。
+
+两端必须使用相同 `applicationId`（`com.wearhealth.companion`）及同一签名。双方分别用 CapabilityClient 查找 `wearhealth_phone_sync_v1` / `wearhealth_watch_sync_v1`，只与安装了正确配套版本的可达节点同步。
 
 ### 通信路径
 
