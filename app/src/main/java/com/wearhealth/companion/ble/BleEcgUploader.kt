@@ -222,12 +222,12 @@ class BleEcgUploader(private val context: Context) {
     @SuppressLint("MissingPermission")
     private fun writeNextFrame() {
         if (terminal) return
-        if (nextFrame >= frames.size) {
-            // The END frame has been accepted by GATT. Wait for the Room persistence indication.
-            return
-        }
         if (frames.isEmpty()) {
             finish(BleUploadResult.Failure("BLE 分片尚未完成初始化"))
+            return
+        }
+        if (nextFrame >= frames.size) {
+            // The END frame has been accepted by GATT. Wait for the Room persistence indication.
             return
         }
         val characteristic = uploadCharacteristic

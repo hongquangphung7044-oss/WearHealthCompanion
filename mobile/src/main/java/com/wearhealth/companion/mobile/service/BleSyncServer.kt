@@ -2,7 +2,6 @@ package com.wearhealth.companion.mobile.service
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
@@ -236,7 +235,8 @@ class BleSyncServer(private val context: Context) {
             offset: Int,
             value: ByteArray,
         ) {
-            val accepted = characteristic.uuid == BleSyncProtocol.UPLOAD_UUID &&
+            val accepted = !preparedWrite && offset == 0 &&
+                characteristic.uuid == BleSyncProtocol.UPLOAD_UUID &&
                 device.address == activeDevice?.address && receiveFrame(value)
             if (responseNeeded) {
                 server?.sendResponse(
@@ -250,18 +250,20 @@ class BleSyncServer(private val context: Context) {
         }
     }
 
-    private fun receiveFrame(frame: ByteArray): Boolean = try {
-        if (frame.isEmpty()) return false
-        when (frame[0]) {
-            BleSyncProtocol.TYPE_BEGIN -> receiveBegin(frame)
-            BleSyncProtocol.TYPE_CHUNK -> receiveChunk(frame)
-            BleSyncProtocol.TYPE_END -> receiveEnd(frame)
-            else -> false
+    private fun receiveFrame(frame: ByteArray): Boolean {
+        return try {
+            if (frame.isEmpty()) return false
+            when (frame[0]) {
+                BleSyncProtocol.TYPE_BEGIN -> receiveBegin(frame)
+                BleSyncProtocol.TYPE_CHUNK -> receiveChunk(frame)
+                BleSyncProtocol.TYPE_END -> receiveEnd(frame)
+                else -> false
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "无效 BLE ECG 帧", e)
+            clearTransfer()
+            false
         }
-    } catch (e: Exception) {
-        Log.w(TAG, "无效 BLE ECG 帧", e)
-        clearTransfer()
-        false
     }
 
     private fun receiveBegin(frame: ByteArray): Boolean {
