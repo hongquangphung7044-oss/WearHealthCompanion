@@ -22,12 +22,15 @@ object MeasurementSerializer {
     fun toDataMap(data: EcgMeasurementTransfer): DataMap = DataMap().apply {
         putLong(DataLayerPaths.KEY_TIMESTAMP, data.timestamp)
         putString(DataLayerPaths.KEY_DIAGNOSIS, data.diagnosis.joinToString(","))
+        putString(DataLayerPaths.KEY_POSSIBLE_DIAGNOSES, data.possibleDiagnoses.joinToString(","))
+        putBoolean(DataLayerPaths.KEY_IS_REVERSE, data.isReverse)
         putInt(DataLayerPaths.KEY_AVG_HR, data.avgHeartRate)
         putInt(DataLayerPaths.KEY_MIN_HR, data.minHeartRate)
         putInt(DataLayerPaths.KEY_MAX_HR, data.maxHeartRate)
         putDouble(DataLayerPaths.KEY_SIGNAL_QUALITY, data.signalQuality)
         putBoolean(DataLayerPaths.KEY_IS_ABNORMAL, data.isAbnormal)
         putInt(DataLayerPaths.KEY_AVG_QRS, data.avgQrs)
+        putInt(DataLayerPaths.KEY_AVG_P, data.avgP)
         putInt(DataLayerPaths.KEY_PR_INTERVAL, data.prInterval)
         putInt(DataLayerPaths.KEY_AVG_QT, data.avgQt)
         putInt(DataLayerPaths.KEY_AVG_QTC, data.avgQtc)
@@ -52,8 +55,9 @@ object MeasurementSerializer {
      */
     fun fromDataMap(dataMap: DataMap): EcgMeasurementTransfer {
         val diagnosisStr = dataMap.getString(DataLayerPaths.KEY_DIAGNOSIS, "")
-        val diagnosis = if (diagnosisStr.isBlank()) emptyList()
-        else diagnosisStr.split(",")
+        val diagnosis = if (diagnosisStr.isBlank()) emptyList() else diagnosisStr.split(",")
+        val possibleStr = dataMap.getString(DataLayerPaths.KEY_POSSIBLE_DIAGNOSES, "")
+        val possibleDiagnoses = if (possibleStr.isBlank()) emptyList() else possibleStr.split(",")
 
         val rawEcgBytes = dataMap.getByteArray(DataLayerPaths.KEY_RAW_ECG)
         val rawEcg = if (rawEcgBytes != null) EcgBinaryCodec.decode(rawEcgBytes) else emptyList()
@@ -64,12 +68,15 @@ object MeasurementSerializer {
         return EcgMeasurementTransfer(
             timestamp = dataMap.getLong(DataLayerPaths.KEY_TIMESTAMP),
             diagnosis = diagnosis,
+            possibleDiagnoses = possibleDiagnoses,
+            isReverse = dataMap.getBoolean(DataLayerPaths.KEY_IS_REVERSE, false),
             avgHeartRate = dataMap.getInt(DataLayerPaths.KEY_AVG_HR),
             minHeartRate = dataMap.getInt(DataLayerPaths.KEY_MIN_HR),
             maxHeartRate = dataMap.getInt(DataLayerPaths.KEY_MAX_HR),
             signalQuality = dataMap.getDouble(DataLayerPaths.KEY_SIGNAL_QUALITY),
             isAbnormal = dataMap.getBoolean(DataLayerPaths.KEY_IS_ABNORMAL),
             avgQrs = dataMap.getInt(DataLayerPaths.KEY_AVG_QRS),
+            avgP = dataMap.getInt(DataLayerPaths.KEY_AVG_P),
             prInterval = dataMap.getInt(DataLayerPaths.KEY_PR_INTERVAL),
             avgQt = dataMap.getInt(DataLayerPaths.KEY_AVG_QT),
             avgQtc = dataMap.getInt(DataLayerPaths.KEY_AVG_QTC),
@@ -90,15 +97,20 @@ object MeasurementSerializer {
     fun toJson(data: EcgMeasurementTransfer): String {
         val diagArray = JSONArray()
         data.diagnosis.forEach { diagArray.put(it) }
+        val possibleArray = JSONArray()
+        data.possibleDiagnoses.forEach { possibleArray.put(it) }
         return JSONObject().apply {
             put("timestamp", data.timestamp)
             put("diagnosis", diagArray)
+            put("possibleDiags", possibleArray)
+            put("isReverse", data.isReverse)
             put("avgHr", data.avgHeartRate)
             put("minHr", data.minHeartRate)
             put("maxHr", data.maxHeartRate)
             put("sq", data.signalQuality)
             put("ab", data.isAbnormal)
             put("qrs", data.avgQrs)
+            put("avgP", data.avgP)
             put("pr", data.prInterval)
             put("qt", data.avgQt)
             put("qtc", data.avgQtc)
@@ -116,16 +128,22 @@ object MeasurementSerializer {
         val diagArr = o.getJSONArray("diagnosis")
         val diagnosis = mutableListOf<String>()
         for (i in 0 until diagArr.length()) diagnosis.add(diagArr.getString(i))
+        val possibleArr = o.optJSONArray("possibleDiags") ?: JSONArray()
+        val possibleDiagnoses = mutableListOf<String>()
+        for (i in 0 until possibleArr.length()) possibleDiagnoses.add(possibleArr.getString(i))
 
         return EcgMeasurementTransfer(
             timestamp = o.getLong("timestamp"),
             diagnosis = diagnosis,
+            possibleDiagnoses = possibleDiagnoses,
+            isReverse = o.optBoolean("isReverse", false),
             avgHeartRate = o.optInt("avgHr"),
             minHeartRate = o.optInt("minHr"),
             maxHeartRate = o.optInt("maxHr"),
             signalQuality = o.optDouble("sq", 0.0),
             isAbnormal = o.optBoolean("ab"),
             avgQrs = o.optInt("qrs"),
+            avgP = o.optInt("avgP"),
             prInterval = o.optInt("pr"),
             avgQt = o.optInt("qt"),
             avgQtc = o.optInt("qtc"),

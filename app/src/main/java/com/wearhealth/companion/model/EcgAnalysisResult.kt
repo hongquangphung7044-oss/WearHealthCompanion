@@ -6,11 +6,14 @@ package com.wearhealth.companion.model
 data class EcgAnalysisResult(
     val isAbnormal: Boolean,
     val signalQuality: Double,   // sqGrade, 0~1, 建议 ≥0.7 才信任结果
-    val diagnosis: List<String>,  // 诊断标签列表，如 ["SN"]=窦性心律, ["AF"]=房颤
+    val diagnosis: List<String>,  // 确定诊断标签
+    val possibleDiagnoses: List<String> = emptyList(), // API 提示的可能诊断
+    val isReverse: Boolean = false, // API 检测到导联可能拿反
     val avgHeartRate: Int,        // 平均心率
     val minHeartRate: Int = 0,    // 最低心率（本地 R-R 间期计算，API 不返回）
     val maxHeartRate: Int = 0,    // 最高心率（本地 R-R 间期计算，API 不返回）
     val avgQrs: Int,              // QRS 宽度 ms
+    val avgP: Int = 0,             // 平均 P 波宽度 ms
     val prInterval: Int,          // PR 间期 ms
     val avgQt: Int,               // QT 间期 ms
     val avgQtc: Int,              // 校正 QT 间期 ms
@@ -29,8 +32,8 @@ fun diagnosisLabelToText(label: String): String = when (label) {
     "SNB" -> "窦性心动过缓"
     "AF" -> "心房颤动"
     "AFL" -> "心房扑动"
-    "VPB" -> "室性早搏"
-    "APB" -> "房性早搏"
+    "VPB", "PVC" -> "室性早搏"
+    "APB", "PAC" -> "房性早搏"
     "BBB" -> "束支传导阻滞"
     "AVB" -> "房室传导阻滞"
     "ST" -> "ST 段异常"
@@ -48,8 +51,8 @@ fun isDiagnosisSerious(label: String): Boolean = when (label) {
     "SNB" -> false       // 心动过缓，运动员常见
     "AF" -> true         // 房颤，需就医
     "AFL" -> true        // 房扑，需就医
-    "VPB" -> false       // 偶发室早通常无害
-    "APB" -> false       // 偶发房早通常无害
+    "VPB", "PVC" -> false       // 偶发室早通常无害
+    "APB", "PAC" -> false       // 偶发房早通常无害
     "BBB" -> true        // 传导阻滞，需进一步检查
     "AVB" -> true        // 房室传导阻滞，需就医
     "ST" -> true         // ST 异常，需就医
@@ -93,6 +96,12 @@ fun EcgAnalysisResult.toParamInfos(): List<EcgParamInfo> = buildList {
         add(EcgParamInfo(
             "心率范围", "$minHeartRate ~ $maxHeartRate bpm", "60-100",
             "测量期间最低到最高心率。波动大可能提示心律不齐"
+        ))
+    }
+    if (avgP > 0) {
+        add(EcgParamInfo(
+            "平均 P 波宽度", "$avgP ms", "API 输出",
+            "单导联 API 估算的平均 P 波宽度"
         ))
     }
     if (avgQrs > 0) {

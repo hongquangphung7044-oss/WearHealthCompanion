@@ -1,10 +1,15 @@
 package com.wearhealth.companion.mobile.ui
 
+import android.Manifest
 import android.app.Application
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import androidx.core.content.ContextCompat
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -12,8 +17,12 @@ import com.wearhealth.companion.mobile.data.AppDatabase
 import com.wearhealth.companion.mobile.data.EcgMeasurementEntity
 import com.wearhealth.companion.mobile.data.MeasurementRepository
 import com.wearhealth.companion.mobile.data.MobileApiKeyStore
+import com.wearhealth.companion.mobile.pdf.PdfExportResult
 import com.wearhealth.companion.mobile.pdf.PdfExporter
-import com.wearhealth.companion.mobile.service.BleSyncServer
+import com.wearhealth.companion.mobile.service.BleSyncForegroundService
+import com.wearhealth.companion.mobile.service.BleSyncPreferences
+import com.wearhealth.companion.mobile.service.BleSyncRuntime
+import com.wearhealth.companion.mobile.service.BleSyncStatusStore
 import com.wearhealth.companion.mobile.service.DataLayerManager
 import com.wearhealth.companion.mobile.service.PhoneWearableListenerService
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
@@ -22,8 +31,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 手机端主 ViewModel
@@ -37,14 +48,21 @@ import kotlinx.coroutines.launch
  */
 class MobileViewModel(app: Application) : AndroidViewModel(app) {
 
+    @Volatile
+    private var appVisible = true
+
     private val repository = MeasurementRepository(AppDatabase.get(app).ecgMeasurementDao())
     private val dataLayer = DataLayerManager(app)
-    private val bleSyncServer = BleSyncServer(app)
     private val mobileApiKeyStore = MobileApiKeyStore(app)
 
     /** Direct BLE receiver state. This remains useful when Google Data Layer is absent. */
-    val bleSyncStatus: StateFlow<String> = bleSyncServer.status
-    val bleConnected: StateFlow<Boolean> = bleSyncServer.connected
+    val bleSyncStatus: StateFlow<String> = BleSyncRuntime.status(app)
+    val bleConnected: StateFlow<Boolean> = BleSyncRuntime.connected(app)
+
+    private val _backgroundSyncEnabled = MutableStateFlow(BleSyncPreferences.isEnabled(app))
+    val backgroundSyncEnabled: StateFlow<Boolean> = _backgroundSyncEnabled.asStateFlow()
+
+    val backgroundSyncMessage: StateFlow<String?> = BleSyncStatusStore.message
 
     /** 全部测量记录（按时间倒序，Room 自动响应插入/删除） */
     val measurements: StateFlow<List<EcgMeasurementEntity>> =
@@ -62,9 +80,12 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     private val _syncResult = MutableStateFlow<String?>(null)
     val syncResult: StateFlow<String?> = _syncResult.asStateFlow()
 
-    /** PDF 导出结果（输出文件路径，失败时为 null） */
-    private val _pdfExportResult = MutableStateFlow<String?>(null)
-    val pdfExportResult: StateFlow<String?> = _pdfExportResult.asStateFlow()
+    /** PDF export result uses a content URI and a user-visible shared-storage label. */
+    private val _pdfExportResult = MutableStateFlow<PdfExportResult?>(null)
+    val pdfExportResult: StateFlow<PdfExportResult?> = _pdfExportResult.asStateFlow()
+
+    private val _pdfExportError = MutableStateFlow<String?>(null)
+    val pdfExportError: StateFlow<String?> = _pdfExportError.asStateFlow()
 
     /** 导出进行中标志 */
     private val _exporting = MutableStateFlow(false)
@@ -90,16 +111,79 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         refreshWatchConnection()
     }
 
-    /** Start/retry the GMS-free BLE receiver. Safe to call from lifecycle callbacks. */
-    fun startBleSync() = bleSyncServer.start()
-
-    /** Really restart the GATT server and advertiser instead of no-oping when already active. */
-    fun restartBleSync() {
-        viewModelScope.launch {
-            bleSyncServer.stop()
-            delay(300)
-            bleSyncServer.start()
+    /** Start the foreground service when enabled; otherwise listen only while the app is visible. */
+    fun startBleSync() {
+        val app = getApplication<Application>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            listOf(Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT).any {
+                ContextCompat.checkSelfPermission(app, it) != PackageManager.PERMISSION_GRANTED
+            }
+        ) {
+            BleSyncStatusStore.setMessage("请先授予附近设备权限以启动 BLE 同步")
+            return
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            BleSyncPreferences.isEnabled(app) &&
+            ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            BleSyncStatusStore.setMessage("请授予通知权限以启动后台 BLE 同步")
+            return
+        }
+        if (BleSyncPreferences.isEnabled(app)) {
+            try {
+                ContextCompat.startForegroundService(app, Intent(app, BleSyncForegroundService::class.java))
+            } catch (error: Exception) {
+                BleSyncStatusStore.setMessage("后台同步启动失败：${error.message ?: "系统限制"}")
+            }
+        } else {
+            BleSyncRuntime.start(app)
+        }
+    }
+
+    fun restartBleSync() = BleSyncRuntime.restart(getApplication())
+
+    fun setBackgroundSyncEnabled(enabled: Boolean, notificationPermissionGranted: Boolean = true) {
+        val app = getApplication<Application>()
+        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationPermissionGranted) {
+            BleSyncPreferences.setEnabled(app, false)
+            _backgroundSyncEnabled.value = false
+            BleSyncStatusStore.setMessage("需要通知权限才能显示后台同步常驻通知；当前仅在 App 前台监听")
+            BleSyncRuntime.start(app)
+            return
+        }
+        BleSyncPreferences.setEnabled(app, enabled)
+        _backgroundSyncEnabled.value = enabled
+        if (enabled) {
+            BleSyncStatusStore.setMessage("后台 BLE 同步已开启；将显示常驻通知")
+            startBleSync()
+        } else {
+            app.stopService(Intent(app, BleSyncForegroundService::class.java))
+            BleSyncRuntime.stop(app)
+            BleSyncStatusStore.setMessage("后台 BLE 同步已关闭；打开 App 时仍可手工同步")
+            viewModelScope.launch {
+                delay(350L)
+                if (appVisible && !BleSyncPreferences.isEnabled(app)) BleSyncRuntime.start(app)
+            }
+        }
+    }
+
+    fun onBluetoothPermissionDenied() {
+        val app = getApplication<Application>()
+        BleSyncPreferences.setEnabled(app, false)
+        _backgroundSyncEnabled.value = false
+        BleSyncRuntime.stop(app)
+        BleSyncStatusStore.setMessage("附近设备权限未授予，后台 BLE 同步已关闭")
+    }
+
+    fun onAppForegrounded() {
+        appVisible = true
+        startBleSync()
+    }
+
+    fun onAppBackgrounded() {
+        appVisible = false
+        val app = getApplication<Application>()
+        if (!BleSyncPreferences.isEnabled(app)) BleSyncRuntime.stop(app)
     }
 
     /**
@@ -164,17 +248,24 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
      * 导出 PDF 报告
      * @param transfer 已加载的完整测量数据
      */
-    fun exportPdf(transfer: EcgMeasurementTransfer) {
+    fun exportPdf(transfer: EcgMeasurementTransfer, destination: Uri? = null) {
         val context = getApplication<Application>()
         viewModelScope.launch {
             _exporting.value = true
             _pdfExportResult.value = null
+            _pdfExportError.value = null
             try {
-                val path = PdfExporter.export(context, transfer)
-                _pdfExportResult.value = path
+                _pdfExportResult.value = withContext(Dispatchers.IO) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        PdfExporter.exportToDownloads(context, transfer)
+                    } else {
+                        requireNotNull(destination) { "请先选择 PDF 保存位置" }
+                        PdfExporter.exportToUri(context, transfer, destination)
+                    }
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "导出 PDF 失败: ${e.message}", e)
-                _pdfExportResult.value = null
+                Log.e(TAG, "导出 PDF 失败", e)
+                _pdfExportError.value = "导出失败：${e.message ?: "无法写入所选位置"}"
             } finally {
                 _exporting.value = false
             }
@@ -186,10 +277,13 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         _apiKeySendResult.value = null
         _syncResult.value = null
         _pdfExportResult.value = null
+        _pdfExportError.value = null
     }
 
     override fun onCleared() {
-        bleSyncServer.stop()
+        if (!BleSyncPreferences.isEnabled(getApplication())) {
+            BleSyncRuntime.stop(getApplication())
+        }
         super.onCleared()
         getApplication<Application>().unregisterReceiver(updateReceiver)
     }

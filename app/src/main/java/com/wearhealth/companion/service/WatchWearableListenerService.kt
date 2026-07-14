@@ -80,10 +80,13 @@ class WatchWearableListenerService : WearableListenerService() {
                     Log.w(TAG, "收到无效 ECG ACK: $path")
                     return
                 }
-                // This is the only code path that marks a record as sent.
-                historyRepo.markSynced(timestamp)
-                syncEvents.tryEmit("手机已确认保存 ECG")
-                Log.i(TAG, "手机已确认保存记录: $timestamp")
+                // Mark only an exact timestamp that still exists in local history.
+                if (historyRepo.markSynced(timestamp)) {
+                    syncEvents.tryEmit("手机已确认保存 ECG")
+                    Log.i(TAG, "手机已确认保存记录: $timestamp")
+                } else {
+                    Log.w(TAG, "忽略不匹配本地记录的 ECG ACK")
+                }
             }
         }
     }
@@ -110,12 +113,15 @@ class WatchWearableListenerService : WearableListenerService() {
                 val transfer = EcgMeasurementTransfer(
                     timestamp = item.timestamp,
                     diagnosis = item.diagnosis,
+                    possibleDiagnoses = item.possibleDiagnoses,
+                    isReverse = item.isReverse,
                     avgHeartRate = item.avgHeartRate,
                     minHeartRate = item.minHeartRate,
                     maxHeartRate = item.maxHeartRate,
                     signalQuality = item.signalQuality,
                     isAbnormal = item.isAbnormal,
                     avgQrs = item.avgQrs,
+                    avgP = item.avgP,
                     prInterval = item.prInterval,
                     avgQt = item.avgQt,
                     avgQtc = item.avgQtc,

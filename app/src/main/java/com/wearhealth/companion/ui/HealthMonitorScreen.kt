@@ -89,6 +89,8 @@ fun HealthMonitorScreen(
         if (syncMsg != null) {
             item {
                 val msgColor = if (syncMsg.startsWith("传送失败") ||
+                    syncMsg.startsWith("BLE 传送失败") ||
+                    syncMsg.startsWith("自动传输失败") ||
                     syncMsg.startsWith("API Key 不能为空"))
                     Color(0xFFEF5350) else Color(0xFF64B5F6)
                 Text(
@@ -352,6 +354,14 @@ fun HealthMonitorScreen(
                     enabled = canMeasure && uiState.sdkAvailable,
                 ) { Text(buttonText) }
             }
+            item {
+                Button(onClick = { viewModel.setAutoSyncEnabled(!uiState.autoSyncEnabled) }) {
+                    Text(
+                        if (uiState.autoSyncEnabled) "自动传输：已开启" else "自动传输：已关闭",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
             // 历史记录入口
             item {
                 Button(onClick = { viewModel.showHistory() }) {
@@ -466,6 +476,18 @@ private fun EcgResultCard(result: com.wearhealth.companion.model.EcgAnalysisResu
         if (conflict != null) {
             Text(
                 text = "⚠️ $conflict",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFFF9800),
+                textAlign = TextAlign.Center,
+            )
+        }
+
+        if (result.isReverse) {
+            Text("导联可能拿反，建议重测", style = MaterialTheme.typography.bodySmall, color = Color(0xFFFF9800))
+        }
+        if (result.possibleDiagnoses.isNotEmpty()) {
+            Text(
+                "可能诊断: " + result.possibleDiagnoses.joinToString("、") { diagnosisLabelToText(it) },
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFFFF9800),
                 textAlign = TextAlign.Center,
@@ -725,7 +747,7 @@ private fun ApiKeyInputCard(
             Text(if (syncing) "正在查找手机…" else "从手机 BLE 获取", style = MaterialTheme.typography.bodySmall)
         }
         Text(
-            text = "请先在手机 ECG 同步器中保存 Key，并保持手机 App 前台",
+            text = "请先在手机 ECG 同步器中保存 Key，并开启后台同步或保持 App 前台",
             style = MaterialTheme.typography.bodySmall,
             color = Color(0xFF78909C),
             textAlign = TextAlign.Center,

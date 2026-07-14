@@ -25,17 +25,20 @@ class EcgHistoryRepository(context: Context) {
      * @param result ECG 分析结果
      * @param rawEcgData 完整原始波形（不降采样，约 15000 点，用于传送到手机）
      */
-    fun save(result: EcgAnalysisResult, rawEcgData: List<Int> = emptyList()) {
+    fun save(result: EcgAnalysisResult, rawEcgData: List<Int> = emptyList()): HistoryItem {
         val list = getAll().toMutableList()
-        list.add(0, HistoryItem(
+        val saved = HistoryItem(
             timestamp = System.currentTimeMillis(),
             diagnosis = result.diagnosis,
+            possibleDiagnoses = result.possibleDiagnoses,
+            isReverse = result.isReverse,
             avgHeartRate = result.avgHeartRate,
             minHeartRate = result.minHeartRate,
             maxHeartRate = result.maxHeartRate,
             signalQuality = result.signalQuality,
             isAbnormal = result.isAbnormal,
             avgQrs = result.avgQrs,
+            avgP = result.avgP,
             prInterval = result.prInterval,
             avgQt = result.avgQt,
             avgQtc = result.avgQtc,
@@ -44,10 +47,12 @@ class EcgHistoryRepository(context: Context) {
             ecgSamples = result.ecgSamples,
             rawEcgData = rawEcgData,
             syncedToPhone = false,
-        ))
+        )
+        list.add(0, saved)
         // 最多保留 50 条
         val trimmed = if (list.size > 50) list.take(50) else list
         prefs.edit().putString(KEY_HISTORY, toJson(trimmed)).apply()
+        return saved
     }
 
     fun getAll(): List<HistoryItem> {
@@ -59,11 +64,14 @@ class EcgHistoryRepository(context: Context) {
     fun getUnsynced(): List<HistoryItem> = getAll().filterNot { it.syncedToPhone }
 
     /** 标记指定时间戳的记录为已同步到手机 */
-    fun markSynced(timestamp: Long) {
-        val list = getAll().map { item ->
+    fun markSynced(timestamp: Long): Boolean {
+        val current = getAll()
+        if (current.none { it.timestamp == timestamp }) return false
+        val list = current.map { item ->
             if (item.timestamp == timestamp) item.copy(syncedToPhone = true) else item
         }
         prefs.edit().putString(KEY_HISTORY, toJson(list)).apply()
+        return true
     }
 
     fun delete(timestamp: Long) {
@@ -87,12 +95,15 @@ class EcgHistoryRepository(context: Context) {
             arr.put(JSONObject().apply {
                 put("ts", item.timestamp)
                 put("diag", diag)
+                put("possible", JSONArray().apply { item.possibleDiagnoses.forEach { put(it) } })
+                put("reverse", item.isReverse)
                 put("hr", item.avgHeartRate)
                 put("minhr", item.minHeartRate)
                 put("maxhr", item.maxHeartRate)
                 put("sq", item.signalQuality)
                 put("ab", item.isAbnormal)
                 put("qrs", item.avgQrs)
+                put("avgP", item.avgP)
                 put("pr", item.prInterval)
                 put("qt", item.avgQt)
                 put("qtc", item.avgQtc)
@@ -114,6 +125,9 @@ class EcgHistoryRepository(context: Context) {
             val diagArr = o.getJSONArray("diag")
             val diag = mutableListOf<String>()
             for (j in 0 until diagArr.length()) diag.add(diagArr.getString(j))
+            val possibleArr = o.optJSONArray("possible") ?: JSONArray()
+            val possible = mutableListOf<String>()
+            for (j in 0 until possibleArr.length()) possible.add(possibleArr.getString(j))
             val samplesArr = o.optJSONArray("samples") ?: JSONArray()
             val samples = mutableListOf<Int>()
             for (j in 0 until samplesArr.length()) samples.add(samplesArr.getInt(j))
@@ -124,12 +138,15 @@ class EcgHistoryRepository(context: Context) {
             list.add(HistoryItem(
                 timestamp = o.getLong("ts"),
                 diagnosis = diag,
+                possibleDiagnoses = possible,
+                isReverse = o.optBoolean("reverse", false),
                 avgHeartRate = o.optInt("hr"),
                 minHeartRate = o.optInt("minhr"),
                 maxHeartRate = o.optInt("maxhr"),
                 signalQuality = o.optDouble("sq", 0.0),
                 isAbnormal = o.optBoolean("ab"),
                 avgQrs = o.optInt("qrs"),
+                avgP = o.optInt("avgP"),
                 prInterval = o.optInt("pr"),
                 avgQt = o.optInt("qt"),
                 avgQtc = o.optInt("qtc"),
@@ -157,12 +174,15 @@ class EcgHistoryRepository(context: Context) {
 data class HistoryItem(
     val timestamp: Long,
     val diagnosis: List<String>,
+    val possibleDiagnoses: List<String> = emptyList(),
+    val isReverse: Boolean = false,
     val avgHeartRate: Int,
     val minHeartRate: Int = 0,
     val maxHeartRate: Int = 0,
     val signalQuality: Double,
     val isAbnormal: Boolean,
     val avgQrs: Int,
+    val avgP: Int = 0,
     val prInterval: Int,
     val avgQt: Int,
     val avgQtc: Int,

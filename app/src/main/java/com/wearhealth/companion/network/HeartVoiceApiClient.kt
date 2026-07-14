@@ -67,9 +67,9 @@ class HeartVoiceApiClient(
                 val responseBody = response.body?.string() ?: ""
 
                 if (!response.isSuccessful) {
-                    Log.e(TAG, "API 请求失败: HTTP ${response.code}, $responseBody")
+                    Log.e(TAG, "API 请求失败: HTTP ${response.code}")
                     return@withContext Result.failure(
-                        RuntimeException("HTTP ${response.code}: $responseBody")
+                        RuntimeException("HeartVoice 请求失败（HTTP ${response.code}）")
                     )
                 }
 
@@ -92,12 +92,20 @@ class HeartVoiceApiClient(
                     }
                 }
 
+                val possibleDiagnoses = mutableListOf<String>()
+                data.optJSONArray("possibleDiags")?.let { possible ->
+                    for (i in 0 until possible.length()) possibleDiagnoses.add(possible.getString(i))
+                }
+
                 val result = EcgAnalysisResult(
                     isAbnormal = data.optBoolean("isAbnormal", false),
                     signalQuality = data.optString("sqGrade", "0").toDoubleOrNull() ?: 0.0,
                     diagnosis = diagnosisList,
+                    possibleDiagnoses = possibleDiagnoses,
+                    isReverse = data.optBoolean("isReverse", false),
                     avgHeartRate = data.optInt("avgHr", 0),
                     avgQrs = data.optInt("avgQrs", 0),
+                    avgP = data.optInt("avgP", 0),
                     prInterval = data.optInt("prInterval", 0),
                     avgQt = data.optInt("avgQt", 0),
                     avgQtc = data.optInt("avgQtc", 0),

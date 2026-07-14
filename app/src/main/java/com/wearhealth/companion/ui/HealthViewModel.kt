@@ -12,6 +12,7 @@ import com.wearhealth.companion.ble.BleApiKeyFetcher
 import com.wearhealth.companion.ble.BleEcgUploader
 import com.wearhealth.companion.ble.BleUploadResult
 import com.wearhealth.companion.data.ApiKeyManager
+import com.wearhealth.companion.data.AutoSyncPreferences
 import com.wearhealth.companion.data.EcgHistoryRepository
 import com.wearhealth.companion.data.HistoryItem
 import com.wearhealth.companion.model.EcgAnalysisResult
@@ -43,6 +44,7 @@ data class EcgUiState(
     val historyDetail: HistoryItem? = null,      // 点击进入的历史详情
     val syncingToPhone: Boolean = false,         // 是否正在传送到手机
     val syncMessage: String? = null,             // 传送状态消息
+    val autoSyncEnabled: Boolean = true,           // 分析并保存后自动传送
 )
 
 class HealthViewModel(app: Application) : AndroidViewModel(app) {
@@ -51,6 +53,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     private val apiKeyManager = ApiKeyManager(app.applicationContext)
     private var heartVoiceApi = HeartVoiceApiClient(apiKeyManager.getApiKey())
     private val historyRepo = EcgHistoryRepository(app.applicationContext)
+    private val autoSyncPreferences = AutoSyncPreferences(app.applicationContext)
     private val bleUploader = BleEcgUploader(app.applicationContext)
     private val bleApiKeyFetcher = BleApiKeyFetcher(app.applicationContext)
 
@@ -61,6 +64,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(
             sdkAvailable = ecgCollector.checkSdkAvailable(),
             apiKeyConfigured = apiKeyManager.isConfigured(),
+            autoSyncEnabled = autoSyncPreferences.isEnabled(),
         )
         // 监听 API Key 变更（手机端下发或本地保存后自动刷新）
         viewModelScope.launch {
@@ -140,17 +144,23 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                     minHeartRate = minHr,
                     maxHeartRate = maxHr,
                     diagnosis = filteredDiagnosis,
-                    isAbnormal = filteredDiagnosis.any {
-                        it != "SN" && it != "SNT" && it != "SNB"
-                    },
+                    // Keep the API isAbnormal field intact; local WPW label filtering is separate.
+                    isAbnormal = analysis.isAbnormal,
                 )
                 // 保存到历史记录（同时保存完整原始波形 rawEcgData，不降采样）
-                historyRepo.save(finalResult, rawEcgData = ecgData)
+                val savedItem = historyRepo.save(finalResult, rawEcgData = ecgData)
                 _uiState.value = _uiState.value.copy(
                     ecgState = EcgCollectionState.Done(finalResult),
                     ecgResult = finalResult,
                     liveSamples = waveform,
+                    history = historyRepo.getAll(),
+                    syncMessage = if (autoSyncPreferences.isEnabled()) {
+                        "分析完成并已保存；正在自动传送到手机…"
+                    } else null,
                 )
+                if (autoSyncPreferences.isEnabled()) {
+                    syncToPhone(savedItem, automatic = true)
+                }
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
                     ecgState = EcgCollectionState.Error(error.message ?: "API 分析失败")
@@ -230,9 +240,14 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
      * synchronizer. Both transports require a persistence ACK before [HistoryItem.syncedToPhone]
      * can become true.
      */
-    fun syncToPhone(item: HistoryItem) {
+    fun syncToPhone(item: HistoryItem) = syncToPhone(item, automatic = false)
+
+    private fun syncToPhone(item: HistoryItem, automatic: Boolean) {
         if (_uiState.value.syncingToPhone) return
-        _uiState.value = _uiState.value.copy(syncingToPhone = true, syncMessage = "正在检测手机同步通道…")
+        _uiState.value = _uiState.value.copy(
+            syncingToPhone = true,
+            syncMessage = if (automatic) "分析完成并已保存；正在自动检测手机同步通道…" else "正在检测手机同步通道…",
+        )
 
         viewModelScope.launch {
             val transfer = item.toTransfer()
@@ -266,7 +281,9 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                     syncMessage = "Data Layer 已提交；最多等待 8 秒确认手机 Room 已保存…",
                 )
                 if (waitForPersistenceAck(item.timestamp)) {
-                    refreshHistoryAfterSync("手机已通过 Data Layer 保存 ECG ✓")
+                    refreshHistoryAfterSync(
+                        if (automatic) "已自动保存到手机 ✓" else "手机已通过 Data Layer 保存 ECG ✓",
+                    )
                     return@launch
                 }
                 // putDataItem() only confirms the local Google cache write. China ROMs can expose
@@ -286,12 +303,18 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                     when (result) {
                         BleUploadResult.Success -> {
                             historyRepo.markSynced(item.timestamp)
-                            refreshHistoryAfterSync("手机已通过 BLE 保存 ECG ✓")
+                            refreshHistoryAfterSync(
+                                if (automatic) "已自动保存到手机 ✓" else "手机已通过 BLE 保存 ECG ✓",
+                            )
                         }
                         is BleUploadResult.Failure -> {
                             _uiState.value = _uiState.value.copy(
                                 syncingToPhone = false,
-                                syncMessage = "BLE 传送失败：${result.message}",
+                                syncMessage = if (automatic) {
+                                    "自动传输失败，可在历史详情重试：${result.message}"
+                                } else {
+                                    "BLE 传送失败：${result.message}"
+                                },
                             )
                         }
                     }
@@ -315,12 +338,15 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     private fun HistoryItem.toTransfer() = EcgMeasurementTransfer(
         timestamp = timestamp,
         diagnosis = diagnosis,
+        possibleDiagnoses = possibleDiagnoses,
+        isReverse = isReverse,
         avgHeartRate = avgHeartRate,
         minHeartRate = minHeartRate,
         maxHeartRate = maxHeartRate,
         signalQuality = signalQuality,
         isAbnormal = isAbnormal,
         avgQrs = avgQrs,
+        avgP = avgP,
         prInterval = prInterval,
         avgQt = avgQt,
         avgQtc = avgQtc,
@@ -345,8 +371,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Data Layer initiated batch sync is retained for GMS-capable environments. Direct BLE is
-     * deliberately user-initiated one record at a time so the phone app can stay foreground and
-     * advertise reliably on China ROMs.
+     * remains a one-record-at-a-time BLE operation; the phone foreground service keeps the
+     * advertiser available while background synchronization is enabled.
      */
     fun syncAllUnsynced() {
         val unsynced = historyRepo.getUnsynced()
@@ -368,12 +394,15 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                     val transfer = EcgMeasurementTransfer(
                         timestamp = item.timestamp,
                         diagnosis = item.diagnosis,
+                        possibleDiagnoses = item.possibleDiagnoses,
+                        isReverse = item.isReverse,
                         avgHeartRate = item.avgHeartRate,
                         minHeartRate = item.minHeartRate,
                         maxHeartRate = item.maxHeartRate,
                         signalQuality = item.signalQuality,
                         isAbnormal = item.isAbnormal,
                         avgQrs = item.avgQrs,
+                        avgP = item.avgP,
                         prInterval = item.prInterval,
                         avgQt = item.avgQt,
                         avgQtc = item.avgQtc,
@@ -410,6 +439,14 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 },
             )
         }
+    }
+
+    fun setAutoSyncEnabled(enabled: Boolean) {
+        autoSyncPreferences.setEnabled(enabled)
+        _uiState.value = _uiState.value.copy(
+            autoSyncEnabled = enabled,
+            syncMessage = if (enabled) "测量完成后自动传输已开启" else "测量完成后自动传输已关闭",
+        )
     }
 
     /** 清除同步状态消息 */

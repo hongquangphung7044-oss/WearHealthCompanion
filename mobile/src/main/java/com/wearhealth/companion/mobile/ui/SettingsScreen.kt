@@ -23,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -54,6 +55,7 @@ import androidx.compose.ui.unit.dp
 fun SettingsScreen(
     viewModel: MobileViewModel,
     onBack: () -> Unit,
+    onSetBackgroundSync: (Boolean) -> Unit,
 ) {
     var apiKey by remember { mutableStateOf("") }
     val watchName by viewModel.connectedWatchName.collectAsState()
@@ -61,6 +63,8 @@ fun SettingsScreen(
     val bleConnected by viewModel.bleConnected.collectAsState()
     val apiKeyResult by viewModel.apiKeySendResult.collectAsState()
     val syncResult by viewModel.syncResult.collectAsState()
+    val backgroundSyncEnabled by viewModel.backgroundSyncEnabled.collectAsState()
+    val backgroundSyncMessage by viewModel.backgroundSyncMessage.collectAsState()
 
     Scaffold(
         topBar = {
@@ -138,6 +142,39 @@ fun SettingsScreen(
                 }
             }
 
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("后台 BLE 同步", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "开启后手机会显示常驻通知，App 退到后台时仍等待手表主动连接。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = backgroundSyncEnabled,
+                            onCheckedChange = onSetBackgroundSync,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "三星电池策略仍可能限制后台运行；若同步不稳定，请允许后台活动或取消电池优化。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    backgroundSyncMessage?.let {
+                        Spacer(Modifier.height(4.dp))
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+
             // ===== API Key 输入与发送 =====
             Text(
                 text = "HeartVoice API Key",
@@ -201,7 +238,7 @@ fun SettingsScreen(
                     Spacer(Modifier.height(8.dp))
                     Text(
                         text = "• BLE 直连支持手机向已配对手表提供 API Key，以及手表向手机传送 ECG\n" +
-                                "• 手机保存 Key 后，手表在缺 Key 页面点“从手机 BLE 获取”\n" +
+                                "• 手机保存 Key 后，手表可点“从手机 BLE 获取/更新”\n" +
                                 "• 手机端不调用 ECG 分析 API；手表获取并保存 Key 后独立完成分析",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

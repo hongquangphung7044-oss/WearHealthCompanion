@@ -33,12 +33,15 @@ object DataLayerPaths {
     // ECG 测量数据字段
     const val KEY_TIMESTAMP = "timestamp"
     const val KEY_DIAGNOSIS = "diagnosis"        // 逗号分隔的诊断标签
+    const val KEY_POSSIBLE_DIAGNOSES = "possibleDiags"
+    const val KEY_IS_REVERSE = "isReverse"
     const val KEY_AVG_HR = "avgHr"
     const val KEY_MIN_HR = "minHr"
     const val KEY_MAX_HR = "maxHr"
     const val KEY_SIGNAL_QUALITY = "sq"
     const val KEY_IS_ABNORMAL = "ab"
     const val KEY_AVG_QRS = "qrs"
+    const val KEY_AVG_P = "avgP"
     const val KEY_PR_INTERVAL = "pr"
     const val KEY_AVG_QT = "qt"
     const val KEY_AVG_QTC = "qtc"

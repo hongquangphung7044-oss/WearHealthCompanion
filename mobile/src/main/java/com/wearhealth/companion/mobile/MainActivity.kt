@@ -1,6 +1,7 @@
 package com.wearhealth.companion.mobile
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -15,24 +16,41 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.wearhealth.companion.mobile.service.BleSyncPreferences
 import com.wearhealth.companion.mobile.ui.HistoryListScreen
 import com.wearhealth.companion.mobile.ui.MeasurementDetailScreen
 import com.wearhealth.companion.mobile.ui.MobileViewModel
 import com.wearhealth.companion.mobile.ui.SettingsScreen
 
-/** Phone companion entry point. BLE advertising is active while this process is alive. */
+/** Phone companion entry point; the foreground service owns background BLE listening. */
 class MainActivity : ComponentActivity() {
-
     private val viewModel by lazy { MobileViewModel(application) }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            viewModel.setBackgroundSyncEnabled(enabled = true, notificationPermissionGranted = true)
+        } else {
+            viewModel.setBackgroundSyncEnabled(enabled = true, notificationPermissionGranted = false)
+        }
+    }
+
     private val bluetoothPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
-        viewModel.startBleSync()
+    ) { grants ->
+        val granted = grants.values.all { it }
+        if (granted) {
+            requestNotificationPermissionIfNeeded()
+        } else {
+            viewModel.onBluetoothPermissionDenied()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,31 +59,57 @@ class MainActivity : ComponentActivity() {
         requestBluetoothPermissions()
         setContent {
             MobileAppTheme {
-                MobileNavGraph(viewModel = viewModel)
+                MobileNavGraph(
+                    viewModel = viewModel,
+                    onSetBackgroundSync = ::setBackgroundSyncFromUi,
+                )
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        // Data Layer remains an optional transport. BLE is the GMS-free fallback for China ROMs.
+        viewModel.onAppForegrounded()
         viewModel.refreshWatchConnection()
-        viewModel.startBleSync()
+    }
+
+    override fun onStop() {
+        viewModel.onAppBackgrounded()
+        super.onStop()
     }
 
     private fun requestBluetoothPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             bluetoothPermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.BLUETOOTH_ADVERTISE,
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                ),
+                arrayOf(Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT),
             )
+        } else {
+            requestNotificationPermissionIfNeeded()
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (BleSyncPreferences.isEnabled(this) &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            viewModel.startBleSync()
+        }
+    }
+
+    private fun setBackgroundSyncFromUi(enabled: Boolean) {
+        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            viewModel.setBackgroundSyncEnabled(enabled, notificationPermissionGranted = true)
         }
     }
 }
 
-/** App theme: Material 3 + dynamic colors where available. */
 @Composable
 private fun MobileAppTheme(content: @Composable () -> Unit) {
     val context = LocalContext.current
@@ -80,7 +124,10 @@ private fun MobileAppTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun MobileNavGraph(viewModel: MobileViewModel) {
+private fun MobileNavGraph(
+    viewModel: MobileViewModel,
+    onSetBackgroundSync: (Boolean) -> Unit,
+) {
     val navController = rememberNavController()
     NavHost(navController = navController, startDestination = "history") {
         composable("history") {
@@ -101,7 +148,11 @@ private fun MobileNavGraph(viewModel: MobileViewModel) {
             )
         }
         composable("settings") {
-            SettingsScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+            SettingsScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                onSetBackgroundSync = onSetBackgroundSync,
+            )
         }
     }
 }

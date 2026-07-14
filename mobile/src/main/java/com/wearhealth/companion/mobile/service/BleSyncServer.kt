@@ -24,11 +24,13 @@ import com.wearhealth.companion.mobile.data.MeasurementRepository
 import com.wearhealth.companion.mobile.data.MobileApiKeyStore
 import com.wearhealth.companion.shared.BleMeasurementCodec
 import com.wearhealth.companion.shared.BleSyncProtocol
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
@@ -56,6 +58,7 @@ class BleSyncServer(private val context: Context) {
     private var pendingAckSuccess = false
     private var lastOutcome: String? = null
     private var transfer: IncomingTransfer? = null
+    private var persistenceJob: Job? = null
 
     private val _status = MutableStateFlow("BLE 监听未启动")
     val status: StateFlow<String> = _status.asStateFlow()
@@ -156,6 +159,8 @@ class BleSyncServer(private val context: Context) {
         pendingAckSuccess = false
         lastOutcome = null
         transfer = null
+        persistenceJob?.cancel()
+        persistenceJob = null
         _connected.value = false
         _status.value = "BLE 监听已停止；点“重新连接”恢复等待"
     }
@@ -384,13 +389,16 @@ class BleSyncServer(private val context: Context) {
         if (BleSyncProtocol.crc32(payload) != current.expectedCrc) return false
         transfer = null // Reject overlapping END/chunk frames while persistence is in progress.
         _status.value = "正在保存 ECG 数据…"
-        scope.launch {
+        persistenceJob?.cancel()
+        persistenceJob = scope.launch {
             val device = activeDevice
             val timestamp = try {
                 val measurement = BleMeasurementCodec.decode(payload)
                 MeasurementRepository(AppDatabase.get(context).ecgMeasurementDao()).upsertByTimestamp(measurement)
                 PhoneWearableListenerService.notifyMeasurementUpdated(context)
                 measurement.timestamp
+            } catch (_: CancellationException) {
+                return@launch
             } catch (e: Exception) {
                 Log.e(TAG, "BLE ECG transfer failed before ACK", e)
                 null
@@ -405,6 +413,7 @@ class BleSyncServer(private val context: Context) {
                     _status.value = "保存 ECG 失败且错误 ACK 未能发出；请在手表重试"
                 }
             }
+            persistenceJob = null
         }
         return true
     }

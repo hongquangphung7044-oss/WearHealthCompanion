@@ -1,5 +1,6 @@
 package com.wearhealth.companion.mobile.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -27,6 +28,12 @@ data class EcgMeasurementEntity(
     val timestamp: Long,
     /** 诊断标签（逗号分隔），如 "SN,VPB" */
     val diagnosis: String,
+    /** API 返回的可能诊断标签（逗号分隔） */
+    @ColumnInfo(defaultValue = "''")
+    val possibleDiagnoses: String,
+    /** API 检测到导联可能拿反 */
+    @ColumnInfo(defaultValue = "0")
+    val isReverse: Boolean,
     /** 平均心率 bpm */
     val avgHeartRate: Int,
     /** 最低心率 bpm */
@@ -39,6 +46,9 @@ data class EcgMeasurementEntity(
     val isAbnormal: Boolean,
     /** QRS 宽度 ms */
     val avgQrs: Int,
+    /** 平均 P 波宽度 ms */
+    @ColumnInfo(defaultValue = "0")
+    val avgP: Int,
     /** PR 间期 ms */
     val prInterval: Int,
     /** QT 间期 ms */
@@ -65,12 +75,15 @@ data class EcgMeasurementEntity(
         return id == other.id &&
                 timestamp == other.timestamp &&
                 diagnosis == other.diagnosis &&
+                possibleDiagnoses == other.possibleDiagnoses &&
+                isReverse == other.isReverse &&
                 avgHeartRate == other.avgHeartRate &&
                 minHeartRate == other.minHeartRate &&
                 maxHeartRate == other.maxHeartRate &&
                 signalQuality == other.signalQuality &&
                 isAbnormal == other.isAbnormal &&
                 avgQrs == other.avgQrs &&
+                avgP == other.avgP &&
                 prInterval == other.prInterval &&
                 avgQt == other.avgQt &&
                 avgQtc == other.avgQtc &&
@@ -86,12 +99,15 @@ data class EcgMeasurementEntity(
         var result = id.hashCode()
         result = 31 * result + timestamp.hashCode()
         result = 31 * result + diagnosis.hashCode()
+        result = 31 * result + possibleDiagnoses.hashCode()
+        result = 31 * result + isReverse.hashCode()
         result = 31 * result + avgHeartRate
         result = 31 * result + minHeartRate
         result = 31 * result + maxHeartRate
         result = 31 * result + signalQuality.hashCode()
         result = 31 * result + isAbnormal.hashCode()
         result = 31 * result + avgQrs
+        result = 31 * result + avgP
         result = 31 * result + prInterval
         result = 31 * result + avgQt
         result = 31 * result + avgQtc

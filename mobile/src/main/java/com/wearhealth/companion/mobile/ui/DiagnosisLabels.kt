@@ -14,8 +14,8 @@ fun diagnosisLabelToText(label: String): String = when (label) {
     "SNB" -> "窦性心动过缓"
     "AF" -> "心房颤动"
     "AFL" -> "心房扑动"
-    "VPB" -> "室性早搏"
-    "APB" -> "房性早搏"
+    "VPB", "PVC" -> "室性早搏"
+    "APB", "PAC" -> "房性早搏"
     "BBB" -> "束支传导阻滞"
     "AVB" -> "房室传导阻滞"
     "ST" -> "ST 段异常"
@@ -31,8 +31,8 @@ fun isDiagnosisSerious(label: String): Boolean = when (label) {
     "SNB" -> false       // 心动过缓，运动员常见
     "AF" -> true         // 房颤，需就医
     "AFL" -> true        // 房扑，需就医
-    "VPB" -> false       // 偶发室早通常无害
-    "APB" -> false       // 偶发房早通常无害
+    "VPB", "PVC" -> false       // 偶发室早通常无害
+    "APB", "PAC" -> false       // 偶发房早通常无害
     "BBB" -> true        // 传导阻滞，需进一步检查
     "AVB" -> true        // 房室传导阻滞，需就医
     "ST" -> true         // ST 异常，需就医

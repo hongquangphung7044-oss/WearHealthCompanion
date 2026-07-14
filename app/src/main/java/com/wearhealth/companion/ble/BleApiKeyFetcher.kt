@@ -279,7 +279,7 @@ class BleApiKeyFetcher(private val context: Context) {
             observedResults > 0 ->
                 "已直连检查 $probedBondedCandidates 个系统配对设备；手表扫描正常（看到 $observedResults 个周边广播），但未看到手机同步器"
             probedBondedCandidates > 0 ->
-                "已直连检查 $probedBondedCandidates 个系统配对设备但未找到本项目服务，且手表未收到 BLE 广播；请保持手机 App 前台并重启 BLE 同步器"
+                "已直连检查 $probedBondedCandidates 个系统配对设备但未找到本项目服务，且手表未收到 BLE 广播；请确认手机后台同步已开启（或保持 App 前台）并重启 BLE 同步器"
             else ->
                 "系统没有可直连的配对设备，且手表未收到 BLE 广播；请检查 Galaxy Wearable 配对和附近设备权限"
         }
