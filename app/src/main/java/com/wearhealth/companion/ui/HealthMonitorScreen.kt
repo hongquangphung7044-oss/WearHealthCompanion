@@ -241,29 +241,21 @@ fun HealthMonitorScreen(
                 // 传送到手机按钮
                 item {
                     val detail = uiState.historyDetail!!
-                    if (detail.syncedToPhone) {
-                        // 已传送：灰色不可点击
-                        Button(
-                            onClick = {},
-                            enabled = false,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF607D8B),
-                            ),
-                        ) { Text("已传送 ✓", style = MaterialTheme.typography.bodySmall) }
-                    } else {
-                        // 未传送：可点击
-                        Button(
-                            onClick = { viewModel.syncToPhone(detail) },
-                            enabled = !uiState.syncingToPhone,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF64B5F6),
-                            ),
-                        ) {
-                            Text(
-                                if (uiState.syncingToPhone) "传送中..." else "传送到手机",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
+                    Button(
+                        onClick = { viewModel.syncToPhone(detail) },
+                        enabled = !uiState.syncingToPhone,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (detail.syncedToPhone) Color(0xFF607D8B) else Color(0xFF64B5F6),
+                        ),
+                    ) {
+                        Text(
+                            when {
+                                uiState.syncingToPhone -> "传送中..."
+                                detail.syncedToPhone -> "重新传送"
+                                else -> "传送到手机"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
                 item {

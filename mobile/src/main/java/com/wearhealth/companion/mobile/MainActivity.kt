@@ -12,7 +12,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.viewmodel.compose.viewModel
+
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -33,14 +33,23 @@ import com.wearhealth.companion.mobile.ui.SettingsScreen
  * - settings：API Key 配置
  */
 class MainActivity : ComponentActivity() {
+
+    private val viewModel by lazy { MobileViewModel(application) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             MobileAppTheme {
-                MobileNavGraph()
+                MobileNavGraph(viewModel = viewModel)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 每次 resume 时刷新手表连接状态（用户可能刚打开蓝牙/配对手表）
+        viewModel.refreshWatchConnection()
     }
 }
 
@@ -69,7 +78,7 @@ private fun MobileAppTheme(content: @Composable () -> Unit) {
 /** 导航图 */
 @Composable
 private fun MobileNavGraph(
-    viewModel: MobileViewModel = viewModel(),
+    viewModel: MobileViewModel,
 ) {
     val navController = rememberNavController()
     NavHost(navController = navController, startDestination = "history") {

@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.Card
@@ -91,7 +92,10 @@ fun HistoryListScreen(
                 }
             }
             // 底部手表连接状态
-            WatchConnectionBar(watchName = watchName)
+            WatchConnectionBar(
+                watchName = watchName,
+                onRefresh = { viewModel.refreshWatchConnection() },
+            )
         }
     }
 }
@@ -196,7 +200,7 @@ private fun HistoryItemCard(
 
 /** 底部手表连接状态条 */
 @Composable
-private fun WatchConnectionBar(watchName: String?) {
+private fun WatchConnectionBar(watchName: String?, onRefresh: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -216,6 +220,15 @@ private fun WatchConnectionBar(watchName: String?) {
             color = if (watchName != null) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.size(8.dp))
+        IconButton(onClick = onRefresh, modifier = Modifier.size(24.dp)) {
+            Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = "刷新连接状态",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

@@ -196,18 +196,30 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun syncToPhone(item: HistoryItem) {
         if (_uiState.value.syncingToPhone) return
-        if (item.syncedToPhone) {
-            _uiState.value = _uiState.value.copy(syncMessage = "该记录已传送过")
-            return
-        }
 
         _uiState.value = _uiState.value.copy(
             syncingToPhone = true,
-            syncMessage = "正在传送到手机...",
+            syncMessage = "正在检测手机连接...",
         )
 
         viewModelScope.launch {
             try {
+                // 先检测是否有已连接的手机节点
+                val nodes = withContext(Dispatchers.IO) {
+                    Tasks.await(Wearable.getNodeClient(getApplication()).connectedNodes)
+                }
+                if (nodes == null || nodes.isEmpty()) {
+                    _uiState.value = _uiState.value.copy(
+                        syncingToPhone = false,
+                        syncMessage = "未检测到已连接的手机，请确认手机同步器已打开并蓝牙已连接",
+                    )
+                    return@launch
+                }
+
+                _uiState.value = _uiState.value.copy(
+                    syncMessage = "正在传送到手机...",
+                )
+
                 val transfer = EcgMeasurementTransfer(
                     timestamp = item.timestamp,
                     diagnosis = item.diagnosis,
@@ -232,7 +244,6 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 putDataMapReq.dataMap.putAll(MeasurementSerializer.toDataMap(transfer))
                 val putDataReq = putDataMapReq.asPutDataRequest()
-                // 设置 urgency 为高优先级，确保及时同步
                 putDataReq.setUrgent()
 
                 withContext(Dispatchers.IO) {
@@ -245,7 +256,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
                 _uiState.value = _uiState.value.copy(
                     syncingToPhone = false,
-                    syncMessage = "已传送到手机",
+                    syncMessage = "已传送到手机 ✓",
                     history = historyRepo.getAll(),
                     historyDetail = _uiState.value.historyDetail?.copy(syncedToPhone = true),
                 )
