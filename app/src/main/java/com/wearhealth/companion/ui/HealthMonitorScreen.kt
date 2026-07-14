@@ -105,6 +105,7 @@ fun HealthMonitorScreen(
             item {
                 ApiKeyInputCard(
                     onSave = { key -> viewModel.saveApiKey(key) },
+                    onFetchFromPhone = { viewModel.fetchApiKeyFromPhone() },
                     syncing = uiState.syncingToPhone,
                 )
             }
@@ -647,12 +648,13 @@ private fun HistoryDetailCard(item: HistoryItem) {
 /**
  * API Key 输入卡片
  *
- * 当 apiKeyConfigured 为 false 时显示，让用户在手表端输入 HeartVoice API Key。
- * 也可通过手机端 Wearable Data Layer 下发，无需手动输入。
+ * 当 apiKeyConfigured 为 false 时显示。用户可以直接在手表输入，也可以在手机端先保存
+ * HeartVoice API Key，再从已配对手机的 BLE GATT 服务主动读取，不依赖历史记录或 GMS。
  */
 @Composable
 private fun ApiKeyInputCard(
     onSave: (String) -> Unit,
+    onFetchFromPhone: () -> Unit,
     syncing: Boolean,
 ) {
     var apiKeyInput by remember { mutableStateOf("") }
@@ -699,6 +701,19 @@ private fun ApiKeyInputCard(
                 }
                 innerTextField()
             },
+        )
+        Button(
+            onClick = onFetchFromPhone,
+            enabled = !syncing,
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+        ) {
+            Text(if (syncing) "正在查找手机…" else "从手机 BLE 获取", style = MaterialTheme.typography.bodySmall)
+        }
+        Text(
+            text = "请先在手机 ECG 同步器中保存 Key，并保持手机 App 前台",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF78909C),
+            textAlign = TextAlign.Center,
         )
         Button(
             onClick = { onSave(apiKeyInput) },

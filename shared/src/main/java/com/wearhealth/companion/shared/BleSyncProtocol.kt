@@ -21,6 +21,7 @@ object BleSyncProtocol {
     val SERVICE_UUID: UUID = UUID.fromString("9a4b7d00-2b58-4b02-8bb8-6f15f03e2a01")
     val UPLOAD_UUID: UUID = UUID.fromString("9a4b7d01-2b58-4b02-8bb8-6f15f03e2a01")
     val ACK_UUID: UUID = UUID.fromString("9a4b7d03-2b58-4b02-8bb8-6f15f03e2a01")
+    val API_KEY_UUID: UUID = UUID.fromString("9a4b7d02-2b58-4b02-8bb8-6f15f03e2a01")
     val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
         UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 

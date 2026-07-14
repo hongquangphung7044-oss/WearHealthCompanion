@@ -120,11 +120,11 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(
-                        onClick = { viewModel.startBleSync() },
+                        onClick = { viewModel.restartBleSync() },
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("启动 / 刷新 BLE 同步器") }
+                    ) { Text("重启 BLE 同步器") }
                     Text(
-                        text = "使用方法：保持本页或 App 前台 → 在手表“历史记录 > 详情”点“传送到手机”。手表会在 Google 通道不可用时自动改走 BLE，并在手机 Room 保存成功后才显示已传送。",
+                        text = "使用方法：先在下方保存 API Key。手表无 Key 时点“从手机 BLE 获取”；测量完成后在手表“历史记录 > 详情”点“传送到手机”。请保持手机 App 前台。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
@@ -152,7 +152,7 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 enabled = apiKey.isNotBlank(),
             ) {
-                Text("发送到手表")
+                Text("保存并提供给手表")
             }
             apiKeyResult?.let { msg ->
                 Text(
@@ -192,9 +192,9 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "• BLE 直连仅负责 ECG 测量数据传送，不依赖 Google 服务\n" +
-                                "• 国行系统不能通过 Google 通道下发 Key 时，请在手表端直接输入\n" +
-                                "• 手机端不调用 ECG 分析 API；手表用此 Key 上传波形并接收结果",
+                        text = "• BLE 直连支持手机向已配对手表提供 API Key，以及手表向手机传送 ECG\n" +
+                                "• 手机保存 Key 后，手表在缺 Key 页面点“从手机 BLE 获取”\n" +
+                                "• 手机端不调用 ECG 分析 API；手表获取并保存 Key 后独立完成分析",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

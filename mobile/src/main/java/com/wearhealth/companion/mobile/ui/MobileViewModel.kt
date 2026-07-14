@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.wearhealth.companion.mobile.data.AppDatabase
 import com.wearhealth.companion.mobile.data.EcgMeasurementEntity
 import com.wearhealth.companion.mobile.data.MeasurementRepository
+import com.wearhealth.companion.mobile.data.MobileApiKeyStore
 import com.wearhealth.companion.mobile.pdf.PdfExporter
 import com.wearhealth.companion.mobile.service.BleSyncServer
 import com.wearhealth.companion.mobile.service.DataLayerManager
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -38,6 +40,7 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     private val repository = MeasurementRepository(AppDatabase.get(app).ecgMeasurementDao())
     private val dataLayer = DataLayerManager(app)
     private val bleSyncServer = BleSyncServer(app)
+    private val mobileApiKeyStore = MobileApiKeyStore(app)
 
     /** Direct BLE receiver state. This remains useful when Google Data Layer is absent. */
     val bleSyncStatus: StateFlow<String> = bleSyncServer.status
@@ -89,6 +92,15 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     /** Start/retry the GMS-free BLE receiver. Safe to call from lifecycle callbacks. */
     fun startBleSync() = bleSyncServer.start()
 
+    /** Really restart the GATT server and advertiser instead of no-oping when already active. */
+    fun restartBleSync() {
+        viewModelScope.launch {
+            bleSyncServer.stop()
+            delay(300)
+            bleSyncServer.start()
+        }
+    }
+
     /**
      * Refresh optional Google Data Layer discovery and make sure the BLE fallback is advertising.
      * A null [connectedWatchName] means only that GMS Data Layer did not find a node; it does not
@@ -106,14 +118,18 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 发送 API Key 到手表 */
+    /** Save the key locally for BLE pull, then also submit it over Data Layer when available. */
     fun sendApiKey(key: String) {
+        val trimmed = key.trim()
+        if (trimmed.isEmpty()) {
+            _apiKeySendResult.value = "API Key 不能为空"
+            return
+        }
+        mobileApiKeyStore.save(trimmed)
+        _apiKeySendResult.value = "API Key 已保存到手机；请在手表点“从手机 BLE 获取”"
         viewModelScope.launch {
-            val ok = dataLayer.sendApiKeyToWatch(key)
-            _apiKeySendResult.value = if (ok) {
-                "API Key 已通过 Google 同步通道提交，等待手表接收"
-            } else {
-                "API Key 下发需要 Google 同步通道；国行 BLE 模式请在手表端直接输入 API Key"
+            if (dataLayer.sendApiKeyToWatch(trimmed)) {
+                _apiKeySendResult.value = "API Key 已保存，并已通过 Google 通道提交；国行手表也可主动通过 BLE 获取"
             }
         }
     }

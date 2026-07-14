@@ -8,6 +8,7 @@ import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
+import com.wearhealth.companion.ble.BleApiKeyFetcher
 import com.wearhealth.companion.ble.BleEcgUploader
 import com.wearhealth.companion.ble.BleUploadResult
 import com.wearhealth.companion.data.ApiKeyManager
@@ -50,6 +51,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     private var heartVoiceApi = HeartVoiceApiClient(apiKeyManager.getApiKey())
     private val historyRepo = EcgHistoryRepository(app.applicationContext)
     private val bleUploader = BleEcgUploader(app.applicationContext)
+    private val bleApiKeyFetcher = BleApiKeyFetcher(app.applicationContext)
 
     private val _uiState = MutableStateFlow(EcgUiState())
     val uiState: StateFlow<EcgUiState> = _uiState.asStateFlow()
@@ -176,6 +178,33 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
             apiKeyConfigured = true,
             syncMessage = "API Key 已保存",
         )
+    }
+
+    /** Fetch a key from the paired phone over direct BLE; no ECG history is required. */
+    fun fetchApiKeyFromPhone() {
+        if (_uiState.value.syncingToPhone) return
+        _uiState.value = _uiState.value.copy(
+            syncingToPhone = true,
+            syncMessage = "正在通过 BLE 查找手机上的 API Key…",
+        )
+        bleApiKeyFetcher.fetch { result ->
+            viewModelScope.launch {
+                result.onSuccess { key ->
+                    apiKeyManager.saveApiKey(key)
+                    heartVoiceApi = HeartVoiceApiClient(key)
+                    _uiState.value = _uiState.value.copy(
+                        apiKeyConfigured = true,
+                        syncingToPhone = false,
+                        syncMessage = "已从手机获取并保存 API Key ✓",
+                    )
+                }.onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        syncingToPhone = false,
+                        syncMessage = "BLE 获取 Key 失败：${error.message ?: "未知错误"}",
+                    )
+                }
+            }
+        }
     }
 
     /**

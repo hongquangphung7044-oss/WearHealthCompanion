@@ -21,6 +21,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.wearhealth.companion.mobile.data.AppDatabase
 import com.wearhealth.companion.mobile.data.MeasurementRepository
+import com.wearhealth.companion.mobile.data.MobileApiKeyStore
 import com.wearhealth.companion.shared.BleMeasurementCodec
 import com.wearhealth.companion.shared.BleSyncProtocol
 import kotlinx.coroutines.CoroutineScope
@@ -103,12 +104,18 @@ class BleSyncServer(private val context: Context) {
                 )
             )
         }
+        val apiKey = BluetoothGattCharacteristic(
+            BleSyncProtocol.API_KEY_UUID,
+            BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED,
+        )
         val service = BluetoothGattService(
             BleSyncProtocol.SERVICE_UUID,
             BluetoothGattService.SERVICE_TYPE_PRIMARY,
         ).apply {
             addCharacteristic(upload)
             addCharacteristic(ack)
+            addCharacteristic(apiKey)
         }
         val bleAdvertiser = adapter.bluetoothLeAdvertiser
         if (bleAdvertiser == null) {
@@ -200,6 +207,26 @@ class BleSyncServer(private val context: Context) {
                     }
                 }
             }
+        }
+
+        override fun onCharacteristicReadRequest(
+            device: BluetoothDevice,
+            requestId: Int,
+            offset: Int,
+            characteristic: BluetoothGattCharacteristic,
+        ) {
+            val authorized = device.bondState == BluetoothDevice.BOND_BONDED &&
+                device.address == activeDevice?.address &&
+                characteristic.uuid == BleSyncProtocol.API_KEY_UUID
+            val bytes = if (authorized) MobileApiKeyStore(context).get().toByteArray(Charsets.UTF_8) else ByteArray(0)
+            val validOffset = offset in 0..bytes.size
+            server?.sendResponse(
+                device,
+                requestId,
+                if (authorized && validOffset) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE,
+                offset,
+                if (authorized && validOffset) bytes.copyOfRange(offset, bytes.size) else null,
+            )
         }
 
         override fun onDescriptorWriteRequest(
