@@ -36,8 +36,8 @@ class PhoneWearableListenerService : WearableListenerService() {
             val path = uri.path ?: continue
             // 仅处理 /ecg_measurement 开头的数据
             if (!path.startsWith(DataLayerPaths.PATH_ECG_MEASUREMENT)) continue
-            // 仅处理新增/变更事件（忽略删除）
-            if (event.type != DataEvent.TYPE_CHANGED && event.type != DataEvent.TYPE_DELETED) continue
+            // Only process new/changed data; deletion is not an incoming ECG measurement.
+            if (event.type != DataEvent.TYPE_CHANGED) continue
 
             val sourceNodeId = uri.host
             if (sourceNodeId == null) {
@@ -64,7 +64,7 @@ class PhoneWearableListenerService : WearableListenerService() {
                     )
                 )
                 Log.i(TAG, "已保存并确认 ECG 记录: ts=${transfer.timestamp}, 诊断=${transfer.diagnosis}")
-                sendBroadcast(Intent(ACTION_ECG_UPDATED).setPackage(packageName))
+                notifyMeasurementUpdated(applicationContext)
             }
         }
     }
@@ -73,5 +73,10 @@ class PhoneWearableListenerService : WearableListenerService() {
         private const val TAG = "PhoneWearableListener"
         /** 新测量记录到达的广播 Action（包内定向广播） */
         const val ACTION_ECG_UPDATED = "com.wearhealth.companion.mobile.ECG_UPDATED"
+
+        /** Notify the UI after either Data Layer or direct BLE persistence succeeds. */
+        fun notifyMeasurementUpdated(context: android.content.Context) {
+            context.sendBroadcast(Intent(ACTION_ECG_UPDATED).setPackage(context.packageName))
+        }
     }
 }

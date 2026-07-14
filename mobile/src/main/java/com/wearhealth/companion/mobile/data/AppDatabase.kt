@@ -4,15 +4,13 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
-/**
- * 手机端 Room 数据库
- *
- * 仅包含 ECG 测量记录表。数据库实例通过 [get] 单例获取。
- */
+/** Phone-side Room database. */
 @Database(
     entities = [EcgMeasurementEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -23,14 +21,26 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        fun get(context: Context): AppDatabase {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabase::class.java,
-                    "ecg_mobile.db",
-                ).build().also { INSTANCE = it }
+        /** Makes existing databases safe for retransmission before adding the unique timestamp index. */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "DELETE FROM ecg_measurements WHERE id NOT IN " +
+                        "(SELECT MIN(id) FROM ecg_measurements GROUP BY timestamp)",
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_ecg_measurements_timestamp " +
+                        "ON ecg_measurements(timestamp)",
+                )
             }
+        }
+
+        fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
+            INSTANCE ?: Room.databaseBuilder(
+                context.applicationContext,
+                AppDatabase::class.java,
+                "ecg_mobile.db",
+            ).addMigrations(MIGRATION_1_2).build().also { INSTANCE = it }
         }
     }
 }

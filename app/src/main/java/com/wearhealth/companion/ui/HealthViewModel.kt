@@ -8,6 +8,8 @@ import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
+import com.wearhealth.companion.ble.BleEcgUploader
+import com.wearhealth.companion.ble.BleUploadResult
 import com.wearhealth.companion.data.ApiKeyManager
 import com.wearhealth.companion.data.EcgHistoryRepository
 import com.wearhealth.companion.data.HistoryItem
@@ -47,6 +49,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     private val apiKeyManager = ApiKeyManager(app.applicationContext)
     private var heartVoiceApi = HeartVoiceApiClient(apiKeyManager.getApiKey())
     private val historyRepo = EcgHistoryRepository(app.applicationContext)
+    private val bleUploader = BleEcgUploader(app.applicationContext)
 
     private val _uiState = MutableStateFlow(EcgUiState())
     val uiState: StateFlow<EcgUiState> = _uiState.asStateFlow()
@@ -189,96 +192,108 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    // ========== 传送到手机（Wearable Data Layer）==========
+    // ========== 传送到手机：Google Data Layer 优先，BLE GATT 回退 ==========
 
     /**
-     * 将指定记录通过 Wearable Data Layer 发送到手机
-     *
-     * 使用 PutDataMapRequest + MeasurementSerializer.toDataMap() 传输完整数据，
-     * 包括完整原始波形（二进制编码，约 60KB）。
+     * Sends a complete ECG record. Google Data Layer is used where it is available; China ROMs
+     * that cannot discover a GMS node automatically fall back to the phone's direct BLE GATT
+     * synchronizer. Both transports require a persistence ACK before [HistoryItem.syncedToPhone]
+     * can become true.
      */
     fun syncToPhone(item: HistoryItem) {
         if (_uiState.value.syncingToPhone) return
-
-        _uiState.value = _uiState.value.copy(
-            syncingToPhone = true,
-            syncMessage = "正在检测手机连接...",
-        )
+        _uiState.value = _uiState.value.copy(syncingToPhone = true, syncMessage = "正在检测手机同步通道…")
 
         viewModelScope.launch {
-            try {
-                // Only accept a reachable node that explicitly advertises this phone sync protocol.
-                // This mirrors Authenticator/Stratum and avoids treating unrelated Wear nodes as a companion.
+            val transfer = item.toTransfer()
+            val dataLayerSubmitted = try {
                 val phoneNodes = withContext(Dispatchers.IO) {
                     Tasks.await(
                         Wearable.getCapabilityClient(getApplication()).getCapability(
                             DataLayerPaths.CAPABILITY_PHONE_SYNC,
                             CapabilityClient.FILTER_REACHABLE,
-                        )
+                        ),
                     ).nodes
                 }
-                if (phoneNodes.isEmpty()) {
-                    _uiState.value = _uiState.value.copy(
-                        syncingToPhone = false,
-                        syncMessage = "未检测到可用手机同步器，请确认新版手机 App 已安装、已打开且手表与手机保持连接",
-                    )
-                    return@launch
+                if (phoneNodes.isEmpty()) false else {
+                    val request = PutDataMapRequest.create(
+                        "${DataLayerPaths.PATH_ECG_MEASUREMENT}/${item.timestamp}",
+                    ).apply { dataMap.putAll(MeasurementSerializer.toDataMap(transfer)) }
+                        .asPutDataRequest()
+                        .setUrgent()
+                    withContext(Dispatchers.IO) {
+                        Tasks.await(Wearable.getDataClient(getApplication()).putDataItem(request))
+                    }
+                    true
                 }
-
-                _uiState.value = _uiState.value.copy(
-                    syncMessage = "正在传送到手机...",
-                )
-
-                val transfer = EcgMeasurementTransfer(
-                    timestamp = item.timestamp,
-                    diagnosis = item.diagnosis,
-                    avgHeartRate = item.avgHeartRate,
-                    minHeartRate = item.minHeartRate,
-                    maxHeartRate = item.maxHeartRate,
-                    signalQuality = item.signalQuality,
-                    isAbnormal = item.isAbnormal,
-                    avgQrs = item.avgQrs,
-                    prInterval = item.prInterval,
-                    avgQt = item.avgQt,
-                    avgQtc = item.avgQtc,
-                    pacCount = item.pacCount,
-                    pvcCount = item.pvcCount,
-                    rawEcgData = item.rawEcgData,
-                    downsampledEcg = item.ecgSamples,
-                    sampleRate = 500,
-                )
-
-                val putDataMapReq = PutDataMapRequest.create(
-                    "${DataLayerPaths.PATH_ECG_MEASUREMENT}/${item.timestamp}"
-                )
-                putDataMapReq.dataMap.putAll(MeasurementSerializer.toDataMap(transfer))
-                val putDataReq = putDataMapReq.asPutDataRequest()
-                putDataReq.setUrgent()
-
-                withContext(Dispatchers.IO) {
-                    Tasks.await(Wearable.getDataClient(getApplication()).putDataItem(putDataReq))
-                }
-
-                // putDataItem only queues local Data Layer data. The phone must ACK after Room persistence.
-                Log.i(TAG, "ECG 记录已提交，等待手机确认: ${item.timestamp}")
-                _uiState.value = _uiState.value.copy(
-                    syncingToPhone = false,
-                    syncMessage = "已提交传送，等待手机确认保存…",
-                )
             } catch (e: Exception) {
-                Log.e(TAG, "传送到手机失败", e)
+                Log.w(TAG, "Google Data Layer 不可用，改用 BLE", e)
+                false
+            }
+
+            if (dataLayerSubmitted) {
                 _uiState.value = _uiState.value.copy(
                     syncingToPhone = false,
-                    syncMessage = "传送失败: ${e.message ?: "未知错误"}",
+                    syncMessage = "已通过 Data Layer 提交，等待手机保存确认…",
                 )
+                return@launch
+            }
+
+            _uiState.value = _uiState.value.copy(syncMessage = "未发现 GMS 通道，正在搜索手机 BLE 同步器…")
+            bleUploader.upload(transfer) { result ->
+                viewModelScope.launch {
+                    when (result) {
+                        BleUploadResult.Success -> {
+                            historyRepo.markSynced(item.timestamp)
+                            refreshHistoryAfterSync("手机已通过 BLE 保存 ECG ✓")
+                        }
+                        is BleUploadResult.Failure -> {
+                            _uiState.value = _uiState.value.copy(
+                                syncingToPhone = false,
+                                syncMessage = "BLE 传送失败：${result.message}",
+                            )
+                        }
+                    }
+                }
             }
         }
     }
 
+    private fun HistoryItem.toTransfer() = EcgMeasurementTransfer(
+        timestamp = timestamp,
+        diagnosis = diagnosis,
+        avgHeartRate = avgHeartRate,
+        minHeartRate = minHeartRate,
+        maxHeartRate = maxHeartRate,
+        signalQuality = signalQuality,
+        isAbnormal = isAbnormal,
+        avgQrs = avgQrs,
+        prInterval = prInterval,
+        avgQt = avgQt,
+        avgQtc = avgQtc,
+        pacCount = pacCount,
+        pvcCount = pvcCount,
+        rawEcgData = rawEcgData,
+        downsampledEcg = ecgSamples,
+        sampleRate = 500,
+    )
+
+    private fun refreshHistoryAfterSync(message: String) {
+        val records = historyRepo.getAll()
+        _uiState.value = _uiState.value.copy(
+            syncingToPhone = false,
+            syncMessage = message,
+            history = records,
+            historyDetail = _uiState.value.historyDetail?.let { detail ->
+                records.find { it.timestamp == detail.timestamp } ?: detail
+            },
+        )
+    }
+
     /**
-     * 同步所有未传送到手机的记录
-     *
-     * 通常在收到手机的 /sync_request 消息时调用。
+     * Data Layer initiated batch sync is retained for GMS-capable environments. Direct BLE is
+     * deliberately user-initiated one record at a time so the phone app can stay foreground and
+     * advertise reliably on China ROMs.
      */
     fun syncAllUnsynced() {
         val unsynced = historyRepo.getUnsynced()
@@ -335,7 +350,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
             _uiState.value = _uiState.value.copy(
                 syncingToPhone = false,
-                syncMessage = "已提交 $success 条，等待手机确认" + if (failed > 0) "；提交失败 $failed 条" else "",
+                syncMessage = "已提交 $success 条，等待手机确认（批量请求仅走 Google Data Layer；国行 BLE 请逐条从手表详情传送）" + if (failed > 0) "；提交失败 $failed 条" else "",
                 history = historyRepo.getAll(),
                 historyDetail = _uiState.value.historyDetail?.let { detail ->
                     historyRepo.getAll().find { it.timestamp == detail.timestamp } ?: detail

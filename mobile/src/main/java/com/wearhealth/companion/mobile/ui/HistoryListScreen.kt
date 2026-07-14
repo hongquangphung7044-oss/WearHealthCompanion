@@ -64,6 +64,7 @@ fun HistoryListScreen(
 ) {
     val measurements by viewModel.measurements.collectAsState()
     val watchName by viewModel.connectedWatchName.collectAsState()
+    val bleStatus by viewModel.bleSyncStatus.collectAsState()
 
     Scaffold(
         topBar = {
@@ -94,6 +95,7 @@ fun HistoryListScreen(
             // 底部手表连接状态
             WatchConnectionBar(
                 watchName = watchName,
+                bleStatus = bleStatus,
                 onRefresh = { viewModel.refreshWatchConnection() },
             )
         }
@@ -200,7 +202,7 @@ private fun HistoryItemCard(
 
 /** 底部手表连接状态条 */
 @Composable
-private fun WatchConnectionBar(watchName: String?, onRefresh: () -> Unit) {
+private fun WatchConnectionBar(watchName: String?, bleStatus: String, onRefresh: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -215,7 +217,7 @@ private fun WatchConnectionBar(watchName: String?, onRefresh: () -> Unit) {
         )
         Spacer(Modifier.size(6.dp))
         Text(
-            text = if (watchName != null) "手表已连接：$watchName" else "手表未连接",
+            text = if (watchName != null) "GMS 已连接：$watchName" else bleStatus,
             style = MaterialTheme.typography.bodySmall,
             color = if (watchName != null) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,

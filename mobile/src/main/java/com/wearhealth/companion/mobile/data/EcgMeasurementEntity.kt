@@ -1,6 +1,7 @@
 package com.wearhealth.companion.mobile.data
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -14,7 +15,10 @@ import androidx.room.PrimaryKey
  * - 原始波形（约 15000 点）用二进制存储为 [rawEcgBytes]，比 JSON 文本小约 40%。
  * - 降采样波形（列表缩略图）存为 [downsampledEcgBytes]。
  */
-@Entity(tableName = "ecg_measurements")
+@Entity(
+    tableName = "ecg_measurements",
+    indices = [Index(value = ["timestamp"], unique = true)],
+)
 data class EcgMeasurementEntity(
     /** 主键，自增 */
     @PrimaryKey(autoGenerate = true)

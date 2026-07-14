@@ -13,9 +13,10 @@ import com.wearhealth.companion.shared.MeasurementSerializer
  */
 class MeasurementRepository(private val dao: EcgMeasurementDao) {
 
-    /** 插入一条测量记录（来自手表同步） */
-    suspend fun insert(transfer: EcgMeasurementTransfer): Long {
+    /** Insert a measurement idempotently. A retry replaces the same timestamp in place. */
+    suspend fun upsertByTimestamp(transfer: EcgMeasurementTransfer): Long {
         val entity = EcgMeasurementEntity(
+            id = dao.getIdByTimestamp(transfer.timestamp) ?: 0,
             timestamp = transfer.timestamp,
             diagnosis = transfer.diagnosis.joinToString(","),
             avgHeartRate = transfer.avgHeartRate,
@@ -36,6 +37,9 @@ class MeasurementRepository(private val dao: EcgMeasurementDao) {
         )
         return dao.insert(entity)
     }
+
+    /** Compatibility alias for the existing Data Layer receiver. */
+    suspend fun insert(transfer: EcgMeasurementTransfer): Long = upsertByTimestamp(transfer)
 
     /** 获取全部测量记录（按时间倒序，响应式） */
     fun getAll(): kotlinx.coroutines.flow.Flow<List<EcgMeasurementEntity>> = dao.getAll()

@@ -12,6 +12,7 @@ import com.wearhealth.companion.mobile.data.AppDatabase
 import com.wearhealth.companion.mobile.data.EcgMeasurementEntity
 import com.wearhealth.companion.mobile.data.MeasurementRepository
 import com.wearhealth.companion.mobile.pdf.PdfExporter
+import com.wearhealth.companion.mobile.service.BleSyncServer
 import com.wearhealth.companion.mobile.service.DataLayerManager
 import com.wearhealth.companion.mobile.service.PhoneWearableListenerService
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
@@ -36,6 +37,10 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repository = MeasurementRepository(AppDatabase.get(app).ecgMeasurementDao())
     private val dataLayer = DataLayerManager(app)
+    private val bleSyncServer = BleSyncServer(app)
+
+    /** Direct BLE receiver state. This remains useful when Google Data Layer is absent. */
+    val bleSyncStatus: StateFlow<String> = bleSyncServer.status
 
     /** 全部测量记录（按时间倒序，Room 自动响应插入/删除） */
     val measurements: StateFlow<List<EcgMeasurementEntity>> =
@@ -81,8 +86,16 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         refreshWatchConnection()
     }
 
-    /** 刷新已连接手表名称 */
+    /** Start/retry the GMS-free BLE receiver. Safe to call from lifecycle callbacks. */
+    fun startBleSync() = bleSyncServer.start()
+
+    /**
+     * Refresh optional Google Data Layer discovery and make sure the BLE fallback is advertising.
+     * A null [connectedWatchName] means only that GMS Data Layer did not find a node; it does not
+     * mean the Bluetooth-paired watch cannot use the BLE synchronizer.
+     */
     fun refreshWatchConnection() {
+        startBleSync()
         viewModelScope.launch {
             try {
                 val nodes = dataLayer.getConnectedNodes()
@@ -97,7 +110,11 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     fun sendApiKey(key: String) {
         viewModelScope.launch {
             val ok = dataLayer.sendApiKeyToWatch(key)
-            _apiKeySendResult.value = if (ok) "API Key 已发送到手表" else "发送失败，请确认手表已连接"
+            _apiKeySendResult.value = if (ok) {
+                "API Key 已通过 Google 同步通道提交，等待手表接收"
+            } else {
+                "API Key 下发需要 Google 同步通道；国行 BLE 模式请在手表端直接输入 API Key"
+            }
         }
     }
 
@@ -151,6 +168,7 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        bleSyncServer.stop()
         super.onCleared()
         getApplication<Application>().unregisterReceiver(updateReceiver)
     }

@@ -12,9 +12,12 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface EcgMeasurementDao {
 
-    /** 插入一条测量记录（REPLACE 策略：相同主键时覆盖） */
+    /** 插入或替换同一测量时间戳的记录；重传不会制造重复 ECG。 */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(entity: EcgMeasurementEntity): Long
+
+    @Query("SELECT id FROM ecg_measurements WHERE timestamp = :timestamp LIMIT 1")
+    suspend fun getIdByTimestamp(timestamp: Long): Long?
 
     /** 获取全部测量记录，按时间倒序 */
     @Query("SELECT * FROM ecg_measurements ORDER BY timestamp DESC")

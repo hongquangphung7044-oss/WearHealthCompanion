@@ -56,6 +56,7 @@ fun SettingsScreen(
 ) {
     var apiKey by remember { mutableStateOf("") }
     val watchName by viewModel.connectedWatchName.collectAsState()
+    val bleStatus by viewModel.bleSyncStatus.collectAsState()
     val apiKeyResult by viewModel.apiKeySendResult.collectAsState()
     val syncResult by viewModel.syncResult.collectAsState()
 
@@ -93,15 +94,40 @@ fun SettingsScreen(
                     )
                     Column(modifier = Modifier.padding(start = 12.dp)) {
                         Text(
-                            text = if (watchName != null) "手表已连接" else "手表未连接",
+                            text = if (watchName != null) "Google 同步通道已连接" else "Google 同步通道未发现手表",
                             style = MaterialTheme.typography.titleSmall,
                         )
                         Text(
-                            text = watchName ?: "请确认手表已开机并与手机蓝牙配对",
+                            text = watchName ?: "国行设备可直接使用下方 BLE 同步器；此处不代表 Galaxy Wearable 蓝牙配对状态。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("国行 BLE 直连同步", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = bleStatus,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { viewModel.startBleSync() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("启动 / 刷新 BLE 同步器") }
+                    Text(
+                        text = "使用方法：保持本页或 App 前台 → 在手表“历史记录 > 详情”点“传送到手机”。手表会在 Google 通道不可用时自动改走 BLE，并在手机 Room 保存成功后才显示已传送。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
                 }
             }
 
@@ -166,10 +192,9 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "• HeartVoice 提供 100 次/天免费 ECG 分析额度\n" +
-                                "• 额度每天自动重置，不刷新\n" +
-                                "• API Key 仅发送到手表端，手机端不调用 API\n" +
-                                "• 手表用此 Key 上传波形并接收分析结果",
+                        text = "• BLE 直连仅负责 ECG 测量数据传送，不依赖 Google 服务\n" +
+                                "• 国行系统不能通过 Google 通道下发 Key 时，请在手表端直接输入\n" +
+                                "• 手机端不调用 ECG 分析 API；手表用此 Key 上传波形并接收结果",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

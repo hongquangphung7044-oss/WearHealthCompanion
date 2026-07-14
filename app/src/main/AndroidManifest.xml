@@ -7,7 +7,9 @@
     <!-- ECG 传感器 -->
     <uses-permission android:name="android.permission.BODY_SENSORS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Direct Bluetooth LE sync with the companion phone. No Google services required. -->
+    <!-- Direct BLE GATT fallback for China ROM / no-GMS devices. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- 网络：调用 HeartVoice ECG 分析 API -->

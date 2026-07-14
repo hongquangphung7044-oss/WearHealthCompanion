@@ -11,8 +11,8 @@ Wear OS ECG（心电图）采集与分析应用，配套 Android 手机同步器
 | 项目 | 状态 |
 |---|---|
 | 默认分支 | `main` |
-| 基线提交 | `2a70089011167ed9129e679c32709a09c6c7d2c9` — ACK 同步实现；本次提交会补齐其 CI 编译修复并更新本文档 |
-| 最近一次已完成 Actions（推送本提交前） | **Build #43，失败**，2026-07-14 01:36–01:43 UTC |
+| 当前基线 | `a206de1` / Build #44，已成功产出手表与手机 Release APK；当前工作区正在引入 BLE GATT 回退，下一次推送将触发验证构建 |
+| 国行同步策略 | Google Data Layer 保留为可选通道；未发现 GMS 节点时，手表单条“传送到手机”自动回退到手机 App 前台提供的 BLE GATT 同步器 |
 | 失败任务 | `:mobile:compileReleaseKotlin` |
 | 最近成功 Actions / Release | **Build #42**，提交 `c4158b2`，tag `build-42` |
 | #43 构件 / Release | 未生成；后续重命名、上传 Artifact、创建 Release 步骤均被跳过 |
@@ -146,6 +146,24 @@ shared/
 ```
 
 **关键语义：** `putDataItem()` 成功仅代表本地 Data Layer 接受请求，**不代表手机收到，更不代表 Room 已持久化**。只有 `/ecg_ack/{timestamp}` 能将 `HistoryItem.syncedToPhone` 设为 `true`。未收到 ACK 的记录保持“未传送”，可由用户重试或通过手机“请求同步”补传。
+
+### 国行 / 无 GMS 的 BLE GATT 回退（当前开发中，以下一次 Actions 为准）
+
+当 `CapabilityClient.FILTER_REACHABLE` 没有发现 Google Data Layer 节点时，手表端的**单条**“传送到手机”会改用直接 BLE GATT：
+
+```text
+手机 ECG 同步器在前台 → BLE 广播自定义 ECG 服务
+手表历史详情点“传送到手机” → 扫描已配对手机 → GATT 连接 / MTU 协商
+→ BEGIN（长度 + CRC）→ 带序号二进制 ECG 分片 → END
+→ 手机 CRC 校验、按 timestamp 幂等写 Room → ACK indication
+→ 手表收到成功 ACK 后才 markSynced(timestamp)
+```
+
+- BLE 协议位于 `shared/BleSyncProtocol.kt`；波形仍为二进制 int 数组，不传 JSON 波形。
+- 手机端 `BleSyncServer` 只接受系统显示为已配对的设备，并只在手机同步器进程存活、App 前台使用时提供可靠广播。
+- Room 为 `timestamp` 添加唯一索引与迁移；重传会替换同一时间戳记录，避免重复 ECG。
+- **使用方式**：手机打开 ECG 同步器（设置页应显示“BLE 同步器就绪”）→ 手表进入历史详情 → 点“传送到手机”。BLE 回退当前是用户发起的单条传送；批量“请求同步”仍仅适用于 Google Data Layer。
+- BLE 仅解决 ECG 数据回传。若国行设备没有 Google 通道，HeartVoice API Key 请先在手表端输入，不要把手机端“发送到手表”的提交提示当作已送达。
 
 ### 同步相关代码入口
 
