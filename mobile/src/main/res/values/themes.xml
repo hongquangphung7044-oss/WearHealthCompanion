@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 基础主题，仅用于 Manifest 引用。实际颜色由 Compose MaterialTheme 在代码中设置。 -->
+    <style name="Theme.WearHealthMobile" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

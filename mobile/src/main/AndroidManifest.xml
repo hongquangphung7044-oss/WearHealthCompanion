@@ -7,7 +7,7 @@
         android:allowBackup="true"
         android:label="ECG 同步器"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Material3.DynamicColors.DayNight">
+        android:theme="@style/Theme.WearHealthMobile">
 
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
