@@ -153,7 +153,10 @@ object PdfExporter {
         val disclaimerPaint = Paint(smallPaint).apply {
             color = Color.GRAY
             textSize = 9f
-            isItalic = true
+            typeface = android.graphics.Typeface.create(
+                android.graphics.Typeface.DEFAULT,
+                android.graphics.Typeface.ITALIC,
+            )
         }
         val disclaimer = "本报告由 AI 自动分析生成，仅供健康参考，不作为诊断依据。" +
                 "如有异常请咨询专业医生。"

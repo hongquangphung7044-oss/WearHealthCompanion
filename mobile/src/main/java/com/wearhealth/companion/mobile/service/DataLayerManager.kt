@@ -40,9 +40,9 @@ class DataLayerManager(private val context: Context) {
             val putDataReq = PutDataMapRequest.create(DataLayerPaths.PATH_API_KEY).apply {
                 dataMap.putString(DataLayerPaths.KEY_API_KEY, apiKey)
             }.asPutDataRequest().setUrgent()
-            val result = awaitTask { dataClient.putDataItem(putDataReq) }
-            Log.i(TAG, "API Key 已发送到手表: success=$result")
-            result
+            awaitTask { dataClient.putDataItem(putDataReq) }
+            Log.i(TAG, "API Key 已发送到手表")
+            true
         } catch (e: Exception) {
             Log.e(TAG, "发送 API Key 失败: ${e.message}", e)
             false
@@ -64,13 +64,11 @@ class DataLayerManager(private val context: Context) {
         var sent = 0
         for (node in nodes) {
             try {
-                val result = awaitTask {
+                awaitTask {
                     messageClient.sendMessage(node.id, DataLayerPaths.PATH_SYNC_REQUEST, ByteArray(0))
                 }
-                if (result) {
-                    sent++
-                    Log.i(TAG, "已向手表 ${node.displayName} 请求同步")
-                }
+                sent++
+                Log.i(TAG, "已向手表 ${node.displayName} 请求同步")
             } catch (e: Exception) {
                 Log.e(TAG, "向手表 ${node.displayName} 请求同步失败: ${e.message}", e)
             }

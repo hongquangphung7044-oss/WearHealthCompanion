@@ -61,8 +61,8 @@ fun HistoryListScreen(
     onClickItem: (Long) -> Unit,
     onClickSettings: () -> Unit,
 ) {
-    val measurements by viewModel.measurements.collectAsStateWithLifecycle()
-    val watchName by viewModel.connectedWatchName.collectAsStateWithLifecycle()
+    val measurements by viewModel.measurements.collectAsState()
+    val watchName by viewModel.connectedWatchName.collectAsState()
 
     Scaffold(
         topBar = {
