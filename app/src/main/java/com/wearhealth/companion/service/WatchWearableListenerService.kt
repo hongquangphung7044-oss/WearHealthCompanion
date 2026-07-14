@@ -17,7 +17,7 @@ import com.wearhealth.companion.shared.MeasurementSerializer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
  * 2. 接收手机端的同步请求（路径 /sync_request），触发未传送数据的同步
  *
  * 通过 [ApiKeyManager.refreshTrigger] 通知 UI 刷新 API Key 状态。
- * 通过 [syncCompleted] 通知 UI 刷新历史列表（同步状态变化）。
+ * 通过 [syncEvents] 通知 UI 显示真实同步提交结果或手机 ACK。
  */
 class WatchWearableListenerService : WearableListenerService() {
 
@@ -69,10 +69,21 @@ class WatchWearableListenerService : WearableListenerService() {
         val path = messageEvent.path
         Log.i(TAG, "onMessageReceived: path=$path")
 
-        if (path == DataLayerPaths.PATH_SYNC_REQUEST) {
-            Log.i(TAG, "收到手机的同步请求，开始同步未传送数据")
-            serviceScope.launch {
-                syncAllUnsynced()
+        when {
+            path == DataLayerPaths.PATH_SYNC_REQUEST -> {
+                Log.i(TAG, "收到手机的同步请求，开始提交未传送数据")
+                serviceScope.launch { syncAllUnsynced() }
+            }
+            path.startsWith("${DataLayerPaths.PATH_ECG_ACK}/") -> {
+                val timestamp = path.substringAfterLast('/').toLongOrNull()
+                if (timestamp == null) {
+                    Log.w(TAG, "收到无效 ECG ACK: $path")
+                    return
+                }
+                // This is the only code path that marks a record as sent.
+                historyRepo.markSynced(timestamp)
+                syncEvents.tryEmit("手机已确认保存 ECG")
+                Log.i(TAG, "手机已确认保存记录: $timestamp")
             }
         }
     }
@@ -123,28 +134,29 @@ class WatchWearableListenerService : WearableListenerService() {
                 putDataReq.setUrgent()
 
                 Tasks.await(Wearable.getDataClient(this).putDataItem(putDataReq))
-                historyRepo.markSynced(item.timestamp)
+                // DataItem acceptance is not phone persistence. Wait for /ecg_ack/{timestamp}.
                 success++
-                Log.i(TAG, "记录 ${item.timestamp} 传送成功")
+                Log.i(TAG, "记录 ${item.timestamp} 已提交，等待手机 ACK")
             } catch (e: Exception) {
                 Log.e(TAG, "传送记录 ${item.timestamp} 失败", e)
                 failed++
             }
         }
 
-        Log.i(TAG, "同步完成: 成功 $success 条，失败 $failed 条")
-        // 通知 UI 刷新历史列表（如果 App 在前台）
-        syncCompleted.value = System.currentTimeMillis()
+        Log.i(TAG, "同步提交完成: 已提交 $success 条，失败 $failed 条")
+        syncEvents.tryEmit(
+            if (failed == 0) "已提交 $success 条，等待手机确认" else "已提交 $success 条，失败 $failed 条"
+        )
     }
 
     companion object {
         private const val TAG = "WatchWearableListener"
 
         /**
-         * 同步完成事件流。
-         *
-         * 当 Service 完成数据同步后更新此值，ViewModel 可观察此 flow 来刷新历史列表。
+         * One-shot real sync events. SharedFlow has no initial value, so reopening the app
+         * cannot fabricate a success message while the phone is offline.
          */
-        val syncCompleted: MutableStateFlow<Long> = MutableStateFlow(0L)
+        val syncEvents = MutableSharedFlow<String>(extraBufferCapacity = 4)
+
     }
 }

@@ -62,15 +62,17 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 refreshApiKeyStatus()
             }
         }
-        // 监听 Service 完成的同步事件，刷新历史列表
+        // SharedFlow has no initial event. The UI is updated only when the service has a real
+        // submission result or when the phone sends a persistence ACK.
         viewModelScope.launch {
-            WatchWearableListenerService.syncCompleted.collect {
+            WatchWearableListenerService.syncEvents.collect { message ->
+                val records = historyRepo.getAll()
                 _uiState.value = _uiState.value.copy(
-                    history = historyRepo.getAll(),
+                    history = records,
                     historyDetail = _uiState.value.historyDetail?.let { detail ->
-                        historyRepo.getAll().find { it.timestamp == detail.timestamp } ?: detail
+                        records.find { it.timestamp == detail.timestamp } ?: detail
                     },
-                    syncMessage = "已从手机端触发同步",
+                    syncMessage = message,
                 )
             }
         }
@@ -257,15 +259,11 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                     Tasks.await(Wearable.getDataClient(getApplication()).putDataItem(putDataReq))
                 }
 
-                // 标记为已同步
-                historyRepo.markSynced(item.timestamp)
-                Log.i(TAG, "ECG 记录已传送到手机: ${item.timestamp}")
-
+                // putDataItem only queues local Data Layer data. The phone must ACK after Room persistence.
+                Log.i(TAG, "ECG 记录已提交，等待手机确认: ${item.timestamp}")
                 _uiState.value = _uiState.value.copy(
                     syncingToPhone = false,
-                    syncMessage = "已传送到手机 ✓",
-                    history = historyRepo.getAll(),
-                    historyDetail = _uiState.value.historyDetail?.copy(syncedToPhone = true),
+                    syncMessage = "已提交传送，等待手机确认保存…",
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "传送到手机失败", e)
@@ -327,7 +325,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                     withContext(Dispatchers.IO) {
                         Tasks.await(Wearable.getDataClient(getApplication()).putDataItem(putDataReq))
                     }
-                    historyRepo.markSynced(item.timestamp)
+                    // Do not mark synced here; /ecg_ack/{timestamp} is the source of truth.
                     success++
                 } catch (e: Exception) {
                     Log.e(TAG, "传送记录 ${item.timestamp} 失败", e)
@@ -337,7 +335,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
             _uiState.value = _uiState.value.copy(
                 syncingToPhone = false,
-                syncMessage = "传送完成: 成功 $success 条" + if (failed > 0) "，失败 $failed 条" else "",
+                syncMessage = "已提交 $success 条，等待手机确认" + if (failed > 0) "；提交失败 $failed 条" else "",
                 history = historyRepo.getAll(),
                 historyDetail = _uiState.value.historyDetail?.let { detail ->
                     historyRepo.getAll().find { it.timestamp == detail.timestamp } ?: detail

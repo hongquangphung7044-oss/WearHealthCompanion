@@ -25,6 +25,9 @@ object DataLayerPaths {
     /** 手机 → 手表：请求同步未传送数据。完整路径: /sync_request */
     const val PATH_SYNC_REQUEST = "/sync_request"
 
+    /** 手机 → 手表：Room 持久化成功回执。完整路径: /ecg_ack/{timestamp} */
+    const val PATH_ECG_ACK = "/ecg_ack"
+
     // ===== DataMap 键名 =====
 
     // ECG 测量数据字段

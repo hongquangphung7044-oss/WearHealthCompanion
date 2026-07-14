@@ -2,9 +2,11 @@ package com.wearhealth.companion.mobile.service
 
 import android.content.Intent
 import android.util.Log
+import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.DataEvent
 import com.google.android.gms.wearable.DataEventBuffer
 import com.google.android.gms.wearable.DataMapItem
+import com.google.android.gms.wearable.Wearable
 import com.google.android.gms.wearable.WearableListenerService
 import com.wearhealth.companion.mobile.data.AppDatabase
 import com.wearhealth.companion.mobile.data.MeasurementRepository
@@ -37,6 +39,10 @@ class PhoneWearableListenerService : WearableListenerService() {
             // 仅处理新增/变更事件（忽略删除）
             if (event.type != DataEvent.TYPE_CHANGED && event.type != DataEvent.TYPE_DELETED) continue
 
+            val sourceNodeId = uri.host ?: run {
+                Log.w(TAG, "ECG 数据缺少来源节点: $path")
+                continue
+            }
             val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
             val transfer = try {
                 MeasurementSerializer.fromDataMap(dataMap)
@@ -48,8 +54,15 @@ class PhoneWearableListenerService : WearableListenerService() {
             scope.launch {
                 val repo = MeasurementRepository(AppDatabase.get(applicationContext).ecgMeasurementDao())
                 repo.insert(transfer)
-                Log.i(TAG, "已保存 ECG 测量记录: ts=${transfer.timestamp}, 诊断=${transfer.diagnosis}")
-                // 通知 UI 刷新
+                // ACK only after Room has accepted the complete, decoded record.
+                Tasks.await(
+                    Wearable.getMessageClient(this@PhoneWearableListenerService).sendMessage(
+                        sourceNodeId,
+                        "${DataLayerPaths.PATH_ECG_ACK}/${transfer.timestamp}",
+                        ByteArray(0),
+                    )
+                )
+                Log.i(TAG, "已保存并确认 ECG 记录: ts=${transfer.timestamp}, 诊断=${transfer.diagnosis}")
                 sendBroadcast(Intent(ACTION_ECG_UPDATED).setPackage(packageName))
             }
         }
