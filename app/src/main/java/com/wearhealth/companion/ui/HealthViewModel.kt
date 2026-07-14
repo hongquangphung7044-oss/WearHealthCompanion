@@ -25,6 +25,7 @@ import com.wearhealth.companion.shared.DataLayerPaths
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
 import com.wearhealth.companion.shared.MeasurementSerializer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -262,13 +263,24 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
             if (dataLayerSubmitted) {
                 _uiState.value = _uiState.value.copy(
-                    syncingToPhone = false,
-                    syncMessage = "已通过 Data Layer 提交，等待手机保存确认…",
+                    syncMessage = "Data Layer 已提交；最多等待 8 秒确认手机 Room 已保存…",
                 )
-                return@launch
+                if (waitForPersistenceAck(item.timestamp)) {
+                    refreshHistoryAfterSync("手机已通过 Data Layer 保存 ECG ✓")
+                    return@launch
+                }
+                // putDataItem() only confirms the local Google cache write. China ROMs can expose
+                // a stale/reachable capability while never delivering the DataItem to the phone.
+                // Fall through to BLE unless the matching Room ACK actually marked this record.
+                _uiState.value = _uiState.value.copy(
+                    syncMessage = "Data Layer 未收到手机保存确认，正在自动改用 BLE…",
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    syncMessage = "未发现 GMS 通道，正在搜索手机 BLE 同步器…",
+                )
             }
 
-            _uiState.value = _uiState.value.copy(syncMessage = "未发现 GMS 通道，正在搜索手机 BLE 同步器…")
             bleUploader.upload(transfer) { result ->
                 viewModelScope.launch {
                     when (result) {
@@ -286,6 +298,18 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /** Waits for the listener service to persist the matching Data Layer ACK into history. */
+    private suspend fun waitForPersistenceAck(timestamp: Long): Boolean {
+        repeat(DATA_LAYER_ACK_POLL_COUNT) {
+            val acknowledged = historyRepo.getAll().any {
+                it.timestamp == timestamp && it.syncedToPhone
+            }
+            if (acknowledged) return true
+            delay(DATA_LAYER_ACK_POLL_MS)
+        }
+        return false
     }
 
     private fun HistoryItem.toTransfer() = EcgMeasurementTransfer(
@@ -478,6 +502,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        private const val DATA_LAYER_ACK_POLL_MS = 200L
+        private const val DATA_LAYER_ACK_POLL_COUNT = 40
         private const val TAG = "HealthViewModel"
     }
 }
