@@ -144,9 +144,6 @@ object PdfExporter {
                 normalPaint,
             )
         }
-        if (transfer.isReverse) {
-            y = drawWrappedText(canvas, "导联方向提示：API 检测到可能拿反，建议重测。", marginX, y, contentWidth, normalPaint)
-        }
         y += 5
 
         canvas.drawText("参数详情", marginX, y, titlePaint)
@@ -188,7 +185,8 @@ object PdfExporter {
     private fun buildParamRows(t: EcgMeasurementTransfer): List<Triple<String, String, String>> = buildList {
         add(Triple("API 异常标志", if (t.isAbnormal) "异常" else "未标记异常", "API 输出"))
         add(Triple("平均心率", "${t.avgHeartRate} bpm", "60-100"))
-        if (t.minHeartRate > 0 && t.maxHeartRate > 0) add(Triple("本地心率范围", "${t.minHeartRate}~${t.maxHeartRate} bpm", "参考"))
+        add(Triple("最低心率", if (t.minHeartRate > 0) "${t.minHeartRate} bpm" else "暂无可靠估算", "本地趋势"))
+        add(Triple("最高心率", if (t.maxHeartRate > 0) "${t.maxHeartRate} bpm" else "暂无可靠估算", "本地趋势"))
         if (t.avgP > 0) add(Triple("平均 P 波宽度", "${t.avgP} ms", "API 输出"))
         if (t.avgQrs > 0) add(Triple("QRS 宽度", "${t.avgQrs} ms", "80-120"))
         if (t.prInterval > 0) add(Triple("PR 间期", "${t.prInterval} ms", "120-200"))

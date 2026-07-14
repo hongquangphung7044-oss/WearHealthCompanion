@@ -482,9 +482,6 @@ private fun EcgResultCard(result: com.wearhealth.companion.model.EcgAnalysisResu
             )
         }
 
-        if (result.isReverse) {
-            Text("导联可能拿反，建议重测", style = MaterialTheme.typography.bodySmall, color = Color(0xFFFF9800))
-        }
         if (result.possibleDiagnoses.isNotEmpty()) {
             Text(
                 "可能诊断: " + result.possibleDiagnoses.joinToString("、") { diagnosisLabelToText(it) },
@@ -647,12 +644,22 @@ private fun HistoryDetailCard(item: HistoryItem) {
             Text("30 秒测量期间的平均心跳次数",
                 style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
         }
-        if (item.minHeartRate > 0 && item.maxHeartRate > 0) {
-            Text("心率范围: ${item.minHeartRate} ~ ${item.maxHeartRate} bpm",
-                style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
-            Text("测量期间最低到最高心率，波动大可能心律不齐",
-                style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
-        }
+        Text(
+            "最低心率: " + if (item.minHeartRate > 0) "${item.minHeartRate} bpm" else "暂无可靠估算",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFB0BEC5),
+        )
+        Text(
+            "最高心率: " + if (item.maxHeartRate > 0) "${item.maxHeartRate} bpm" else "暂无可靠估算",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFB0BEC5),
+        )
+        Text(
+            "最低/最高心率由有效 R-R 间期本地估算，不是 API 直接返回",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF78909C),
+            textAlign = TextAlign.Center,
+        )
         // 间期参数
         if (item.avgQrs > 0) {
             Text("QRS 宽度: ${item.avgQrs} ms（正常 80-120）",

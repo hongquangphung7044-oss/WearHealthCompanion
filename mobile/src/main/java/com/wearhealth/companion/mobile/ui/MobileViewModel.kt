@@ -239,9 +239,12 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
      */
     suspend fun loadMeasurement(id: Long): EcgMeasurementTransfer? = repository.getById(id)
 
-    /** 删除一条记录 */
-    fun delete(id: Long) {
-        viewModelScope.launch { repository.delete(id) }
+    /** 删除一条手机 Room 记录，完成后在主线程回调 UI。 */
+    fun delete(id: Long, onDeleted: () -> Unit = {}) {
+        viewModelScope.launch {
+            repository.delete(id)
+            onDeleted()
+        }
     }
 
     /**

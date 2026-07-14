@@ -92,12 +92,18 @@ fun EcgAnalysisResult.toParamInfos(): List<EcgParamInfo> = buildList {
             "30 秒测量期间的平均每分钟心跳次数"
         ))
     }
-    if (minHeartRate > 0 && maxHeartRate > 0) {
-        add(EcgParamInfo(
-            "心率范围", "$minHeartRate ~ $maxHeartRate bpm", "60-100",
-            "测量期间最低到最高心率。波动大可能提示心律不齐"
-        ))
-    }
+    add(EcgParamInfo(
+        "最低心率",
+        if (minHeartRate > 0) "$minHeartRate bpm" else "暂无可靠估算",
+        "本地趋势参考",
+        "由单导联波形的有效 R-R 间期本地估算；无法稳定识别时不隐藏项目，也不填入猜测值",
+    ))
+    add(EcgParamInfo(
+        "最高心率",
+        if (maxHeartRate > 0) "$maxHeartRate bpm" else "暂无可靠估算",
+        "本地趋势参考",
+        "由单导联波形的有效 R-R 间期本地估算；并非 HeartVoice API 直接返回",
+    ))
     if (avgP > 0) {
         add(EcgParamInfo(
             "平均 P 波宽度", "$avgP ms", "API 输出",
@@ -203,30 +209,37 @@ fun computeMinMaxHeartRate(ecgData: List<Int>, sampleRateHz: Int): Pair<Int, Int
         filtered[i] = sum / (to - from)
     }
 
-    // 3. 计算信号 RMS 作为自适应阈值
-    val rms = Math.sqrt(filtered.map { it * it }.average())
+    // 3. 自动选择主峰极性。单导联佩戴、电极方向和设备坐标可能让 R 峰向上或向下；
+    // isReverse 也可能误报，因此本地显示算法不假定正峰，更不能据此拒绝 ECG。
+    val positivePeak = filtered.maxOrNull() ?: 0.0
+    val negativePeak = kotlin.math.abs(filtered.minOrNull() ?: 0.0)
+    val polarity = if (negativePeak > positivePeak) -1.0 else 1.0
+    val oriented = DoubleArray(filtered.size) { index -> filtered[index] * polarity }
+
+    // 4. 计算信号 RMS 作为自适应阈值
+    val rms = Math.sqrt(oriented.map { it * it }.average())
     val threshold = rms * 2.0  // R 波幅度通常是噪声的 2-5 倍
     if (threshold < 50.0) return 0 to 0  // 信号太弱
 
-    // 4. 检测 R 峰：阈值 + 局部最大 + 形态验证
+    // 5. 检测 R 峰：阈值 + 局部最大 + 形态验证
     val rPeaks = mutableListOf<Int>()
     val refractorySamples = sampleRateHz / 3  // 不应期 333ms（最多 180bpm）
     var lastPeakIdx = -refractorySamples * 2
     val checkRange = sampleRateHz / 50  // ±10ms 局部最大检查
 
-    for (i in filtered.indices) {
-        if (filtered[i] < threshold) continue
+    for (i in oriented.indices) {
+        if (oriented[i] < threshold) continue
         // 检查局部最大值
         val lo = maxOf(0, i - checkRange)
-        val hi = minOf(filtered.size, i + checkRange + 1)
+        val hi = minOf(oriented.size, i + checkRange + 1)
         var isLocalMax = true
         for (j in lo until hi) {
-            if (j != i && filtered[j] > filtered[i]) { isLocalMax = false; break }
+            if (j != i && oriented[j] > oriented[i]) { isLocalMax = false; break }
         }
         if (!isLocalMax) continue
         // 形态验证：峰值附近的斜率要够大（R 波是尖窄峰）
         val slopeIdx = maxOf(0, i - sampleRateHz / 20)  // 50ms 前
-        val slope = (filtered[i] - filtered[slopeIdx])
+        val slope = (oriented[i] - oriented[slopeIdx])
         if (slope < threshold * 0.5) continue  // 斜率不够，可能是缓波
         // 不应期检查
         if ((i - lastPeakIdx) < refractorySamples) continue
@@ -237,7 +250,7 @@ fun computeMinMaxHeartRate(ecgData: List<Int>, sampleRateHz: Int): Pair<Int, Int
 
     if (rPeaks.size < 5) return 0 to 0  // 至少 5 个心跳
 
-    // 5. 计算 R-R 间期 → 瞬时心率，剔除异常值
+    // 6. 计算 R-R 间期 → 瞬时心率，剔除异常值
     val instantHrs = mutableListOf<Int>()
     for (i in 1 until rPeaks.size) {
         val rrMs = (rPeaks[i] - rPeaks[i - 1]) * 1000.0 / sampleRateHz

@@ -256,7 +256,7 @@ shared/src/main/java/com/wearhealth/companion/shared/
 - PDF 使用 Android `PdfDocument`；Android 10+ 发布到共享 `Download/WearHealthCompanion`，Android 8–9 通过系统文件选择器保存，并可从 App 直接打开；
 - 手机保存 HeartVoice Key，供已配对手表通过 BLE 读取；
 - 显示 Google 通道状态和 BLE 广播/连接/接收状态；默认开启 connected-device 前台服务，以常驻通知保持后台监听；
-- 同一 timestamp 重传不会产生重复 ECG。
+- 同一 timestamp 重传不会产生重复 ECG；手机详情提供带确认对话框的“删除此记录”，只删除手机 Room 副本，不删除手表历史或改变手表同步标记。
 
 ### PDF 与波形解释边界
 
@@ -265,6 +265,8 @@ shared/src/main/java/com/wearhealth/companion/shared/
 - 手机详情读取约 15,000 点完整 `rawEcgData`，不是约 400 点缩略图；界面显示点数、500 Hz 采样率和估算时长；
 - 波形先去均值并按可见窗口自适应振幅，完整 30 秒默认压缩显示；具有节律、趋势和相对形态参考价值，放大后更易观察；
 - 屏幕与 PDF 网格不是严格校准的 25 mm/s、10 mm/mV 临床心电图纸，单导联不能等同于临床 12 导联，也不能用于疾病诊断。
+- `isReverse` 继续作为 API/协议兼容字段内部保存，但因单导联实机存在持续误报，普通用户界面和 PDF 不再显示“导联可能拿反”提示；不据此拒绝或要求重测。
+- 最低/最高心率仍由完整波形的有效 R-R 间期本地估算，不是 API 直接返回；手机、手表和 PDF 始终显示这两个项目，无法可靠估算时明确显示“暂无可靠估算”，不静默隐藏也不填猜测值。
 
 ### 自动同步流程
 

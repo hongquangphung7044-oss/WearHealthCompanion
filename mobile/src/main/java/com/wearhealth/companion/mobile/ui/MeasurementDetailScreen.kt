@@ -18,7 +18,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,6 +61,7 @@ fun MeasurementDetailScreen(
     var transfer by remember { mutableStateOf<EcgMeasurementTransfer?>(null) }
     var loaded by remember { mutableStateOf(false) }
     var openError by remember { mutableStateOf<String?>(null) }
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     LaunchedEffect(measurementId) {
@@ -74,6 +77,32 @@ fun MeasurementDetailScreen(
         ActivityResultContracts.CreateDocument("application/pdf"),
     ) { uri ->
         if (uri != null) transfer?.let { viewModel.exportPdf(it, uri) }
+    }
+
+    if (showDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            title = { Text("删除手机记录？") },
+            text = {
+                Text("此操作只删除手机 Room 中的这条记录，不会删除手表历史。删除后无法在手机端恢复。")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteConfirmation = false
+                        viewModel.delete(measurementId, onDeleted = onBack)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text("确认删除") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showDeleteConfirmation = false }) {
+                    Text("取消")
+                }
+            },
+        )
     }
 
     fun export() {
@@ -131,6 +160,7 @@ fun MeasurementDetailScreen(
                 pdfError = pdfError ?: openError,
                 onExport = ::export,
                 onOpenPdf = ::openPdf,
+                onDelete = { showDeleteConfirmation = true },
             )
         }
     }
@@ -145,6 +175,7 @@ private fun DetailContent(
     pdfError: String?,
     onExport: () -> Unit,
     onOpenPdf: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     val duration = if (data.sampleRate > 0) data.rawEcgData.size.toDouble() / data.sampleRate else 0.0
     Column(
@@ -212,14 +243,6 @@ private fun DetailContent(
                         color = MaterialTheme.colorScheme.tertiary,
                     )
                 }
-                if (data.isReverse) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "API 检测到导联方向可能拿反，建议重新测量。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
             }
         }
 
@@ -229,9 +252,16 @@ private fun DetailContent(
                 Spacer(Modifier.height(8.dp))
                 ParamRow("API 异常标志", if (data.isAbnormal) "异常" else "未标记异常", "API 输出")
                 ParamRow("平均心率", "${data.avgHeartRate} bpm", "60-100")
-                if (data.minHeartRate > 0 && data.maxHeartRate > 0) {
-                    ParamRow("本地心率范围", "${data.minHeartRate} ~ ${data.maxHeartRate} bpm", "参考")
-                }
+                ParamRow(
+                    "最低心率",
+                    if (data.minHeartRate > 0) "${data.minHeartRate} bpm" else "暂无可靠估算",
+                    "本地趋势参考",
+                )
+                ParamRow(
+                    "最高心率",
+                    if (data.maxHeartRate > 0) "${data.maxHeartRate} bpm" else "暂无可靠估算",
+                    "本地趋势参考",
+                )
                 if (data.avgP > 0) ParamRow("平均 P 波宽度", "${data.avgP} ms", "API 输出")
                 if (data.avgQrs > 0) ParamRow("QRS 宽度", "${data.avgQrs} ms", "80-120")
                 if (data.prInterval > 0) ParamRow("PR 间期", "${data.prInterval} ms", "120-200")
@@ -240,6 +270,12 @@ private fun DetailContent(
                 ParamRow("房性早搏", "${data.pacCount} 次", "API 输出")
                 ParamRow("室性早搏", "${data.pvcCount} 次", "API 输出")
                 ParamRow("采样率", "${data.sampleRate} Hz", "原始数据")
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "最低/最高心率由完整单导联波形的有效 R-R 间期本地估算，不是 HeartVoice API 直接返回；无法可靠估算时不会显示猜测值。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
@@ -271,6 +307,16 @@ private fun DetailContent(
         }
         pdfError?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+
+        OutlinedButton(
+            onClick = onDelete,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+        ) {
+            Text("删除此记录")
         }
 
         Text(
