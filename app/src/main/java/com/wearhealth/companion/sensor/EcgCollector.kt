@@ -41,8 +41,18 @@ class EcgCollector(private val context: Context) {
     private val _liveSamples = MutableStateFlow<List<Int>>(emptyList())
     val liveSamples: StateFlow<List<Int>> = _liveSamples.asStateFlow()
 
-    /** 采集到的完整 ECG 数据（mV × 1000，整数） */
+    /** 采集到的完整 ECG 数据（mV × 1000，整数）。SDK 回调和采集协程运行在线程间。 */
     private val ecgData = mutableListOf<Int>()
+    private val ecgDataLock = Any()
+
+    private fun clearEcgData() = synchronized(ecgDataLock) { ecgData.clear() }
+    private fun ecgDataSize(): Int = synchronized(ecgDataLock) { ecgData.size }
+    private fun isEcgDataEmpty(): Boolean = synchronized(ecgDataLock) { ecgData.isEmpty() }
+    private fun snapshotEcgData(): List<Int> = synchronized(ecgDataLock) { ecgData.toList() }
+    private fun appendEcgSample(sample: Int) = synchronized(ecgDataLock) { ecgData.add(sample) }
+    private fun recentEcgSnapshot(maxSamples: Int): List<Int> = synchronized(ecgDataLock) {
+        ecgData.takeLast(maxSamples)
+    }
 
     private var healthTrackingService: HealthTrackingService? = null
     private var healthTracker: HealthTracker? = null
@@ -75,7 +85,7 @@ class EcgCollector(private val context: Context) {
         }
 
         _state.value = EcgCollectionState.Connecting  // 预热中
-        ecgData.clear()
+        clearEcgData()
         hasContact = false
         _liveSamples.value = emptyList()
         isConnected = false
@@ -123,7 +133,7 @@ class EcgCollector(private val context: Context) {
                 delay(100)
                 preheatCount++
             }
-            if (!hasContact || ecgData.isEmpty()) {
+            if (!hasContact || isEcgDataEmpty()) {
                 _state.value = EcgCollectionState.Error(
                     "30 秒内未检测到电极接触。可能原因：\n" +
                     "1. 手指太干 → 涂点护手霜\n" +
@@ -147,7 +157,7 @@ class EcgCollector(private val context: Context) {
                 delay(1000)
             }
             // 激活完成，清空激活期间的数据，确保 30 秒采集从稳定状态开始
-            ecgData.clear()
+            clearEcgData()
             _liveSamples.value = emptyList()
             Log.i(TAG, "预热激活完成，开始 30 秒正式采集")
 
@@ -160,24 +170,29 @@ class EcgCollector(private val context: Context) {
                 delay(100)
                 tick++
                 val countdown = targetDurationSec - (tick / 10)
-                _state.value = EcgCollectionState.Collecting(ecgData.size, countdown)
-                // 实时波形：显示最近 250 个采样点 ≈ 0.5 秒，清晰显示一个心跳周期
-                val startIdx = maxOf(0, ecgData.size - 250)
-                _liveSamples.value = ecgData.subList(startIdx, ecgData.size).toList()
+                val sampleCount = ecgDataSize()
+                _state.value = EcgCollectionState.Collecting(sampleCount, countdown)
+                // SDK callback writes on another thread. Publish an immutable snapshot so a
+                // concurrent sample cannot invalidate subList iteration and abort collection.
+                _liveSamples.value = recentEcgSnapshot(250)
             }
 
             // 6. 停止追踪器但保持 service（下次测量复用）
             stopEcgTracker()
 
+            val completedData = snapshotEcgData()
             // 最终波形（降采样到 300 点用于结果页全局缩略图）
-            val finalWaveform = downsample(ecgData, 300)
+            val finalWaveform = downsample(completedData, 300)
             _liveSamples.value = finalWaveform
 
-            Log.i(TAG, "ECG 采集完成: ${ecgData.size} 个采样点")
-            return ecgData.toList()
+            Log.i(TAG, "ECG 采集完成: ${completedData.size} 个采样点")
+            return completedData
         } catch (e: Exception) {
             Log.e(TAG, "ECG 采集失败", e)
-            _state.value = EcgCollectionState.Error(e.message ?: "采集失败")
+            val detail = e.message?.takeIf { it.isNotBlank() }
+                ?: e.javaClass.simpleName.takeIf { it.isNotBlank() }
+                ?: "未知异常"
+            _state.value = EcgCollectionState.Error("采集失败：$detail")
             fullyReleaseService()
             return emptyList()
         }
@@ -297,7 +312,7 @@ class EcgCollector(private val context: Context) {
                             if (!hasContact && isContact) {
                                 // 首次检测到接触，清空预热噪声
                                 hasContact = true
-                                ecgData.clear()
+                                clearEcgData()
                                 leadLost = false
                                 Log.i(TAG, "检测到电极接触 (leadOff=$leadOff)，清空预热数据，开始正式记录")
                             }
@@ -305,7 +320,7 @@ class EcgCollector(private val context: Context) {
                             if (hasContact) {
                                 if (isContact) {
                                     leadLost = false
-                                    ecgData.add((ecgMv * 1000).toInt())
+                                    appendEcgSample((ecgMv * 1000).toInt())
                                 } else {
                                     leadLost = true
                                     // 不记录断开期间的噪声数据
@@ -342,7 +357,7 @@ class EcgCollector(private val context: Context) {
 
     fun disconnect() {
         fullyReleaseService()
-        ecgData.clear()
+        clearEcgData()
         _liveSamples.value = emptyList()
         _state.value = EcgCollectionState.Idle
     }

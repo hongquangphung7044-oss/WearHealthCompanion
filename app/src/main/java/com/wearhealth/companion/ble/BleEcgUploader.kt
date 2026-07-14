@@ -2,6 +2,8 @@ package com.wearhealth.companion.ble
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -24,6 +26,7 @@ import androidx.core.content.ContextCompat
 import com.wearhealth.companion.shared.BleMeasurementCodec
 import com.wearhealth.companion.shared.BleSyncProtocol
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
+import java.util.ArrayDeque
 
 /**
  * Watch-side direct BLE uploader.
@@ -36,8 +39,10 @@ class BleEcgUploader(private val context: Context) {
 
     private val manager = context.getSystemService(BluetoothManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
+    private val phoneStore = BlePhoneDeviceStore(context)
 
     private var scanner: BluetoothLeScanner? = null
+    private var adapter: BluetoothAdapter? = null
     private var gatt: BluetoothGatt? = null
     private var uploadCharacteristic: BluetoothGattCharacteristic? = null
     private var transferPayload: ByteArray? = null
@@ -50,6 +55,10 @@ class BleEcgUploader(private val context: Context) {
     private var observedTarget = false
     private var observedUnbondedState: Int? = null
     private var targetConnectionStarted = false
+    private var probedBondedCandidates = 0
+    private val bondedCandidates = ArrayDeque<BluetoothDevice>()
+    private var tryingBondedCandidate = false
+    private var matchedService = false
 
     fun upload(transfer: EcgMeasurementTransfer, done: (BleUploadResult) -> Unit) {
         if (completion != null) {
@@ -66,10 +75,6 @@ class BleEcgUploader(private val context: Context) {
             return
         }
         val scanner = adapter.bluetoothLeScanner
-        if (scanner == null) {
-            done(BleUploadResult.Failure("BLE 扫描不可用"))
-            return
-        }
 
         val payload = try {
             BleMeasurementCodec.encode(transfer)
@@ -85,9 +90,98 @@ class BleEcgUploader(private val context: Context) {
         observedResults = 0
         observedTarget = false
         observedUnbondedState = null
+        probedBondedCandidates = 0
         targetConnectionStarted = false
+        tryingBondedCandidate = false
+        matchedService = false
+        this.adapter = adapter
         this.scanner = scanner
+        bondedCandidates.clear()
 
+        val cachedPhone = phoneStore.getBonded(adapter)
+        if (cachedPhone != null) bondedCandidates.add(cachedPhone)
+        val remainingCandidates = try {
+            adapter.bondedDevices
+                .asSequence()
+                .filter { cachedPhone == null || it.address != cachedPhone.address }
+                .sortedByDescending {
+                    if (it.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.PHONE) 1 else 0
+                }
+                .take((MAX_BONDED_CANDIDATES - bondedCandidates.size).coerceAtLeast(0))
+                .toList()
+        } catch (e: SecurityException) {
+            finish(BleUploadResult.Failure("系统不允许读取已配对设备；请重新授予附近设备权限"))
+            return
+        }
+        bondedCandidates.addAll(remainingCandidates)
+
+        handler.postDelayed(timeout, TIMEOUT_MS)
+        if (bondedCandidates.isEmpty()) startScan() else connectNextBondedCandidate()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectNextBondedCandidate() {
+        if (terminal) return
+        handler.removeCallbacks(bondedCandidateTimeout)
+        if (tryingBondedCandidate) {
+            try {
+                gatt?.disconnect()
+                gatt?.close()
+            } catch (_: Exception) {
+            }
+            gatt = null
+        }
+        tryingBondedCandidate = false
+        matchedService = false
+        targetConnectionStarted = false
+
+        val device = bondedCandidates.pollFirst()
+        if (device == null) {
+            startScan()
+            return
+        }
+        if (device.bondState != BluetoothDevice.BOND_BONDED) {
+            connectNextBondedCandidate()
+            return
+        }
+
+        tryingBondedCandidate = true
+        targetConnectionStarted = true
+        probedBondedCandidates++
+        val connected = device.connectGatt(
+            context,
+            false,
+            gattCallback,
+            BluetoothDevice.TRANSPORT_LE,
+        )
+        if (connected == null) {
+            connectNextBondedCandidate()
+        } else {
+            gatt = connected
+            handler.postDelayed(bondedCandidateTimeout, BONDED_CANDIDATE_TIMEOUT_MS)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startScan() {
+        if (terminal) return
+        handler.removeCallbacks(bondedCandidateTimeout)
+        if (tryingBondedCandidate) {
+            try {
+                gatt?.disconnect()
+                gatt?.close()
+            } catch (_: Exception) {
+            }
+            gatt = null
+        }
+        tryingBondedCandidate = false
+        matchedService = false
+        targetConnectionStarted = false
+
+        val scanner = scanner ?: run {
+            finish(BleUploadResult.Failure("BLE 扫描不可用"))
+            return
+        }
         try {
             // Samsung/Wear OS may silently lose 128-bit UUID hardware-filter results. Scan with
             // an empty platform filter and validate the service UUID in BleScanSupport instead.
@@ -101,7 +195,6 @@ class BleEcgUploader(private val context: Context) {
                     .build(),
                 scanCallback,
             )
-            handler.postDelayed(timeout, TIMEOUT_MS)
         } catch (e: Exception) {
             finish(BleUploadResult.Failure("无法扫描手机同步器: ${e.message ?: "未知错误"}"))
         }
@@ -150,39 +243,60 @@ class BleEcgUploader(private val context: Context) {
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (terminal) return
+            if (gatt !== this@BleEcgUploader.gatt) {
+                try { gatt.close() } catch (_: Exception) {}
+                return
+            }
             if (status != BluetoothGatt.GATT_SUCCESS || newState != BluetoothProfile.STATE_CONNECTED) {
-                finish(BleUploadResult.Failure("手机 BLE 连接失败（$status）"))
+                if (tryingBondedCandidate && !matchedService) {
+                    connectNextBondedCandidate()
+                } else {
+                    finish(BleUploadResult.Failure("手机 BLE 连接失败（$status）"))
+                }
                 return
             }
             this@BleEcgUploader.gatt = gatt
             if (!gatt.requestMtu(BleSyncProtocol.PREFERRED_MTU)) {
-                finish(BleUploadResult.Failure("无法协商 ECG BLE 所需的数据包大小"))
+                if (tryingBondedCandidate && !matchedService) connectNextBondedCandidate()
+                else finish(BleUploadResult.Failure("无法协商 ECG BLE 所需的数据包大小"))
             }
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            if (terminal) return
+            if (terminal || gatt !== this@BleEcgUploader.gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS || mtu < BleSyncProtocol.MIN_ECG_MTU) {
-                finish(BleUploadResult.Failure("手机 BLE MTU 不足，无法可靠传送完整 ECG"))
+                if (tryingBondedCandidate && !matchedService) connectNextBondedCandidate()
+                else finish(BleUploadResult.Failure("手机 BLE MTU 不足，无法可靠传送完整 ECG"))
                 return
             }
             buildFramesForMtu(mtu)
-            gatt.discoverServices()
+            if (!gatt.discoverServices()) {
+                if (tryingBondedCandidate && !matchedService) connectNextBondedCandidate()
+                else finish(BleUploadResult.Failure("无法发现手机 BLE 服务"))
+            }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (terminal) return
+            if (terminal || gatt !== this@BleEcgUploader.gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                finish(BleUploadResult.Failure("无法发现手机 BLE 服务（$status）"))
+                if (tryingBondedCandidate && !matchedService) connectNextBondedCandidate()
+                else finish(BleUploadResult.Failure("无法发现手机 BLE 服务（$status）"))
                 return
             }
             val service = gatt.getService(BleSyncProtocol.SERVICE_UUID)
             val upload = service?.getCharacteristic(BleSyncProtocol.UPLOAD_UUID)
             val ack = service?.getCharacteristic(BleSyncProtocol.ACK_UUID)
             if (upload == null || ack == null) {
-                finish(BleUploadResult.Failure("手机不是兼容的 ECG 同步器"))
+                if (tryingBondedCandidate) {
+                    connectNextBondedCandidate()
+                } else {
+                    finish(BleUploadResult.Failure("手机不是兼容的 ECG 同步器"))
+                }
                 return
             }
+            matchedService = true
+            handler.removeCallbacks(bondedCandidateTimeout)
+            phoneStore.save(gatt.device)
             uploadCharacteristic = upload
             if (!gatt.setCharacteristicNotification(ack, true)) {
                 finish(BleUploadResult.Failure("无法订阅手机确认通知"))
@@ -200,7 +314,7 @@ class BleEcgUploader(private val context: Context) {
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (terminal) return
+            if (terminal || gatt !== this@BleEcgUploader.gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 finish(BleUploadResult.Failure("手机确认通道建立失败（$status）"))
                 return
@@ -213,7 +327,7 @@ class BleEcgUploader(private val context: Context) {
             characteristic: BluetoothGattCharacteristic,
             status: Int,
         ) {
-            if (terminal) return
+            if (terminal || gatt !== this@BleEcgUploader.gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 finish(BleUploadResult.Failure("ECG BLE 分片发送失败（$status）"))
                 return
@@ -222,7 +336,8 @@ class BleEcgUploader(private val context: Context) {
         }
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            if (terminal || characteristic.uuid != BleSyncProtocol.ACK_UUID) return
+            if (terminal || gatt !== this@BleEcgUploader.gatt ||
+                characteristic.uuid != BleSyncProtocol.ACK_UUID) return
             val ack = BleSyncProtocol.parseAck(characteristic.value)
             if (ack == null) {
                 finish(BleUploadResult.Failure("收到无效的手机确认"))
@@ -274,6 +389,12 @@ class BleEcgUploader(private val context: Context) {
         }
     }
 
+    private val bondedCandidateTimeout = Runnable {
+        if (!terminal && tryingBondedCandidate && !matchedService) {
+            connectNextBondedCandidate()
+        }
+    }
+
     private val timeout = Runnable {
         val message = when {
             observedUnbondedState != null ->
@@ -281,9 +402,11 @@ class BleEcgUploader(private val context: Context) {
             observedTarget ->
                 "已发现手机同步器广播，但未能建立安全连接"
             observedResults > 0 ->
-                "手表扫描正常（看到 $observedResults 个周边广播），但未看到手机同步器"
+                "已直连检查 $probedBondedCandidates 个系统配对设备；手表扫描正常（看到 $observedResults 个周边广播），但未看到手机同步器"
+            probedBondedCandidates > 0 ->
+                "已直连检查 $probedBondedCandidates 个系统配对设备但未找到本项目服务，且手表未收到 BLE 广播；请保持手机 App 前台并重启 BLE 同步器"
             else ->
-                "手表未收到任何 BLE 广播；请确认附近设备权限、关闭省电模式并保持屏幕亮起"
+                "系统没有可直连的配对设备，且手表未收到 BLE 广播；请检查 Galaxy Wearable 配对和附近设备权限"
         }
         finish(BleUploadResult.Failure(message))
     }
@@ -293,11 +416,14 @@ class BleEcgUploader(private val context: Context) {
         if (terminal) return
         terminal = true
         handler.removeCallbacks(timeout)
+        handler.removeCallbacks(bondedCandidateTimeout)
         try {
             scanner?.stopScan(scanCallback)
         } catch (_: Exception) {
         }
+        adapter = null
         scanner = null
+        bondedCandidates.clear()
         try {
             gatt?.disconnect()
             gatt?.close()
@@ -323,6 +449,8 @@ class BleEcgUploader(private val context: Context) {
 
     companion object {
         private const val TIMEOUT_MS = 45_000L
+        private const val BONDED_CANDIDATE_TIMEOUT_MS = 5_000L
+        private const val MAX_BONDED_CANDIDATES = 6
         private const val TAG = "BleEcgUploader"
     }
 }
