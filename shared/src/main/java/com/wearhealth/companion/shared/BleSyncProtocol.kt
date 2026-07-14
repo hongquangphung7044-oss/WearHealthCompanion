@@ -33,8 +33,24 @@ object BleSyncProtocol {
     const val ACK_SUCCESS: Byte = 0
     const val ACK_FAILURE: Byte = 1
 
-    /** Payload bytes inside a GATT write after 3-byte ATT and 5-byte protocol overhead. */
-    fun chunkPayloadBytesForMtu(mtu: Int): Int = (mtu - 3 - 1 - Int.SIZE_BYTES).coerceAtLeast(0)
+    private const val ATT_HEADER_BYTES = 3
+    private const val CHUNK_HEADER_BYTES = 1 + Int.SIZE_BYTES
+
+    /**
+     * Payload bytes inside one CHUNK frame.
+     *
+     * Android 14 may report ATT MTU 517 even when the app requests a smaller value. MTU 517
+     * leaves 514 bytes after the ATT header, but a GATT attribute value is still limited to 512
+     * bytes. The Android 13+ writeCharacteristic(value, writeType) overload throws when that
+     * limit is exceeded, so cap the complete protocol frame before subtracting our CHUNK header.
+     */
+    fun chunkPayloadBytesForMtu(mtu: Int): Int {
+        val attPayloadBytes = (mtu - ATT_HEADER_BYTES).coerceAtLeast(0)
+        return (minOf(attPayloadBytes, MAX_ATTRIBUTE_VALUE_BYTES) - CHUNK_HEADER_BYTES)
+            .coerceAtLeast(0)
+    }
+
+    const val MAX_ATTRIBUTE_VALUE_BYTES = 512
     const val MIN_ECG_MTU = 188
     const val PREFERRED_MTU = 247
     const val MAX_TRANSFER_BYTES = 1_000_000

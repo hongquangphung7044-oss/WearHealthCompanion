@@ -67,15 +67,27 @@ class BleSyncProtocolTest {
 
     @Test
     fun mtuCalculationNeverProducesOversizeWrite() {
-        for (mtu in 0..BleSyncProtocol.PREFERRED_MTU) {
+        for (mtu in 0..1_024) {
             val payloadBytes = BleSyncProtocol.chunkPayloadBytesForMtu(mtu)
             assertTrue(payloadBytes >= 0)
             if (payloadBytes > 0) {
-                assertTrue(BleSyncProtocol.chunkFrame(0, ByteArray(payloadBytes)).size <= mtu - 3)
+                val frameSize = BleSyncProtocol.chunkFrame(0, ByteArray(payloadBytes)).size
+                assertTrue(frameSize <= (mtu - 3).coerceAtLeast(0))
+                assertTrue(frameSize <= BleSyncProtocol.MAX_ATTRIBUTE_VALUE_BYTES)
             }
         }
         assertEquals(180, BleSyncProtocol.chunkPayloadBytesForMtu(BleSyncProtocol.MIN_ECG_MTU))
         assertEquals(239, BleSyncProtocol.chunkPayloadBytesForMtu(BleSyncProtocol.PREFERRED_MTU))
+        // Android 14 reports MTU 517 regardless of the smaller requested value. The resulting
+        // complete GATT attribute value must stay at 512 bytes, leaving 507 bytes after our header.
+        assertEquals(507, BleSyncProtocol.chunkPayloadBytesForMtu(517))
+        assertEquals(
+            BleSyncProtocol.MAX_ATTRIBUTE_VALUE_BYTES,
+            BleSyncProtocol.chunkFrame(
+                0,
+                ByteArray(BleSyncProtocol.chunkPayloadBytesForMtu(517)),
+            ).size,
+        )
     }
 
     @Test

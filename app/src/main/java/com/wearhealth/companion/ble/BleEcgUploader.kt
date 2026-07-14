@@ -398,11 +398,29 @@ class BleEcgUploader(private val context: Context) {
 
         // minSdk is 33: use the non-deprecated overload that takes an immutable value for this
         // operation. This avoids mutating characteristic.value while Samsung still owns it.
-        val queueStatus = currentGatt.writeCharacteristic(
-            characteristic,
-            frames[nextFrame].copyOf(),
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-        )
+        val frame = frames[nextFrame]
+        val queueStatus = try {
+            currentGatt.writeCharacteristic(
+                characteristic,
+                frame.copyOf(),
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            )
+        } catch (e: IllegalArgumentException) {
+            // Android 13+ throws instead of returning a status when an attribute value exceeds
+            // the platform limit. Convert that platform exception into a visible failure rather
+            // than letting the Bluetooth callback kill the watch process.
+            Log.e(TAG, "GATT 拒绝帧参数（frame=$nextFrame, bytes=${frame.size}）", e)
+            finish(
+                BleUploadResult.Failure(
+                    "ECG BLE 分片参数无效（帧 $nextFrame，${frame.size} 字节）",
+                ),
+            )
+            return
+        } catch (e: SecurityException) {
+            Log.e(TAG, "GATT 写入权限在传输期间被撤销", e)
+            finish(BleUploadResult.Failure("附近设备权限在传输期间被撤销"))
+            return
+        }
         if (queueStatus == BluetoothStatusCodes.SUCCESS) {
             writeInFlight = true
             return
