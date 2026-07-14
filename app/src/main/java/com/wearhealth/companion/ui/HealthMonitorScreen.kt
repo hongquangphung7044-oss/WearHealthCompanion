@@ -266,14 +266,6 @@ fun HealthMonitorScreen(
                     }
                 }
                 item {
-                    val detail = uiState.historyDetail!!
-                    val label = when (detail.syncStatus) { "SENT" -> "已发送 · 重新发送"; "SENDING" -> "正在发送…"; else -> "发送到手机" }
-                    Button(
-                        onClick = { viewModel.sendHistoryToPhone(detail) },
-                        enabled = detail.syncStatus != "SENDING",
-                    ) { Text(label, style = MaterialTheme.typography.bodySmall) }
-                }
-                item {
                     Button(
                         onClick = { viewModel.deleteHistory(uiState.historyDetail!!.timestamp) },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350)),

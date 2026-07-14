@@ -16,7 +16,8 @@ android {
         versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
         versionName = System.getenv("VERSION_NAME") ?: "1.0.0"
 
-
+        // API Key 编译时注入（作为默认值，运行时可被 SharedPreferences / 手机端下发覆盖）
+        buildConfigField("String", "HEARTVOICE_API_KEY", "\"${System.getenv("HEARTVOICE_API_KEY") ?: "aiecg_sk_ONGAJEzHVxKoZzOMRZVQ5yztNVMBH5Pi"}\"")
     }
 
     buildTypes {
