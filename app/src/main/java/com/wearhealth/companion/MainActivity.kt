@@ -17,7 +17,6 @@ import com.wearhealth.companion.model.EcgCollectionState
 import com.wearhealth.companion.ui.HealthMonitorScreen
 import com.wearhealth.companion.ui.HealthViewModel
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -51,17 +50,21 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 监听 ECG 采集状态，测量中（预热/采集/分析）自动保持屏幕常亮
+     * 监听测量与 BLE 同步状态；采集、分析、Key 获取或 ECG 上传期间保持屏幕常亮。
+     * 无过滤 BLE 扫描在 Android 熄屏后会被系统暂停，因此同步阶段也不能熄屏。
      */
     private fun setupKeepScreenOnDuringMeasurement() {
         lifecycleScope.launch {
-            viewModel.uiState.map { it.ecgState }
-                .distinctUntilChanged()
+            viewModel.uiState
+                .distinctUntilChanged { old, new ->
+                    old.ecgState == new.ecgState && old.syncingToPhone == new.syncingToPhone
+                }
                 .collect { state ->
-                    val keepOn = state is EcgCollectionState.Connecting ||
-                            state is EcgCollectionState.Preheating ||
-                            state is EcgCollectionState.Collecting ||
-                            state is EcgCollectionState.Analyzing
+                    val keepOn = state.ecgState is EcgCollectionState.Connecting ||
+                            state.ecgState is EcgCollectionState.Preheating ||
+                            state.ecgState is EcgCollectionState.Collecting ||
+                            state.ecgState is EcgCollectionState.Analyzing ||
+                            state.syncingToPhone
                     runOnUiThread {
                         if (keepOn) {
                             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

@@ -28,6 +28,9 @@ class BleApiKeyFetcher(private val context: Context) {
     private var callback: ((Result<String>) -> Unit)? = null
     private var finished = false
     private var observedUnbondedState: Int? = null
+    private var observedResults = 0
+    private var observedTarget = false
+    private var targetConnectionStarted = false
 
     fun fetch(done: (Result<String>) -> Unit) {
         if (callback != null) {
@@ -47,10 +50,21 @@ class BleApiKeyFetcher(private val context: Context) {
         callback = done
         finished = false
         observedUnbondedState = null
+        observedResults = 0
+        observedTarget = false
+        targetConnectionStarted = false
         try {
+            // Do not put the custom 128-bit UUID in Android's hardware ScanFilter. Several
+            // Samsung controllers silently drop matching advertisements. An empty filter keeps
+            // this a filtered API call while BleScanSupport performs strict software matching.
             scanner.startScan(
-                listOf(ScanFilter.Builder().setServiceUuid(android.os.ParcelUuid(BleSyncProtocol.SERVICE_UUID)).build()),
-                ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
+                listOf(ScanFilter.Builder().build()),
+                ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .setReportDelay(0L)
+                    .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                    .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                    .build(),
                 scanCallback,
             )
             handler.postDelayed(timeout, TIMEOUT_MS)
@@ -62,15 +76,33 @@ class BleApiKeyFetcher(private val context: Context) {
     @SuppressLint("MissingPermission")
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            handleScanResult(result)
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            results.forEach(::handleScanResult)
+        }
+
+        private fun handleScanResult(result: ScanResult) {
             if (finished) return
+            observedResults++
+            if (!BleScanSupport.matchesWearHealthService(result)) return
+            observedTarget = true
+            if (targetConnectionStarted) return
             if (result.device.bondState != BluetoothDevice.BOND_BONDED) {
                 observedUnbondedState = result.device.bondState
-                android.util.Log.w(TAG, "忽略未与手表配对的 BLE 设备（bondState=${result.device.bondState}）")
+                android.util.Log.w(TAG, "发现同步器广播，但系统报告未配对（bondState=${result.device.bondState}）")
                 return
             }
+            targetConnectionStarted = true
             manager?.adapter?.bluetoothLeScanner?.stopScan(this)
-            gatt = result.device.connectGatt(context, false, gattCallback)
-            if (gatt == null) finish(Result.failure(IllegalStateException("无法连接手机 BLE 同步器")))
+            gatt = result.device.connectGatt(
+                context,
+                false,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE,
+            )
+            if (gatt == null) finish(Result.failure(IllegalStateException("无法连接手机同步器")))
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -87,11 +119,9 @@ class BleApiKeyFetcher(private val context: Context) {
                 return
             }
             this@BleApiKeyFetcher.gatt = gatt
-            if (!gatt.requestMtu(BleSyncProtocol.PREFERRED_MTU)) gatt.discoverServices()
-        }
-
-        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            if (!finished) gatt.discoverServices()
+            if (!gatt.discoverServices()) {
+                finish(Result.failure(IllegalStateException("无法发现手机 GATT 服务")))
+            }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
@@ -128,10 +158,15 @@ class BleApiKeyFetcher(private val context: Context) {
 
     private val timeout = Runnable {
         val state = observedUnbondedState
-        val message = if (state != null) {
-            "已发现手机 BLE 广播，但系统报告未配对（bondState=$state）；请检查 Galaxy Wearable 配对状态"
-        } else {
-            "未发现手机 BLE 同步器；请保持手机 App 前台"
+        val message = when {
+            state != null ->
+                "已发现手机同步器，但系统报告未配对（bondState=$state）；请检查 Galaxy Wearable 配对状态"
+            observedTarget ->
+                "已发现手机同步器广播，但未能建立安全连接"
+            observedResults > 0 ->
+                "手表扫描正常（看到 $observedResults 个周边广播），但未看到手机同步器；请在手机点重启 BLE 同步器"
+            else ->
+                "手表未收到任何 BLE 广播；请确认附近设备权限、关闭省电模式并保持屏幕亮起"
         }
         finish(Result.failure(IllegalStateException(message)))
     }

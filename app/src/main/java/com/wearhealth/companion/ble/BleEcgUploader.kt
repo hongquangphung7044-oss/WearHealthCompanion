@@ -46,6 +46,10 @@ class BleEcgUploader(private val context: Context) {
     private var expectedTimestamp = 0L
     private var completion: ((BleUploadResult) -> Unit)? = null
     private var terminal = false
+    private var observedResults = 0
+    private var observedTarget = false
+    private var observedUnbondedState: Int? = null
+    private var targetConnectionStarted = false
 
     fun upload(transfer: EcgMeasurementTransfer, done: (BleUploadResult) -> Unit) {
         if (completion != null) {
@@ -78,16 +82,23 @@ class BleEcgUploader(private val context: Context) {
         completion = done
         terminal = false
         nextFrame = 0
+        observedResults = 0
+        observedTarget = false
+        observedUnbondedState = null
+        targetConnectionStarted = false
         this.scanner = scanner
 
         try {
+            // Samsung/Wear OS may silently lose 128-bit UUID hardware-filter results. Scan with
+            // an empty platform filter and validate the service UUID in BleScanSupport instead.
             scanner.startScan(
-                listOf(
-                    ScanFilter.Builder()
-                        .setServiceUuid(android.os.ParcelUuid(BleSyncProtocol.SERVICE_UUID))
-                        .build(),
-                ),
-                ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
+                listOf(ScanFilter.Builder().build()),
+                ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .setReportDelay(0L)
+                    .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                    .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                    .build(),
                 scanCallback,
             )
             handler.postDelayed(timeout, TIMEOUT_MS)
@@ -99,14 +110,33 @@ class BleEcgUploader(private val context: Context) {
     @SuppressLint("MissingPermission")
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            handleScanResult(result)
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            results.forEach(::handleScanResult)
+        }
+
+        private fun handleScanResult(result: ScanResult) {
             if (terminal) return
+            observedResults++
+            if (!BleScanSupport.matchesWearHealthService(result)) return
+            observedTarget = true
+            if (targetConnectionStarted) return
             if (result.device.bondState != BluetoothDevice.BOND_BONDED) {
-                Log.w(TAG, "忽略未与手表配对的 BLE 设备（bondState=${result.device.bondState}）")
+                observedUnbondedState = result.device.bondState
+                Log.w(TAG, "发现同步器广播，但系统报告未配对（bondState=${result.device.bondState}）")
                 return
             }
+            targetConnectionStarted = true
             scanner?.stopScan(this)
             scanner = null
-            val connected = result.device.connectGatt(context, false, gattCallback)
+            val connected = result.device.connectGatt(
+                context,
+                false,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE,
+            )
             if (connected == null) finish(BleUploadResult.Failure("无法连接手机同步器"))
             else gatt = connected
         }
@@ -245,7 +275,17 @@ class BleEcgUploader(private val context: Context) {
     }
 
     private val timeout = Runnable {
-        finish(BleUploadResult.Failure("等待手机 BLE 同步器超时；请保持手机同步器打开"))
+        val message = when {
+            observedUnbondedState != null ->
+                "已发现手机同步器，但系统报告未配对（bondState=$observedUnbondedState）"
+            observedTarget ->
+                "已发现手机同步器广播，但未能建立安全连接"
+            observedResults > 0 ->
+                "手表扫描正常（看到 $observedResults 个周边广播），但未看到手机同步器"
+            else ->
+                "手表未收到任何 BLE 广播；请确认附近设备权限、关闭省电模式并保持屏幕亮起"
+        }
+        finish(BleUploadResult.Failure(message))
     }
 
     @SuppressLint("MissingPermission")

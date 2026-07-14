@@ -85,6 +85,32 @@ class BleSyncProtocolTest {
         assertEquals(transfer.rawEcgData, EcgBinaryCodec.decode(EcgBinaryCodec.encode(transfer.rawEcgData)))
     }
 
+    @Test
+    fun rawAdvertisementParserFindsComplete128BitServiceUuid() {
+        val uuidLittleEndian = byteArrayOf(
+            0x01, 0x2a, 0x3e.toByte(), 0xf0.toByte(), 0x15, 0x6f, 0xb8.toByte(), 0x8b.toByte(),
+            0x02, 0x4b, 0x58, 0x2b, 0x00, 0x7d, 0x4b, 0x9a.toByte(),
+        )
+        val advertisement = byteArrayOf(2, 0x01, 0x06, 17, 0x07) + uuidLittleEndian + byteArrayOf(0)
+        assertTrue(BleAdvertisementMatcher.contains128BitServiceUuid(
+            advertisement,
+            BleSyncProtocol.SERVICE_UUID,
+        ))
+        assertFalse(BleAdvertisementMatcher.contains128BitServiceUuid(
+            advertisement,
+            BleSyncProtocol.ACK_UUID,
+        ))
+    }
+
+    @Test
+    fun rawAdvertisementParserRejectsTruncatedField() {
+        val truncated = byteArrayOf(17, 0x07, 0x01, 0x02)
+        assertFalse(BleAdvertisementMatcher.contains128BitServiceUuid(
+            truncated,
+            BleSyncProtocol.SERVICE_UUID,
+        ))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun measurementDecoderRejectsTrailingData() {
         BleMeasurementCodec.decode(BleMeasurementCodec.encode(transfer) + 0x01)
