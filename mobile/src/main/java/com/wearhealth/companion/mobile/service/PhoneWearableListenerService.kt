@@ -39,7 +39,8 @@ class PhoneWearableListenerService : WearableListenerService() {
             // 仅处理新增/变更事件（忽略删除）
             if (event.type != DataEvent.TYPE_CHANGED && event.type != DataEvent.TYPE_DELETED) continue
 
-            val sourceNodeId = uri.host ?: run {
+            val sourceNodeId = uri.host
+            if (sourceNodeId == null) {
                 Log.w(TAG, "ECG 数据缺少来源节点: $path")
                 continue
             }
