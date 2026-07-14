@@ -36,6 +36,7 @@ object BleSyncProtocol {
     fun chunkPayloadBytesForMtu(mtu: Int): Int = (mtu - 3 - 1 - Int.SIZE_BYTES).coerceAtLeast(0)
     const val MIN_ECG_MTU = 188
     const val PREFERRED_MTU = 247
+    const val MAX_TRANSFER_BYTES = 1_000_000
 
     /** BEGIN = type + version + payload length + CRC-32. */
     fun beginFrame(payload: ByteArray): ByteArray = ByteBuffer
@@ -73,14 +74,18 @@ object BleSyncProtocol {
         .putLong(timestamp)
         .array()
 
-    fun parseAck(frame: ByteArray): BleAck? = try {
-        val buffer = ByteBuffer.wrap(frame).order(ByteOrder.BIG_ENDIAN)
-        if (buffer.remaining() != 1 + 1 + Long.SIZE_BYTES || buffer.get() != TYPE_ACK) return null
-        val result = buffer.get()
-        if (result != ACK_SUCCESS && result != ACK_FAILURE) return null
-        BleAck(success = result == ACK_SUCCESS, timestamp = buffer.long)
-    } catch (_: Exception) {
-        null
+    fun parseAck(frame: ByteArray): BleAck? {
+        return try {
+            val buffer = ByteBuffer.wrap(frame).order(ByteOrder.BIG_ENDIAN)
+            if (buffer.remaining() != 1 + 1 + Long.SIZE_BYTES || buffer.get() != TYPE_ACK) {
+                return null
+            }
+            val result = buffer.get()
+            if (result != ACK_SUCCESS && result != ACK_FAILURE) return null
+            BleAck(success = result == ACK_SUCCESS, timestamp = buffer.long)
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun crc32(bytes: ByteArray): Long = CRC32().apply { update(bytes) }.value
