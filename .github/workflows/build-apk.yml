@@ -6,6 +6,12 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
 
+# Serialize releases for the same ref. This also prevents two successful runs from racing while
+# they update the generated README block; queued runs are never cancelled midway through release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,6 +32,9 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+
+      - name: Test README build-status updater
+        run: python3 -m unittest scripts/test_update_readme_build_status.py
 
       - name: Decode signing keystore
         run: |
@@ -104,3 +113,38 @@ jobs:
           files: artifacts/*.apk
           generate_release_notes: true
           tag_name: ${{ github.ref_name }}
+
+      - name: Update README with successful build status
+        if: github.ref_type == 'branch'
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          RUN_ID: ${{ github.run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # This step runs only after tests, both APKs, Artifact upload and Release succeeded.
+          # Keep real-device findings outside the generated block: CI success is not BLE proof.
+          # Start from the latest main so an older concurrent run cannot overwrite a newer block.
+          git pull --rebase origin main
+          GENERATED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          python3 scripts/update_readme_build_status.py \
+            --build "$BUILD_NUMBER" \
+            --run-id "$RUN_ID" \
+            --source-sha "$SOURCE_SHA" \
+            --repository "$REPOSITORY" \
+            --generated-at "$GENERATED_AT"
+
+          git diff --check
+          if git diff --quiet -- README.md; then
+            echo "README build status is already current"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: update successful build #${BUILD_NUMBER} [skip ci]"
+          # Push without force. If main changes in this short final window, fail rather than
+          # overwrite work; the next successful build will refresh the generated block.
+          git push origin HEAD:main

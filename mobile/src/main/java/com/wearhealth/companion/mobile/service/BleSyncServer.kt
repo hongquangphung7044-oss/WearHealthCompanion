@@ -369,7 +369,7 @@ class BleSyncServer(private val context: Context) {
         current.nextSequence++
         val percent = (current.output.size().toLong() * 100L / current.totalBytes).coerceIn(0L, 100L)
         if (current.nextSequence == 1 || current.nextSequence % 25 == 0 || percent == 100L) {
-            _status.value = "正在接收 ECG 分片：$percent%（${current.output.size()}/${current.totalBytes} 字节）"
+            _status.value = "正在接收 ECG 分片 #${current.nextSequence}：$percent%（${current.output.size()}/${current.totalBytes} 字节）"
         }
         return true
     }

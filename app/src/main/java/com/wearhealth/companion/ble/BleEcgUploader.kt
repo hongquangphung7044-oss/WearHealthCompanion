@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
@@ -49,6 +50,8 @@ class BleEcgUploader(private val context: Context) {
     private var transferPayload: ByteArray? = null
     private var frames: List<ByteArray> = emptyList()
     private var nextFrame = 0
+    private var writeInFlight = false
+    private var frameEnqueueAttempts = 0
     private var expectedTimestamp = 0L
     private var completion: ((BleUploadResult) -> Unit)? = null
     private var terminal = false
@@ -89,6 +92,8 @@ class BleEcgUploader(private val context: Context) {
         completion = done
         terminal = false
         nextFrame = 0
+        writeInFlight = false
+        frameEnqueueAttempts = 0
         observedResults = 0
         observedTarget = false
         observedUnbondedState = null
@@ -316,7 +321,10 @@ class BleEcgUploader(private val context: Context) {
                 finish(BleUploadResult.Failure("手机确认通道建立失败（$status）"))
                 return
             }
-            writeNextFrame()
+            writeInFlight = false
+            frameEnqueueAttempts = 0
+            // Let the CCCD write callback fully unwind before submitting BEGIN.
+            handler.postDelayed({ writeNextFrame() }, GATT_WRITE_GAP_MS)
         }
 
         override fun onCharacteristicWrite(
@@ -326,11 +334,19 @@ class BleEcgUploader(private val context: Context) {
         ) {
             if (terminal || gatt !== this@BleEcgUploader.gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                writeInFlight = false
                 if (retryCurrentPhone("分片写入失败（GATT $status）")) return
                 finish(BleUploadResult.Failure("ECG BLE 分片发送失败（$status）"))
                 return
             }
-            writeNextFrame()
+            // A successful callback completes exactly the frame at nextFrame. Advance only now;
+            // incrementing before the callback can skip a frame if Samsung rejects the next write.
+            writeInFlight = false
+            nextFrame++
+            frameEnqueueAttempts = 0
+            // Do not enqueue the next ATT write from inside Samsung's callback stack. One UI Watch
+            // 8 can still report the GATT queue busy until this callback has fully returned.
+            handler.postDelayed({ writeNextFrame() }, GATT_WRITE_GAP_MS)
         }
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
@@ -364,13 +380,13 @@ class BleEcgUploader(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     private fun writeNextFrame() {
-        if (terminal) return
+        if (terminal || writeInFlight) return
         if (frames.isEmpty()) {
             finish(BleUploadResult.Failure("BLE 分片尚未完成初始化"))
             return
         }
         if (nextFrame >= frames.size) {
-            // The END frame has been accepted by GATT. Wait for the Room persistence indication.
+            // The END frame has received a successful write callback. Wait for Room ACK.
             return
         }
         val characteristic = uploadCharacteristic
@@ -379,13 +395,31 @@ class BleEcgUploader(private val context: Context) {
             finish(BleUploadResult.Failure("BLE 连接已断开"))
             return
         }
-        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        characteristic.value = frames[nextFrame]
-        nextFrame++
-        if (!currentGatt.writeCharacteristic(characteristic)) {
-            if (!retryCurrentPhone("系统拒绝发送 ECG 分片")) {
-                finish(BleUploadResult.Failure("无法发送 ECG BLE 分片"))
-            }
+
+        // minSdk is 33: use the non-deprecated overload that takes an immutable value for this
+        // operation. This avoids mutating characteristic.value while Samsung still owns it.
+        val queueStatus = currentGatt.writeCharacteristic(
+            characteristic,
+            frames[nextFrame].copyOf(),
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+        )
+        if (queueStatus == BluetoothStatusCodes.SUCCESS) {
+            writeInFlight = true
+            return
+        }
+
+        // ERROR_GATT_WRITE_REQUEST_BUSY is transient on One UI Watch 8 immediately after a
+        // successful response. Retry this exact frame; do not advance sequence or restart BEGIN.
+        frameEnqueueAttempts++
+        if (frameEnqueueAttempts <= MAX_FRAME_ENQUEUE_ATTEMPTS) {
+            Log.w(
+                TAG,
+                "GATT 暂未接收帧 $nextFrame（status=$queueStatus），" +
+                    "第 $frameEnqueueAttempts 次延迟重试",
+            )
+            handler.postDelayed({ writeNextFrame() }, GATT_BUSY_RETRY_MS)
+        } else if (!retryCurrentPhone("GATT 队列持续拒绝帧 $nextFrame（status=$queueStatus）")) {
+            finish(BleUploadResult.Failure("无法发送 ECG BLE 分片（队列状态 $queueStatus）"))
         }
     }
 
@@ -432,6 +466,8 @@ class BleEcgUploader(private val context: Context) {
         ackCharacteristic = null
         frames = emptyList()
         nextFrame = 0
+        writeInFlight = false
+        frameEnqueueAttempts = 0
         matchedService = false
         tryingBondedCandidate = false
         targetConnectionStarted = false
@@ -489,6 +525,8 @@ class BleEcgUploader(private val context: Context) {
         transferPayload = null
         frames = emptyList()
         nextFrame = 0
+        writeInFlight = false
+        frameEnqueueAttempts = 0
         val callback = completion
         completion = null
         callback?.invoke(result)
@@ -505,6 +543,9 @@ class BleEcgUploader(private val context: Context) {
     companion object {
         private const val TIMEOUT_MS = 45_000L
         private const val BONDED_CANDIDATE_TIMEOUT_MS = 5_000L
+        private const val GATT_WRITE_GAP_MS = 12L
+        private const val GATT_BUSY_RETRY_MS = 30L
+        private const val MAX_FRAME_ENQUEUE_ATTEMPTS = 6
         private const val MAX_BONDED_CANDIDATES = 6
         private const val TAG = "BleEcgUploader"
     }
