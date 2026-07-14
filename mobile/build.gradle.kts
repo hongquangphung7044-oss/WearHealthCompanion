@@ -50,6 +50,11 @@ android {
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
+    lint {
+        // ComponentActivity's Activity Result API does not require Fragment. This project does
+        // not depend on Fragment at all, so the Fragment < 1.3 detector is a false positive.
+        disable += "InvalidFragmentVersionForActivityResult"
+    }
 }
 
 dependencies {

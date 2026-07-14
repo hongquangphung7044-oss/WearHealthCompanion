@@ -164,7 +164,7 @@ class BleSyncServer(private val context: Context) {
         override fun onServiceAdded(status: Int, service: BluetoothGattService) {
             if (service.uuid != BleSyncProtocol.SERVICE_UUID) return
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                _status.value = "BLE 同步器就绪，等待手表传送"
+                _status.value = "正在启动 BLE 广播…"
                 beginAdvertising()
             } else {
                 stop()
@@ -337,9 +337,15 @@ class BleSyncServer(private val context: Context) {
     }
 
     private val advertiseCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            _status.value = "BLE 同步器就绪，等待手表传送"
+        }
+
         override fun onStartFailure(errorCode: Int) {
             Log.w(TAG, "BLE 广播启动失败: $errorCode")
-            _status.value = "BLE 广播启动失败（$errorCode）"
+            // Release the half-started GATT server so the retry button can really retry.
+            stop()
+            _status.value = "BLE 广播启动失败（$errorCode），请点刷新重试"
         }
     }
 
