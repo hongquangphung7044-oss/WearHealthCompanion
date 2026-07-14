@@ -84,13 +84,14 @@ fun HealthMonitorScreen(
         }
 
         // 同步状态消息（如果 syncMessage 不为 null）
-        if (uiState.syncMessage != null) {
+        val syncMsg = uiState.syncMessage
+        if (syncMsg != null) {
             item {
-                val msgColor = if (uiState.syncMessage.startsWith("传送失败") ||
-                    uiState.syncMessage.startsWith("API Key 不能为空"))
+                val msgColor = if (syncMsg.startsWith("传送失败") ||
+                    syncMsg.startsWith("API Key 不能为空"))
                     Color(0xFFEF5350) else Color(0xFF64B5F6)
                 Text(
-                    text = uiState.syncMessage!!,
+                    text = syncMsg,
                     style = MaterialTheme.typography.bodySmall,
                     color = msgColor,
                     textAlign = TextAlign.Center,
