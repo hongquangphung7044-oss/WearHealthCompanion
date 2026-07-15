@@ -181,8 +181,9 @@ class EcgCollector(private val context: Context) {
             stopEcgTracker()
 
             val completedData = snapshotEcgData()
-            // 最终波形（降采样到 300 点用于结果页全局缩略图）
-            val finalWaveform = downsample(completedData, 300)
+            // 最终波形：分桶保留极值（R 波尖峰不丢失），1200 点（每点约 25ms）
+            // 之前均匀抽样 300 点（每点 100ms）会把 R 波削平，波形退化成正弦波
+            val finalWaveform = downsample(completedData, 1200)
             _liveSamples.value = finalWaveform
 
             Log.i(TAG, "ECG 采集完成: ${completedData.size} 个采样点")
@@ -219,15 +220,29 @@ class EcgCollector(private val context: Context) {
         hasContact = false
     }
 
-    /** 降采样：从原数据中均匀取样 */
+    /**
+     * 降采样并保留局部极值（R 波尖峰不丢失）。
+     *
+     * 之前用均匀抽样，30 秒 15000 点压到 300 点（每点 100ms）会把 R 波尖峰削平，
+     * 波形退化成正弦波、放大后也看不出心跳。改为分桶取 min+max，保留峰谷形态。
+     */
     private fun downsample(data: List<Int>, targetSize: Int): List<Int> {
         if (data.size <= targetSize) return data
-        val step = data.size.toFloat() / targetSize
-        val result = mutableListOf<Int>()
+        val bucketSize = data.size.toFloat() / targetSize
+        val result = ArrayList<Int>(targetSize * 2)
         var idx = 0f
-        while (idx < data.size && result.size < targetSize) {
-            result.add(data[idx.toInt()])
-            idx += step
+        while (idx < data.size) {
+            val end = minOf((idx + bucketSize).toInt(), data.size)
+            var minVal = Int.MAX_VALUE
+            var maxVal = Int.MIN_VALUE
+            for (i in idx.toInt() until end) {
+                val v = data[i]
+                if (v < minVal) minVal = v
+                if (v > maxVal) maxVal = v
+            }
+            if (result.isEmpty() || result.last() != minVal) result.add(minVal)
+            result.add(maxVal)
+            idx += bucketSize
         }
         return result
     }

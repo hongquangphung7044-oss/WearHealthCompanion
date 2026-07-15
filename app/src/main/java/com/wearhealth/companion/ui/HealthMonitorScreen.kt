@@ -443,8 +443,12 @@ private fun EcgWaveform(
         // 去基线
         val mean = samples.average()
         val centered = samples.map { (it - mean).toFloat() }
-        // 固定电压比例：图表高度代表 ±2mV 窗口（4mV 总量），不再自适应拉伸
-        val yScale = h / (4f * 1000f)
+        // Y 轴自适应：根据数据峰峰值动态调整电压比例，R 波尖峰明显可见。
+        // 之前固定 ±2mV 窗口，腕表 R 波通常仅 0.5-1.5mV，尖峰被压扁看不出心跳。
+        val dataMax = centered.maxOrNull() ?: 1f
+        val dataMin = centered.minOrNull() ?: -1f
+        val dataSpan = (dataMax - dataMin).coerceAtLeast(200f) // 至少 0.2mV，防退化
+        val yScale = (h * 0.8f) / dataSpan  // 留 10% 上下边距
 
         val path = Path()
         val stepX = if (samples.size > 1) w / (samples.size - 1) else w
