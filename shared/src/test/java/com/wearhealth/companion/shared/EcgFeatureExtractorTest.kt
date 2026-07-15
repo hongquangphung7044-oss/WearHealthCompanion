@@ -125,8 +125,8 @@ class EcgFeatureExtractorTest {
     fun segmentsCoverEntireDuration() {
         val ecg = syntheticEcg(30f, (0 until 35).map { it * 0.857f })
         val bundle = EcgFeatureExtractor.extract(ecg, sampleRate)
-        // 0.5 秒一段，30 秒应有 60 段
-        assertEquals("应有 60 段", 60, bundle.segments.size)
+        // 1 秒一段，30 秒应有 30 段
+        assertEquals("应有 30 段", 30, bundle.segments.size)
         // 第一段从 0.0 开始
         assertEquals(0f, bundle.segments[0].startSec)
         // 最后一段到 30.0 结束
@@ -146,12 +146,12 @@ class EcgFeatureExtractorTest {
 
     @Test
     fun detectsEarlyBeatInSegment() {
-        // 构造早搏场景：在 6.0-6.5s 这一段内放两个间隔 400ms 的 R 波（>300ms 不应期）
+        // 构造早搏场景：在第 6 秒段内放两个间隔 400ms 的 R 波（>300ms 不应期）
         // 模拟早搏：第 6 秒段出现 2 个 R 波，后续代偿间隙
         val rTimes = mutableListOf<Float>()
         // 前 6 秒每秒 1 个 R 波
         for (i in 0 until 6) rTimes.add(i.toFloat() + 0.2f)
-        // 第 6 秒段放 2 个 R 波（6.05 和 6.45，间隔 400ms，都在 6.0-6.5s 段内）
+        // 第 6 秒段放 2 个 R 波（6.05 和 6.45，间隔 400ms，都在 6-7s 段内）
         rTimes.add(6.05f)
         rTimes.add(6.45f)
         // 第 7 秒段代偿间隙不放 R 波，第 8 秒起恢复正常
