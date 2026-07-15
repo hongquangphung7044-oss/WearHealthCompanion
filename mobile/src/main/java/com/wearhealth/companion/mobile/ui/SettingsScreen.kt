@@ -266,7 +266,7 @@ fun SettingsScreen(
                     Text("DeepSeek 第二套分析", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "配置后可在手表选择"闪速/深度"作为独立第二套分析；本地提取 ECG 特征后由 DS 推理，自评置信度，报告进 Transfer+PDF 专属页。",
+                        "配置后可在手表选择「闪速/深度」作为独立第二套分析；本地提取 ECG 特征后由 DS 推理，自评置信度，报告进 Transfer+PDF 专属页。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
