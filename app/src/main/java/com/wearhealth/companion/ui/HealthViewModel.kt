@@ -20,8 +20,8 @@ import com.wearhealth.companion.model.EcgAnalysisResult
 import com.wearhealth.companion.model.EcgCollectionState
 import com.wearhealth.companion.model.computeMinMaxHeartRate
 import com.wearhealth.companion.model.localSignalQualityCheck
-import com.wearhealth.companion.network.DeepSeekApiClient
 import com.wearhealth.companion.network.HeartVoiceApiClient
+import com.wearhealth.companion.shared.DeepSeekApiClient
 import com.wearhealth.companion.sensor.EcgCollector
 import com.wearhealth.companion.service.WatchWearableListenerService
 import com.wearhealth.companion.shared.ApiKeyValidator

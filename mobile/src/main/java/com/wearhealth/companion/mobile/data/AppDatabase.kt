@@ -10,7 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 /** Phone-side Room database. */
 @Database(
     entities = [EcgMeasurementEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -49,12 +49,24 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v3 → v4: 加 analysisMethod + aiReport 字段（DeepSeek 分析方式支持） */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE ecg_measurements ADD COLUMN analysisMethod TEXT NOT NULL DEFAULT 'heartvoice'",
+                )
+                database.execSQL(
+                    "ALTER TABLE ecg_measurements ADD COLUMN aiReport TEXT NOT NULL DEFAULT ''",
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
             INSTANCE ?: Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "ecg_mobile.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { INSTANCE = it }
         }
     }
 }

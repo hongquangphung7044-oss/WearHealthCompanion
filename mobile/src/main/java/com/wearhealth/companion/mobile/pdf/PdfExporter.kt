@@ -14,6 +14,7 @@ import android.provider.MediaStore
 import com.wearhealth.companion.mobile.ui.diagnosisSummary
 import com.wearhealth.companion.mobile.ui.diagnosisToText
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
+import org.json.JSONObject
 import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -84,6 +85,15 @@ object PdfExporter {
             val page = document.startPage(pageInfo)
             drawReport(page.canvas, transfer)
             document.finishPage(page)
+
+            // 第二页：DeepSeek AI 解读专属页（仅 DS 测量存在）
+            if (transfer.analysisMethod == "deepseek" && transfer.aiReport.isNotBlank()) {
+                val aiPageInfo = PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, 2).create()
+                val aiPage = document.startPage(aiPageInfo)
+                drawAiReport(aiPage.canvas, transfer)
+                document.finishPage(aiPage)
+            }
+
             document.writeTo(output)
         } finally {
             document.close()
@@ -126,6 +136,16 @@ object PdfExporter {
             y,
             normalPaint,
         )
+        y += 16
+        val methodLabel = when (transfer.analysisMethod) {
+            "deepseek" -> "分析方法：DeepSeek 第二套分析（本地特征 + 大模型推理）"
+            else -> "分析方法：HeartVoice 专业 API"
+        }
+        canvas.drawText(methodLabel, marginX, y, normalPaint)
+        if (transfer.analysisMethod == "deepseek" && transfer.aiReport.isNotBlank()) {
+            canvas.drawText("（详见第二页 AI 解读专属页）", marginX, y + 13, smallPaint)
+            y += 13
+        }
         y += 24
 
         titlePaint.textSize = 15f
@@ -319,5 +339,165 @@ object PdfExporter {
             start = end
         }
         return currentY
+    }
+
+    /**
+     * 第二页：DeepSeek AI 解读专属页
+     *
+     * 解析 DS 返回的 JSON 报告，按"综合解读/心率分析/节律分析/间期评估/异常提示/健康建议/免责声明"
+     * 分节绘制，保留各子判断的置信度自评。
+     */
+    private fun drawAiReport(canvas: Canvas, transfer: EcgMeasurementTransfer) {
+        var y = 42f
+        val marginX = 40f
+        val contentWidth = PAGE_WIDTH - marginX * 2
+        val titlePaint = Paint().apply {
+            color = Color.BLACK
+            textSize = 22f
+            isFakeBoldText = true
+            isAntiAlias = true
+        }
+        val sectionPaint = Paint().apply {
+            color = Color.rgb(0x0D, 0x47, 0xA1)
+            textSize = 13f
+            isFakeBoldText = true
+            isAntiAlias = true
+        }
+        val normalPaint = Paint().apply {
+            color = Color.DKGRAY
+            textSize = 11f
+            isAntiAlias = true
+        }
+        val smallPaint = Paint().apply {
+            color = Color.GRAY
+            textSize = 9.5f
+            isAntiAlias = true
+        }
+        val abnormalPaint = Paint().apply {
+            color = Color.rgb(0xC6, 0x28, 0x28)
+            textSize = 11f
+            isAntiAlias = true
+        }
+
+        canvas.drawText("DeepSeek AI 心电图解读", marginX, y, titlePaint)
+        y += 22
+        val measuredAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            .format(Date(transfer.timestamp))
+        canvas.drawText("测量时间：$measuredAt", marginX, y, normalPaint)
+        y += 16
+        y = drawWrappedText(
+            canvas,
+            "独立第二套分析：本地 DSP 提取 ECG 特征（R 波/HRV/QRS·PR·QT 估测/逐秒分段）后由 DeepSeek 大模型推理，每个判断附带置信度自评。",
+            marginX, y, contentWidth, normalPaint,
+        )
+        y += 10
+
+        val obj = runCatching { JSONObject(transfer.aiReport) }.getOrNull() ?: run {
+            canvas.drawText("AI 报告解析失败", marginX, y, normalPaint)
+            return
+        }
+
+        obj.optString("综合解读").takeIf { it.isNotEmpty() }?.let {
+            canvas.drawText("综合解读", marginX, y, sectionPaint); y += 15
+            y = drawWrappedText(canvas, it, marginX, y, contentWidth, normalPaint)
+            y += 6
+        }
+
+        obj.optJSONObject("心率分析")?.let { hr ->
+            canvas.drawText("心率分析", marginX, y, sectionPaint); y += 15
+            hr.opt("平均心率")?.let { y = drawWrappedText(canvas, "平均心率：$it bpm", marginX, y, contentWidth, normalPaint) }
+            hr.optString("心率范围").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "心率范围：$it", marginX, y, contentWidth, normalPaint) }
+            hr.optString("心率稳定性").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "心率稳定性：$it", marginX, y, contentWidth, normalPaint) }
+            hr.optString("置信度").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "置信度：$it", marginX, y, contentWidth, normalPaint) }
+            hr.optJSONObject("心率变异性")?.let { hrv ->
+                val hrvLine = buildHrvLine(hrv)
+                if (hrvLine.isNotEmpty()) y = drawWrappedText(canvas, hrvLine, marginX, y, contentWidth, normalPaint)
+                hrv.optString("解读").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "解读：$it", marginX, y, contentWidth, normalPaint) }
+                hrv.optString("置信度").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "HRV 置信度：$it", marginX, y, contentWidth, normalPaint) }
+            }
+            y += 6
+        }
+
+        obj.optJSONObject("节律分析")?.let { r ->
+            canvas.drawText("节律分析", marginX, y, sectionPaint); y += 15
+            r.optString("节律判断").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "节律判断：$it", marginX, y, contentWidth, normalPaint) }
+            r.optString("RR间期规律性").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "RR 规律性：$it", marginX, y, contentWidth, normalPaint) }
+            r.optJSONArray("早搏提示")?.let { arr ->
+                if (arr.length() > 0) {
+                    val tips = (0 until arr.length()).joinToString("；") { i ->
+                        val item = arr.optJSONObject(i)
+                        "${item?.optString("时段", "") ?: ""} ${item?.optString("类型", "") ?: ""}".trim()
+                    }
+                    y = drawWrappedText(canvas, "早搏提示：$tips", marginX, y, contentWidth, normalPaint)
+                }
+            }
+            r.optString("置信度").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "置信度：$it", marginX, y, contentWidth, normalPaint) }
+            y += 6
+        }
+
+        obj.optJSONObject("间期评估")?.let { iv ->
+            canvas.drawText("间期评估（本地估测，DS 判断）", marginX, y, sectionPaint); y += 15
+            val prLine = buildIntervalLine(iv, "PR间期_ms", "PR判断", "PR置信度", "PR 间期")
+            if (prLine.isNotEmpty()) y = drawWrappedText(canvas, prLine, marginX, y, contentWidth, normalPaint)
+            val qrsLine = buildIntervalLine(iv, "QRS宽度_ms", "QRS判断", "QRS置信度", "QRS 宽度")
+            if (qrsLine.isNotEmpty()) y = drawWrappedText(canvas, qrsLine, marginX, y, contentWidth, normalPaint)
+            val qtcLine = buildIntervalLine(iv, "QTc_ms", "QTc判断", "QTc置信度", "QTc")
+            if (qtcLine.isNotEmpty()) y = drawWrappedText(canvas, qtcLine, marginX, y, contentWidth, normalPaint)
+            iv.optString("数据来源声明").takeIf { it.isNotEmpty() }?.let {
+                y = drawWrappedText(canvas, it, marginX, y, contentWidth, smallPaint)
+            }
+            y += 6
+        }
+
+        obj.optJSONArray("异常提示")?.let { arr ->
+            if (arr.length() > 0) {
+                canvas.drawText("异常提示", marginX, y, sectionPaint); y += 15
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i)
+                    if (s.isNotEmpty()) y = drawWrappedText(canvas, "• $s", marginX, y, contentWidth, abnormalPaint)
+                }
+                y += 6
+            }
+        }
+
+        obj.optJSONArray("健康建议")?.let { arr ->
+            if (arr.length() > 0) {
+                canvas.drawText("健康建议", marginX, y, sectionPaint); y += 15
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i)
+                    if (s.isNotEmpty()) y = drawWrappedText(canvas, "• $s", marginX, y, contentWidth, normalPaint)
+                }
+                y += 6
+            }
+        }
+
+        obj.optString("免责声明").takeIf { it.isNotEmpty() }?.let {
+            y = drawWrappedText(canvas, it, marginX, y, contentWidth, Paint(smallPaint).apply {
+                color = Color.GRAY
+                textSize = 8.5f
+            })
+        }
+    }
+
+    private fun buildHrvLine(hrv: JSONObject): String {
+        val parts = mutableListOf<String>()
+        hrv.opt("SDNN_ms")?.let { parts.add("SDNN $it ms") }
+        hrv.opt("RMSSD_ms")?.let { parts.add("RMSSD $it ms") }
+        hrv.opt("pNN50_pct")?.let { parts.add("pNN50 $it %") }
+        return if (parts.isEmpty()) "" else "HRV：" + parts.joinToString("，")
+    }
+
+    private fun buildIntervalLine(
+        iv: JSONObject,
+        msKey: String,
+        judgeKey: String,
+        confKey: String,
+        label: String,
+    ): String {
+        val ms = iv.opt(msKey) ?: return ""
+        val sb = StringBuilder("$label：$ms ms")
+        iv.optString(judgeKey).takeIf { it.isNotEmpty() }?.let { sb.append("（$it）") }
+        iv.optString(confKey).takeIf { it.isNotEmpty() }?.let { sb.append(" [置信度：$it]") }
+        return sb.toString()
     }
 }

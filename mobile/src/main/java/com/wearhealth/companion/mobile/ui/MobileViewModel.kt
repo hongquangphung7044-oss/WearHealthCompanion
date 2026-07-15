@@ -17,6 +17,7 @@ import com.wearhealth.companion.mobile.data.AppDatabase
 import com.wearhealth.companion.mobile.data.EcgMeasurementEntity
 import com.wearhealth.companion.mobile.data.MeasurementRepository
 import com.wearhealth.companion.mobile.data.MobileApiKeyStore
+import com.wearhealth.companion.mobile.data.MobileDeepSeekSettings
 import com.wearhealth.companion.mobile.pdf.PdfExportResult
 import com.wearhealth.companion.mobile.pdf.PdfExporter
 import com.wearhealth.companion.mobile.service.BleSyncForegroundService
@@ -26,6 +27,7 @@ import com.wearhealth.companion.mobile.service.BleSyncStatusStore
 import com.wearhealth.companion.mobile.service.DataLayerManager
 import com.wearhealth.companion.mobile.service.PhoneWearableListenerService
 import com.wearhealth.companion.shared.ApiKeyValidator
+import com.wearhealth.companion.shared.DeepSeekApiClient
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -55,6 +57,8 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     private val repository = MeasurementRepository(AppDatabase.get(app).ecgMeasurementDao())
     private val dataLayer = DataLayerManager(app)
     private val mobileApiKeyStore = MobileApiKeyStore(app)
+    private val dsSettings = MobileDeepSeekSettings(app)
+    private var deepSeekApi = DeepSeekApiClient(dsSettings.getApiKey())
 
     /** Direct BLE receiver state. This remains useful when Google Data Layer is absent. */
     val bleSyncStatus: StateFlow<String> = BleSyncRuntime.status(app)
@@ -80,6 +84,31 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     /** 同步请求结果 */
     private val _syncResult = MutableStateFlow<String?>(null)
     val syncResult: StateFlow<String?> = _syncResult.asStateFlow()
+
+    /** DeepSeek 设置发送状态 */
+    private val _dsSendResult = MutableStateFlow<String?>(null)
+    val dsSendResult: StateFlow<String?> = _dsSendResult.asStateFlow()
+
+    /** DeepSeek 余额 */
+    private val _dsBalance = MutableStateFlow<DeepSeekApiClient.BalanceInfo?>(null)
+    val dsBalance: StateFlow<DeepSeekApiClient.BalanceInfo?> = _dsBalance.asStateFlow()
+
+    private val _dsBalanceLoading = MutableStateFlow(false)
+    val dsBalanceLoading: StateFlow<Boolean> = _dsBalanceLoading.asStateFlow()
+
+    private val _dsBalanceError = MutableStateFlow<String?>(null)
+    val dsBalanceError: StateFlow<String?> = _dsBalanceError.asStateFlow()
+
+    /** DeepSeek 设置是否已配置 */
+    val dsConfigured: StateFlow<Boolean> = MutableStateFlow(dsSettings.isConfigured()).asStateFlow()
+
+    /** 当前 DS 默认模型 */
+    val dsDefaultModel: StateFlow<DeepSeekApiClient.Model> =
+        MutableStateFlow(dsSettings.getDefaultModel()).asStateFlow()
+
+    /** 当前 DS 默认思考强度 */
+    val dsDefaultThinking: StateFlow<DeepSeekApiClient.ThinkingMode> =
+        MutableStateFlow(dsSettings.getDefaultThinking()).asStateFlow()
 
     /** PDF export result uses a content URI and a user-visible shared-storage label. */
     private val _pdfExportResult = MutableStateFlow<PdfExportResult?>(null)
@@ -250,10 +279,88 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repository.deleteAll()
             mobileApiKeyStore.clear()
+            dsSettings.clearApiKey()
+            (dsConfigured as MutableStateFlow).value = false
             BleSyncRuntime.restart(getApplication())
             BleSyncStatusStore.setMessage("已清除手机端缓存（API Key、ECG 历史）并重启 BLE 监听")
         }
     }
+
+    // ========== DeepSeek 设置管理 ==========
+
+    /**
+     * 保存 DeepSeek 设置并下发到手表
+     */
+    fun saveAndSendDeepSeekSettings(
+        apiKey: String,
+        model: DeepSeekApiClient.Model,
+        thinking: DeepSeekApiClient.ThinkingMode,
+        userAge: Int,
+        userIsMale: Boolean?,
+    ) {
+        if (apiKey.isNotBlank()) {
+            dsSettings.saveApiKey(apiKey)
+            deepSeekApi = DeepSeekApiClient(apiKey)
+            (dsConfigured as MutableStateFlow).value = true
+        }
+        dsSettings.setDefaultModel(model)
+        dsSettings.setDefaultThinking(thinking)
+        dsSettings.setUserAge(userAge)
+        dsSettings.setUserIsMale(userIsMale)
+        (dsDefaultModel as MutableStateFlow).value = model
+        (dsDefaultThinking as MutableStateFlow).value = thinking
+
+        _dsSendResult.value = "DeepSeek 设置已保存"
+        viewModelScope.launch {
+            val sent = dataLayer.sendDeepSeekSettingsToWatch(
+                dsSettings.getApiKey(), model, thinking, userAge, userIsMale,
+            )
+            _dsSendResult.value = if (sent) {
+                "DeepSeek 设置已保存，并已下发到手表"
+            } else {
+                "DeepSeek 设置已保存（下发手表失败，可稍后重试）"
+            }
+        }
+    }
+
+    /** 查询 DeepSeek 账户余额 */
+    fun queryDeepSeekBalance() {
+        if (_dsBalanceLoading.value) return
+        if (!dsSettings.isConfigured()) {
+            _dsBalanceError.value = "未配置 DeepSeek API Key"
+            return
+        }
+        _dsBalanceLoading.value = true
+        _dsBalanceError.value = null
+        viewModelScope.launch {
+            val result = deepSeekApi.queryBalance()
+            result.onSuccess { balance ->
+                _dsBalance.value = balance
+                _dsBalanceLoading.value = false
+                _dsBalanceError.value = null
+            }.onFailure { error ->
+                _dsBalanceLoading.value = false
+                _dsBalanceError.value = error.message ?: "余额查询失败"
+            }
+        }
+    }
+
+    /** 获取当前 DS 配置（供 UI 初始化读取） */
+    fun getDsSettingsSnapshot(): DeepSeekSettingsSnapshot = DeepSeekSettingsSnapshot(
+        apiKey = dsSettings.getApiKey(),
+        model = dsSettings.getDefaultModel(),
+        thinking = dsSettings.getDefaultThinking(),
+        userAge = dsSettings.getUserAge(),
+        userIsMale = dsSettings.getUserIsMale(),
+    )
+
+    data class DeepSeekSettingsSnapshot(
+        val apiKey: String,
+        val model: DeepSeekApiClient.Model,
+        val thinking: DeepSeekApiClient.ThinkingMode,
+        val userAge: Int,
+        val userIsMale: Boolean?,
+    )
 
     /**
      * 导出 PDF 报告
@@ -289,6 +396,8 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         _syncResult.value = null
         _pdfExportResult.value = null
         _pdfExportError.value = null
+        _dsSendResult.value = null
+        _dsBalanceError.value = null
     }
 
     override fun onCleared() {

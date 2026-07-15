@@ -25,6 +25,8 @@ dependencies {
     implementation("org.json:json:20240303")
     // Wear OS Data Layer API
     implementation(libs.play.services.wearable)
+    // OkHttp: DeepSeek API 客户端（手表+手机共用）
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Unit tests cover binary framing/CRC/ACK and payload round trips without device hardware.
     testImplementation("junit:junit:4.13.2")
 }

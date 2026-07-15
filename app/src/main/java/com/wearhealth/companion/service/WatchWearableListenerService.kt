@@ -10,6 +10,7 @@ import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import com.google.android.gms.wearable.WearableListenerService
 import com.wearhealth.companion.data.ApiKeyManager
+import com.wearhealth.companion.data.DeepSeekSettings
 import com.wearhealth.companion.data.EcgHistoryRepository
 import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.DataLayerPaths
@@ -36,6 +37,7 @@ class WatchWearableListenerService : WearableListenerService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val apiKeyManager by lazy { ApiKeyManager(this) }
     private val historyRepo by lazy { EcgHistoryRepository(this) }
+    private val dsSettings by lazy { DeepSeekSettings(this) }
 
     override fun onDataChanged(dataEvents: DataEventBuffer) {
         Log.i(TAG, "onDataChanged: ${dataEvents.count} 个事件")
@@ -64,6 +66,24 @@ class WatchWearableListenerService : WearableListenerService() {
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "解析 API Key 数据失败", e)
+                }
+            }
+
+            // DeepSeek 设置下发（路径 /deepseek_settings）
+            if (path.startsWith(DataLayerPaths.PATH_DEEPSEEK_SETTINGS)) {
+                try {
+                    val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
+                    val dsKey = dataMap.getString(DataLayerPaths.KEY_DS_API_KEY, null)
+                    val defaultModel = dataMap.getString(DataLayerPaths.KEY_DS_DEFAULT_MODEL, null)
+                    val defaultThinking = dataMap.getString(DataLayerPaths.KEY_DS_DEFAULT_THINKING, null)
+                    val userAge = dataMap.getInt(DataLayerPaths.KEY_DS_USER_AGE, 0)
+                    val genderKnown = dataMap.getBoolean(DataLayerPaths.KEY_DS_USER_GENDER_KNOWN, false)
+                    val userIsMale = if (genderKnown) dataMap.getBoolean(DataLayerPaths.KEY_DS_USER_IS_MALE, true) else null
+                    Log.i(TAG, "收到手机下发的 DeepSeek 设置，应用中...")
+                    dsSettings.applyFromRemote(dsKey, defaultModel, defaultThinking, userAge, userIsMale)
+                    syncEvents.tryEmit("DeepSeek 设置已从手机同步")
+                } catch (e: Exception) {
+                    Log.e(TAG, "解析 DeepSeek 设置数据失败", e)
                 }
             }
         }
@@ -134,6 +154,8 @@ class WatchWearableListenerService : WearableListenerService() {
                     rawEcgData = item.rawEcgData,
                     downsampledEcg = item.ecgSamples,
                     sampleRate = 500,
+                    analysisMethod = item.analysisMethod,
+                    aiReport = item.aiReport,
                 )
 
                 val putDataMapReq = PutDataMapRequest.create(

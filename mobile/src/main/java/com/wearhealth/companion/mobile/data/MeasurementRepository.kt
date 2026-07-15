@@ -37,6 +37,8 @@ class MeasurementRepository(private val dao: EcgMeasurementDao) {
             rawDataJson = MeasurementSerializer.toJson(transfer),
             rawEcgBytes = EcgBinaryCodec.encode(transfer.rawEcgData),
             downsampledEcgBytes = EcgBinaryCodec.encode(transfer.downsampledEcg),
+            analysisMethod = transfer.analysisMethod,
+            aiReport = transfer.aiReport,
         )
         return dao.insert(entity)
     }

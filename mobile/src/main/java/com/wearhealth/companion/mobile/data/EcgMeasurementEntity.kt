@@ -67,6 +67,12 @@ data class EcgMeasurementEntity(
     val rawEcgBytes: ByteArray,
     /** 降采样波形二进制（用于列表缩略图） */
     val downsampledEcgBytes: ByteArray,
+    /** 分析方式：heartvoice / ds_flash_fast / ds_flash_balanced / ds_pro_max */
+    @ColumnInfo(defaultValue = "'heartvoice'")
+    val analysisMethod: String = "heartvoice",
+    /** DeepSeek 生成的 JSON 报告（仅 DS 分析方式有值；HeartVoice 为空字符串） */
+    @ColumnInfo(defaultValue = "''")
+    val aiReport: String = "",
 ) {
     // ByteArray 的 equals/hashCode 需要重写，避免 Room/集合判等异常
     override fun equals(other: Any?): Boolean {
@@ -92,7 +98,9 @@ data class EcgMeasurementEntity(
                 sampleRate == other.sampleRate &&
                 rawDataJson == other.rawDataJson &&
                 rawEcgBytes.contentEquals(other.rawEcgBytes) &&
-                downsampledEcgBytes.contentEquals(other.downsampledEcgBytes)
+                downsampledEcgBytes.contentEquals(other.downsampledEcgBytes) &&
+                analysisMethod == other.analysisMethod &&
+                aiReport == other.aiReport
     }
 
     override fun hashCode(): Int {
@@ -117,6 +125,8 @@ data class EcgMeasurementEntity(
         result = 31 * result + rawDataJson.hashCode()
         result = 31 * result + rawEcgBytes.contentHashCode()
         result = 31 * result + downsampledEcgBytes.contentHashCode()
+        result = 31 * result + analysisMethod.hashCode()
+        result = 31 * result + aiReport.hashCode()
         return result
     }
 }

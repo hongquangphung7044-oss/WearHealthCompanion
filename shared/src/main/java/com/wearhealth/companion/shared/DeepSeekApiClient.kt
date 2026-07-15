@@ -1,7 +1,6 @@
-package com.wearhealth.companion.network
+package com.wearhealth.companion.shared
 
 import android.util.Log
-import com.wearhealth.companion.shared.ApiKeyValidator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType

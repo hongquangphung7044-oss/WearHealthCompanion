@@ -8,6 +8,7 @@ import com.google.android.gms.wearable.Node
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import com.wearhealth.companion.shared.DataLayerPaths
+import com.wearhealth.companion.shared.DeepSeekApiClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -45,6 +46,43 @@ class DataLayerManager(private val context: Context) {
             true
         } catch (e: Exception) {
             Log.e(TAG, "发送 API Key 失败", e)
+            false
+        }
+    }
+
+    /**
+     * 发送 DeepSeek 设置到手表（API Key + 默认模型 + 思考强度 + 用户属性）
+     *
+     * @return true 表示请求已提交
+     */
+    suspend fun sendDeepSeekSettingsToWatch(
+        apiKey: String,
+        defaultModel: DeepSeekApiClient.Model,
+        defaultThinking: DeepSeekApiClient.ThinkingMode,
+        userAge: Int,
+        userIsMale: Boolean?,
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val putDataReq = PutDataMapRequest.create(DataLayerPaths.PATH_DEEPSEEK_SETTINGS).apply {
+                if (apiKey.isNotBlank()) {
+                    dataMap.putString(DataLayerPaths.KEY_DS_API_KEY, apiKey)
+                }
+                dataMap.putString(DataLayerPaths.KEY_DS_DEFAULT_MODEL, defaultModel.name)
+                dataMap.putString(DataLayerPaths.KEY_DS_DEFAULT_THINKING, defaultThinking.name)
+                dataMap.putInt(DataLayerPaths.KEY_DS_USER_AGE, userAge)
+                if (userIsMale != null) {
+                    dataMap.putBoolean(DataLayerPaths.KEY_DS_USER_GENDER_KNOWN, true)
+                    dataMap.putBoolean(DataLayerPaths.KEY_DS_USER_IS_MALE, userIsMale)
+                } else {
+                    dataMap.putBoolean(DataLayerPaths.KEY_DS_USER_GENDER_KNOWN, false)
+                    dataMap.putBoolean(DataLayerPaths.KEY_DS_USER_IS_MALE, true) // 占位
+                }
+            }.asPutDataRequest().setUrgent()
+            awaitTask { dataClient.putDataItem(putDataReq) }
+            Log.i(TAG, "DeepSeek 设置已发送到手表: model=$defaultModel, thinking=$defaultThinking")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "发送 DeepSeek 设置失败", e)
             false
         }
     }

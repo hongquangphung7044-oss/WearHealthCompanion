@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -24,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -42,6 +44,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import com.wearhealth.companion.shared.DeepSeekApiClient
 
 /**
  * API Key 配置页
@@ -240,6 +243,153 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
+            }
+
+            // ===== DeepSeek 第二套分析配置 =====
+            val dsConfigured by viewModel.dsConfigured.collectAsState()
+            val dsBalance by viewModel.dsBalance.collectAsState()
+            val dsBalanceLoading by viewModel.dsBalanceLoading.collectAsState()
+            val dsBalanceError by viewModel.dsBalanceError.collectAsState()
+            val dsSendResult by viewModel.dsSendResult.collectAsState()
+
+            val dsSnapshot = remember { viewModel.getDsSettingsSnapshot() }
+            var dsApiKey by remember { mutableStateOf(dsSnapshot.apiKey) }
+            var dsModel by remember { mutableStateOf(dsSnapshot.model) }
+            var dsThinking by remember { mutableStateOf(dsSnapshot.thinking) }
+            var dsAge by remember { mutableStateOf(
+                dsSnapshot.userAge.takeIf { it > 0 }?.toString() ?: ""
+            ) }
+            var dsGender by remember { mutableStateOf(dsSnapshot.userIsMale) }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("DeepSeek 第二套分析", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "配置后可在手表选择"闪速/深度"作为独立第二套分析；本地提取 ECG 特征后由 DS 推理，自评置信度，报告进 Transfer+PDF 专属页。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = dsApiKey,
+                        onValueChange = { dsApiKey = it },
+                        label = { Text("DeepSeek API Key") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.None,
+                            keyboardType = KeyboardType.Ascii,
+                        ),
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        val balanceText = dsBalance?.let {
+                            if (it.isAvailable) "余额：${it.totalBalance} ${it.currency}"
+                            else "账户暂不可用"
+                        } ?: "未查询"
+                        Text(balanceText, style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(
+                            onClick = { viewModel.queryDeepSeekBalance() },
+                            enabled = dsApiKey.isNotBlank() && !dsBalanceLoading,
+                        ) { Text(if (dsBalanceLoading) "查询中…" else "查询余额") }
+                    }
+                    dsBalanceError?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Text("默认模型", style = MaterialTheme.typography.titleSmall)
+                    DeepSeekApiClient.Model.values().forEach { m ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = dsModel == m,
+                                onClick = { dsModel = m },
+                            )
+                            Text(m.label, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+                    Text("思考强度", style = MaterialTheme.typography.titleSmall)
+                    DeepSeekApiClient.ThinkingMode.values().forEach { t ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = dsThinking == t,
+                                onClick = { dsThinking = t },
+                            )
+                            Text(t.label, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "年龄/性别（影响 QTc/HRV 阈值）",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = dsAge,
+                            onValueChange = { s -> dsAge = s.filter { it.isDigit() }.take(3) },
+                            label = { Text("年龄") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            RadioButton(
+                                selected = dsGender == true,
+                                onClick = { dsGender = true },
+                            )
+                            Text("男", style = MaterialTheme.typography.bodyMedium)
+                            Spacer(Modifier.width(6.dp))
+                            RadioButton(
+                                selected = dsGender == false,
+                                onClick = { dsGender = false },
+                            )
+                            Text("女", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            viewModel.saveAndSendDeepSeekSettings(
+                                apiKey = dsApiKey.trim(),
+                                model = dsModel,
+                                thinking = dsThinking,
+                                userAge = dsAge.toIntOrNull() ?: 0,
+                                userIsMale = dsGender,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = dsApiKey.isNotBlank() || dsConfigured,
+                    ) { Text("保存并下发到手表") }
+                    dsSendResult?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
             }
 
             // ===== 请求同步 =====

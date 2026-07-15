@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.wearhealth.companion.mobile.pdf.PdfExporter
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -247,6 +248,11 @@ private fun DetailContent(
             }
         }
 
+        // DeepSeek 第二套分析报告（仅 DS 测量存在）
+        if (data.analysisMethod == "deepseek" && data.aiReport.isNotBlank()) {
+            AiReportCard(aiReportJson = data.aiReport)
+        }
+
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("参数详情", style = MaterialTheme.typography.titleSmall)
@@ -357,3 +363,161 @@ private fun ParamRow(label: String, value: String, normal: String) {
 
 private fun formatTime(ts: Long): String =
     SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(ts))
+
+/**
+ * DeepSeek AI 解读卡片：解析 DS 返回的 JSON 报告，分节展示。
+ *
+ * DS 作为独立的第二套测量方法，报告包含综合解读/心率分析/节律/间期/异常/建议/免责声明。
+ */
+@Composable
+private fun AiReportCard(aiReportJson: String) {
+    val report = remember(aiReportJson) {
+        runCatching { parseAiReport(aiReportJson) }.getOrNull()
+    } ?: return
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("AI 解读（DeepSeek）", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(6.dp))
+            report.summary?.let {
+                SectionLabel("综合解读")
+                Text(it, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+            }
+            report.heartRate?.let {
+                SectionLabel("心率分析")
+                Text(it, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(6.dp))
+            }
+            report.rhythm?.let {
+                SectionLabel("节律分析")
+                Text(it, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(6.dp))
+            }
+            report.intervals?.let {
+                SectionLabel("间期评估（本地估测，DS 判断）")
+                Text(it, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(6.dp))
+            }
+            if (report.abnormal.isNotEmpty()) {
+                SectionLabel("异常提示")
+                Text(
+                    report.abnormal.joinToString("；"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+            if (report.advice.isNotEmpty()) {
+                SectionLabel("健康建议")
+                report.advice.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+                Spacer(Modifier.height(6.dp))
+            }
+            report.disclaimer?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onTertiaryContainer,
+    )
+}
+
+private data class ParsedAiReport(
+    val summary: String?,
+    val heartRate: String?,
+    val rhythm: String?,
+    val intervals: String?,
+    val abnormal: List<String>,
+    val advice: List<String>,
+    val disclaimer: String?,
+)
+
+private fun parseAiReport(json: String): ParsedAiReport {
+    val obj = JSONObject(json)
+
+    val heartRate = obj.optJSONObject("心率分析")?.let { hr ->
+        buildString {
+            hr.opt("平均心率")?.let { append("平均心率：$it bpm\n") }
+            hr.optString("心率范围").takeIf { it.isNotEmpty() }?.let { append("心率范围：$it\n") }
+            hr.optString("心率稳定性").takeIf { it.isNotEmpty() }?.let { append("心率稳定性：$it\n") }
+            hr.optString("置信度").takeIf { it.isNotEmpty() }?.let { append("置信度：$it\n") }
+            hr.optJSONObject("心率变异性")?.let { hrv ->
+                hrv.opt("SDNN_ms")?.let { append("SDNN：$it ms\n") }
+                hrv.opt("RMSSD_ms")?.let { append("RMSSD：$it ms\n") }
+                hrv.opt("pNN50_pct")?.let { append("pNN50：$it %\n") }
+                hrv.optString("解读").takeIf { it.isNotEmpty() }?.let { append("解读：$it\n") }
+                hrv.optString("置信度").takeIf { it.isNotEmpty() }?.let { append("HRV 置信度：$it\n") }
+            }
+        }.trimEnd().takeIf { it.isNotEmpty() }
+    }
+
+    val rhythm = obj.optJSONObject("节律分析")?.let { r ->
+        buildString {
+            r.optString("节律判断").takeIf { it.isNotEmpty() }?.let { append("节律判断：$it\n") }
+            r.optString("RR间期规律性").takeIf { it.isNotEmpty() }?.let { append("RR 规律性：$it\n") }
+            r.optJSONArray("早搏提示")?.let { arr ->
+                if (arr.length() > 0) {
+                    append("早搏提示：")
+                    for (i in 0 until arr.length()) {
+                        val item = arr.optJSONObject(i)
+                        append("${item?.optString("时段", "") ?: ""} ${item?.optString("类型", "") ?: ""}")
+                        if (i < arr.length() - 1) append("；")
+                    }
+                    append("\n")
+                }
+            }
+            r.optString("置信度").takeIf { it.isNotEmpty() }?.let { append("置信度：$it\n") }
+        }.trimEnd().takeIf { it.isNotEmpty() }
+    }
+
+    val intervals = obj.optJSONObject("间期评估")?.let { iv ->
+        buildString {
+            iv.opt("PR间期_ms")?.let { append("PR 间期：$it ms") }
+            iv.optString("PR判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
+            iv.optString("PR置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
+            append("\n")
+            iv.opt("QRS宽度_ms")?.let { append("QRS 宽度：$it ms") }
+            iv.optString("QRS判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
+            iv.optString("QRS置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
+            append("\n")
+            iv.opt("QTc_ms")?.let { append("QTc：$it ms") }
+            iv.optString("QTc判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
+            iv.optString("QTc置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
+            append("\n")
+            iv.optString("数据来源声明").takeIf { it.isNotEmpty() }?.let { append(it) }
+        }.trimEnd().takeIf { it.isNotEmpty() }
+    }
+
+    val abnormal = obj.optJSONArray("异常提示")?.let { arr ->
+        (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotEmpty() } }
+    } ?: emptyList()
+
+    val advice = obj.optJSONArray("健康建议")?.let { arr ->
+        (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotEmpty() } }
+    } ?: emptyList()
+
+    return ParsedAiReport(
+        summary = obj.optString("综合解读").takeIf { it.isNotEmpty() },
+        heartRate = heartRate,
+        rhythm = rhythm,
+        intervals = intervals,
+        abnormal = abnormal,
+        advice = advice,
+        disclaimer = obj.optString("免责声明").takeIf { it.isNotEmpty() },
+    )
+}
