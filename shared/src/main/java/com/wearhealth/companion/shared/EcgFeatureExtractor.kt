@@ -338,30 +338,36 @@ object EcgFeatureExtractor {
         val qtIntervals = mutableListOf<Int>()
 
         for (rIdx in rPeaks) {
-            // QRS 估测：阈值交叉法
+            // QRS 估测：阈值交叉法（兼容正向/负向 R 波）
             val qSearchStart = maxOf(0, rIdx - sampleRateHz * 80 / 1000)
             val sSearchEnd = minOf(ecgData.size, rIdx + sampleRateHz * 80 / 1000)
             if (sSearchEnd - qSearchStart < 10) continue
 
             val segMean = ecgData.subList(qSearchStart, sSearchEnd).average()
-            val rAmpVal = ecgData[rIdx].toDouble() - segMean
-            if (rAmpVal < 50.0) continue  // R 波太小，不可靠
+            // R 波幅度用绝对值，兼容负向 R 波（腕表单导联 R 波极性可能向下）
+            val rAmpVal = abs(ecgData[rIdx].toDouble() - segMean)
+            if (rAmpVal < 30.0) continue  // R 波太小（<0.03mV），不可靠
+
+            // 判断 R 波极性：R 峰值相对基线是正还是负
+            val rIsPositive = ecgData[rIdx].toDouble() > segMean
 
             // 阈值 = R 峰幅度的 25%（QRS 起止通常在 R 峰 25% 处）
             val qrsThreshold = rAmpVal * 0.25
 
-            // 找 Q 点：R 峰前第一个低于阈值的点（从基线上升穿越阈值处）
+            // 找 Q 点：R 峰前第一个幅度低于阈值的点（从基线穿越阈值处）
             var qPoint = rIdx
             for (i in rIdx downTo qSearchStart) {
-                if ((ecgData[i].toDouble() - segMean) < qrsThreshold) {
+                val amp = abs(ecgData[i].toDouble() - segMean)
+                if (amp < qrsThreshold) {
                     qPoint = i
                     break
                 }
             }
-            // 找 S 点：R 峰后第一个低于阈值的点（从基线下降穿越阈值处）
+            // 找 S 点：R 峰后第一个幅度低于阈值的点
             var sPoint = rIdx
             for (i in rIdx until sSearchEnd) {
-                if ((ecgData[i].toDouble() - segMean) < qrsThreshold) {
+                val amp = abs(ecgData[i].toDouble() - segMean)
+                if (amp < qrsThreshold) {
                     sPoint = i
                     break
                 }
@@ -369,12 +375,16 @@ object EcgFeatureExtractor {
             val qrsMs = (sPoint - qPoint) * 1000 / sampleRateHz
             if (qrsMs in 40..200) qrsWidths.add(qrsMs)
 
-            // PR 估测：R 峰前推 250ms 找 P 波（小幅正向峰）
+            // PR 估测：R 峰前推 250ms 找 P 波（小幅同极性峰）
             val pSearchStart = maxOf(0, rIdx - sampleRateHz * 250 / 1000)
             if (pSearchStart < qSearchStart) {
                 val pSeg = ecgData.subList(pSearchStart, qSearchStart)
                 if (pSeg.isNotEmpty()) {
-                    val pIdx = pSeg.indices.maxByOrNull { pSeg[it] } ?: 0
+                    // P 波通常与 R 波同极性，找同极性的局部最大偏离
+                    val pIdx = pSeg.indices.maxByOrNull {
+                        val dev = pSeg[it].toDouble() - segMean
+                        if (rIsPositive) dev else -dev
+                    } ?: 0
                     val pPeakGlobal = pSearchStart + pIdx
                     val prMs = (rIdx - pPeakGlobal) * 1000 / sampleRateHz
                     if (prMs in 80..300) prIntervals.add(prMs)
@@ -465,7 +475,7 @@ object EcgFeatureExtractor {
         rPeaks: List<Int>,
         durationSec: Float,
     ): List<SegmentFeature> {
-        val segLenSamples = sampleRateHz  // 1 秒一段
+        val segLenSamples = sampleRateHz / 2  // 0.5 秒一段（早搏定位更精细）
         val segCount = (ecgData.size / segLenSamples).coerceAtLeast(1)
         val segments = mutableListOf<SegmentFeature>()
 
