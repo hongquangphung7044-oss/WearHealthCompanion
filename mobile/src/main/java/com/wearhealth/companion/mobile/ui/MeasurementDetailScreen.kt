@@ -208,7 +208,7 @@ private fun DetailContent(
                     sampleRate = data.sampleRate,
                 )
                 Text(
-                    "单导联波形；纵轴固定 ±2mV，横轴为时间（秒）；可拖动查看、双指缩放看细节。",
+                    "单导联波形；纵轴随可见数据自适应（mV），横轴为时间（秒）；可拖动查看、双指缩放看细节。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(4.dp),

@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.floor
 
 /**
@@ -31,7 +32,7 @@ import kotlin.math.floor
  * - 单指左右拖动：查看不同时间段
  * - 双指缩放：放大/缩小波形（1x ~ 10x）
  * - 初始 1x 时全部数据铺满绘图区（打开即见全貌），放大后看细节
- * - 固定电压比例 ±2mV（不再自适应拉伸）
+ * - Y 轴自适应：根据可见数据范围自动调整电压刻度（跟随数据变化）
  * - 坐标轴标注：底部时间（秒），左侧电压（mV）
  * - 去基线用中位数（抗前段电极建立期漂移）
  *
@@ -115,7 +116,6 @@ fun InteractiveEcgChart(
         val plotBottom = h - bottomPad
         val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
         val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
-        val midY = plotTop + plotH / 2f
 
         // 时长推断：降采样数据（点数/采样率 < 5 秒）按 30 秒处理
         val durationSec = if (sampleRate > 0 && samples.size.toFloat() / sampleRate > 5f) {
@@ -138,8 +138,20 @@ fun InteractiveEcgChart(
         val sortedVisible = visibleSamples.sorted()
         val median = if (sortedVisible.isNotEmpty()) sortedVisible[sortedVisible.size / 2].toFloat() else 0f
 
-        // Y 轴：固定 ±2mV 电压窗口（数据是 mV×1000 整数）
-        val yScale = plotH / (4f * 1000f)
+        // Y 轴：自适应电压窗口（根据可见数据范围自动调整，跟随缩放/拖动变化）
+        val centeredMax = (visibleSamples.maxOrNull() ?: 1000).toFloat() - median
+        val centeredMin = (visibleSamples.minOrNull() ?: -1000).toFloat() - median
+        val dataSpan = (centeredMax - centeredMin).coerceAtLeast(200f) // 至少 0.2mV，防退化
+        val pad = dataSpan * 0.15f
+        val rawMaxMv = (centeredMax + pad) / 1000f
+        val rawMinMv = (centeredMin - pad) / 1000f
+        val yStepMv = chooseVoltageStep(rawMaxMv - rawMinMv)
+        val yTopMv = ceil(rawMaxMv / yStepMv) * yStepMv
+        val yBottomMv = floor(rawMinMv / yStepMv) * yStepMv
+        val yRangeMv = (yTopMv - yBottomMv).coerceAtLeast(yStepMv)
+        val yScale = plotH / (yRangeMv * 1000f)
+        // 0mV 在画布上的 Y 坐标（数据是 mV×1000 整数）
+        val zeroY = plotTop + yTopMv * 1000f * yScale
 
         // 时间刻度：根据可见时长选择合适的间隔
         val visibleSec = if (effectiveRate > 0) (lastIdx - firstIdx + 1) / effectiveRate else 0f
@@ -168,23 +180,23 @@ fun InteractiveEcgChart(
             val fm = axisPaint.fontMetrics
             val textVertCenter = -(fm.ascent + fm.descent) / 2f
 
-            // ===== Y 网格 + 电压标注（-2 ~ +2 mV，每 1mV 一条） =====
-            var mV = -2f
-            while (mV <= 2f) {
-                val y = midY - mV * 1000f * yScale
+            // ===== Y 网格 + 电压标注（自适应范围，按 yStepMv 间隔） =====
+            val nSteps = ((yTopMv - yBottomMv) / yStepMv).toInt().coerceAtLeast(1)
+            for (i in 0..nSteps) {
+                val mV = yBottomMv + i * yStepMv
+                val y = zeroY - mV * 1000f * yScale
                 if (y in plotTop..plotBottom) {
                     val p = if (mV == 0f) majorPaint else finePaint
                     nc.drawLine(plotLeft, y, plotRight, y, p)
-                    val label = if (mV == 0f) "0" else "${mV.toInt()}"
+                    val label = if (mV == 0f) "0" else formatVoltageLabel(mV)
                     nc.drawText(label, 3f, y + textVertCenter, axisPaint)
                 }
-                mV += 1f
             }
             // mV 单位
             nc.drawText("mV", 3f, plotTop - fm.ascent + 1f, axisPaint)
 
             // 基线（0mV 线加粗）
-            nc.drawLine(plotLeft, midY, plotRight, midY, baselinePaint)
+            nc.drawLine(plotLeft, zeroY, plotRight, zeroY, baselinePaint)
 
             // ===== X 网格 + 时间标注（秒） =====
             val startSec = if (effectiveRate > 0) firstIdx / effectiveRate else 0f
@@ -216,7 +228,7 @@ fun InteractiveEcgChart(
         for (i in visibleSamples.indices) {
             val sampleIdx = firstIdx + i
             val x = plotLeft + sampleIdx * stepX - scrollPx
-            val y = (midY - (visibleSamples[i] - median) * yScale).coerceIn(plotTop, plotBottom)
+            val y = (zeroY - (visibleSamples[i] - median) * yScale).coerceIn(plotTop, plotBottom)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
         drawPath(path, color = color, style = Stroke(width = 1.5f, cap = StrokeCap.Round))
@@ -234,6 +246,24 @@ private fun chooseTimeStep(visibleSec: Float): Float {
         if (d < bestDiff) { best = s; bestDiff = d }
     }
     return best
+}
+
+/** 根据电压范围选择合适的刻度间隔（目标约 4~6 条刻度线） */
+private fun chooseVoltageStep(rangeMv: Float): Float {
+    val target = (rangeMv / 5f).coerceAtLeast(0.1f)
+    val steps = floatArrayOf(0.1f, 0.2f, 0.5f, 1f, 2f, 5f, 10f)
+    var best = steps[0]
+    var bestDiff = abs(target - best)
+    for (s in steps) {
+        val d = abs(target - s)
+        if (d < bestDiff) { best = s; bestDiff = d }
+    }
+    return best
+}
+
+/** 格式化电压标注：整数显示整数，否则保留一位小数 */
+private fun formatVoltageLabel(mv: Float): String {
+    return if (mv == mv.toInt().toFloat()) "${mv.toInt()}" else "%.1f".format(mv)
 }
 
 /** 格式化时间标注：<1s 显示毫秒，整秒显示整数，否则保留一位小数 */
