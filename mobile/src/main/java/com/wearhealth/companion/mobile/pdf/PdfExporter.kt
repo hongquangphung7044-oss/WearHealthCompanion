@@ -243,6 +243,33 @@ object PdfExporter {
         canvas.drawText(normal, x + width * 2 / 3, y + 7, paint)
     }
 
+    /**
+     * 降采样并保留局部极值点（R 波尖峰不丢失）。
+     *
+     * 将 [samples] 分成 [targetSize] 个桶，每桶取最大值和最小值（保留波形峰谷）。
+     * 这比均匀抽样更能保留 ECG 的 R 波尖峰形态。
+     */
+    private fun downsampleKeepPeaks(samples: List<Int>, targetSize: Int): List<Int> {
+        if (samples.size <= targetSize) return samples
+        val bucketSize = samples.size.toFloat() / targetSize
+        val result = ArrayList<Int>(targetSize * 2)
+        var idx = 0f
+        while (idx < samples.size) {
+            val end = minOf((idx + bucketSize).toInt(), samples.size)
+            var minVal = Int.MAX_VALUE
+            var maxVal = Int.MIN_VALUE
+            for (i in idx.toInt() until end) {
+                val v = samples[i]
+                if (v < minVal) minVal = v
+                if (v > maxVal) maxVal = v
+            }
+            if (result.isEmpty() || result.last() != minVal) result.add(minVal)
+            result.add(maxVal)
+            idx += bucketSize
+        }
+        return result
+    }
+
     private fun drawEcgChart(
         canvas: Canvas,
         samples: List<Int>,
@@ -304,10 +331,18 @@ object PdfExporter {
         canvas.drawLine(x, midY, x + width, midY, baselinePaint)
 
         // 去基线后按固定电压比例绘制波形（超出图表范围则裁剪，避免夸张拉伸）
+        // PDF 每点约 0.034 单位，15000 点会画成一片实心墨块无法区分心跳。
+        // 降采样到约 width*2 个点（每像素 2 点，保留 R 波尖峰不丢失）。
         val mean = samples.average()
+        val targetPoints = (width * 2).toInt().coerceAtLeast(2)
+        val drawn = if (samples.size > targetPoints) {
+            downsampleKeepPeaks(samples, targetPoints)
+        } else {
+            samples
+        }
         val path = Path()
-        val stepX = width / (samples.size - 1).toFloat()
-        samples.forEachIndexed { index, sample ->
+        val stepX = width / (drawn.size - 1).toFloat()
+        drawn.forEachIndexed { index, sample ->
             val px = x + index * stepX
             val py = (midY - (sample - mean).toFloat() * yScale).coerceIn(y, y + height)
             if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
@@ -407,47 +442,56 @@ object PdfExporter {
             y += 6
         }
 
-        obj.optJSONObject("心率分析")?.let { hr ->
+        // 心率分析（扁平字段）
+        val hasHr = obj.opt("平均心率") != null ||
+            obj.optString("心率范围").isNotEmpty() ||
+            obj.optString("心率稳定性").isNotEmpty() ||
+            obj.optString("心率置信度").isNotEmpty()
+        if (hasHr) {
             canvas.drawText("心率分析", marginX, y, sectionPaint); y += 15
-            hr.opt("平均心率")?.let { y = drawWrappedText(canvas, "平均心率：$it bpm", marginX, y, contentWidth, normalPaint) }
-            hr.optString("心率范围").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "心率范围：$it", marginX, y, contentWidth, normalPaint) }
-            hr.optString("心率稳定性").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "心率稳定性：$it", marginX, y, contentWidth, normalPaint) }
-            hr.optString("置信度").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "置信度：$it", marginX, y, contentWidth, normalPaint) }
-            hr.optJSONObject("心率变异性")?.let { hrv ->
-                val hrvLine = buildHrvLine(hrv)
-                if (hrvLine.isNotEmpty()) y = drawWrappedText(canvas, hrvLine, marginX, y, contentWidth, normalPaint)
-                hrv.optString("解读").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "解读：$it", marginX, y, contentWidth, normalPaint) }
-                hrv.optString("置信度").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "HRV 置信度：$it", marginX, y, contentWidth, normalPaint) }
-            }
+            obj.opt("平均心率")?.let { y = drawWrappedText(canvas, "平均心率：$it bpm", marginX, y, contentWidth, normalPaint) }
+            obj.optString("心率范围").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "心率范围：$it", marginX, y, contentWidth, normalPaint) }
+            obj.optString("心率稳定性").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "心率稳定性：$it", marginX, y, contentWidth, normalPaint) }
+            obj.optString("心率置信度").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "置信度：$it", marginX, y, contentWidth, normalPaint) }
+            // HRV（扁平字段）
+            val hrvLine = buildHrvLineFlat(obj)
+            if (hrvLine.isNotEmpty()) y = drawWrappedText(canvas, hrvLine, marginX, y, contentWidth, normalPaint)
+            obj.optString("HRV解读").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "HRV 解读：$it", marginX, y, contentWidth, normalPaint) }
+            obj.optString("HRV置信度").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "HRV 置信度：$it", marginX, y, contentWidth, normalPaint) }
             y += 6
         }
 
-        obj.optJSONObject("节律分析")?.let { r ->
+        // 节律分析（扁平字段）
+        val hasRhythm = obj.optString("节律判断").isNotEmpty() ||
+            obj.optString("RR间期规律性").isNotEmpty() ||
+            obj.has("早搏提示")
+        if (hasRhythm) {
             canvas.drawText("节律分析", marginX, y, sectionPaint); y += 15
-            r.optString("节律判断").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "节律判断：$it", marginX, y, contentWidth, normalPaint) }
-            r.optString("RR间期规律性").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "RR 规律性：$it", marginX, y, contentWidth, normalPaint) }
-            r.optJSONArray("早搏提示")?.let { arr ->
+            obj.optString("节律判断").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "节律判断：$it", marginX, y, contentWidth, normalPaint) }
+            obj.optString("RR间期规律性").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "RR 规律性：$it", marginX, y, contentWidth, normalPaint) }
+            obj.optJSONArray("早搏提示")?.let { arr ->
                 if (arr.length() > 0) {
-                    val tips = (0 until arr.length()).joinToString("；") { i ->
-                        val item = arr.optJSONObject(i)
-                        "${item?.optString("时段", "") ?: ""} ${item?.optString("类型", "") ?: ""}".trim()
-                    }
+                    val tips = (0 until arr.length()).joinToString("；") { arr.optString(it) }
                     y = drawWrappedText(canvas, "早搏提示：$tips", marginX, y, contentWidth, normalPaint)
                 }
             }
-            r.optString("置信度").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "置信度：$it", marginX, y, contentWidth, normalPaint) }
+            obj.optString("节律置信度").takeIf { it.isNotEmpty() }?.let { y = drawWrappedText(canvas, "置信度：$it", marginX, y, contentWidth, normalPaint) }
             y += 6
         }
 
-        obj.optJSONObject("间期评估")?.let { iv ->
+        // 间期评估（扁平字段）
+        val hasInterval = obj.opt("PR间期_ms") != null ||
+            obj.opt("QRS宽度_ms") != null ||
+            obj.opt("QTc_ms") != null
+        if (hasInterval) {
             canvas.drawText("间期评估（本地估测，DS 判断）", marginX, y, sectionPaint); y += 15
-            val prLine = buildIntervalLine(iv, "PR间期_ms", "PR判断", "PR置信度", "PR 间期")
+            val prLine = buildIntervalLineFlat(obj, "PR间期_ms", "PR判断", "PR置信度", "PR 间期")
             if (prLine.isNotEmpty()) y = drawWrappedText(canvas, prLine, marginX, y, contentWidth, normalPaint)
-            val qrsLine = buildIntervalLine(iv, "QRS宽度_ms", "QRS判断", "QRS置信度", "QRS 宽度")
+            val qrsLine = buildIntervalLineFlat(obj, "QRS宽度_ms", "QRS判断", "QRS置信度", "QRS 宽度")
             if (qrsLine.isNotEmpty()) y = drawWrappedText(canvas, qrsLine, marginX, y, contentWidth, normalPaint)
-            val qtcLine = buildIntervalLine(iv, "QTc_ms", "QTc判断", "QTc置信度", "QTc")
+            val qtcLine = buildIntervalLineFlat(obj, "QTc_ms", "QTc判断", "QTc置信度", "QTc")
             if (qtcLine.isNotEmpty()) y = drawWrappedText(canvas, qtcLine, marginX, y, contentWidth, normalPaint)
-            iv.optString("数据来源声明").takeIf { it.isNotEmpty() }?.let {
+            obj.optString("间期数据来源").takeIf { it.isNotEmpty() }?.let {
                 y = drawWrappedText(canvas, it, marginX, y, contentWidth, smallPaint)
             }
             y += 6
@@ -483,25 +527,27 @@ object PdfExporter {
         }
     }
 
-    private fun buildHrvLine(hrv: JSONObject): String {
+    /** 扁平格式 HRV 行 */
+    private fun buildHrvLineFlat(obj: JSONObject): String {
         val parts = mutableListOf<String>()
-        hrv.opt("SDNN_ms")?.let { parts.add("SDNN $it ms") }
-        hrv.opt("RMSSD_ms")?.let { parts.add("RMSSD $it ms") }
-        hrv.opt("pNN50_pct")?.let { parts.add("pNN50 $it %") }
+        obj.opt("SDNN_ms")?.let { parts.add("SDNN $it ms") }
+        obj.opt("RMSSD_ms")?.let { parts.add("RMSSD $it ms") }
+        obj.opt("pNN50_pct")?.let { parts.add("pNN50 $it %") }
         return if (parts.isEmpty()) "" else "HRV：" + parts.joinToString("，")
     }
 
-    private fun buildIntervalLine(
-        iv: JSONObject,
+    /** 扁平格式间期行 */
+    private fun buildIntervalLineFlat(
+        obj: JSONObject,
         msKey: String,
         judgeKey: String,
         confKey: String,
         label: String,
     ): String {
-        val ms = iv.opt(msKey) ?: return ""
+        val ms = obj.opt(msKey) ?: return ""
         val sb = StringBuilder("$label：$ms ms")
-        iv.optString(judgeKey).takeIf { it.isNotEmpty() }?.let { sb.append("（$it）") }
-        iv.optString(confKey).takeIf { it.isNotEmpty() }?.let { sb.append(" [置信度：$it]") }
+        obj.optString(judgeKey).takeIf { it.isNotEmpty() }?.let { sb.append("（$it）") }
+        obj.optString(confKey).takeIf { it.isNotEmpty() }?.let { sb.append(" [置信度：$it]") }
         return sb.toString()
     }
 }

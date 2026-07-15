@@ -452,58 +452,50 @@ private fun parseAiReport(json: String): ParsedAiReport {
     val cleaned = JsonCleaner.extractJsonObject(json)
     val obj = JSONObject(cleaned)
 
-    val heartRate = obj.optJSONObject("心率分析")?.let { hr ->
-        buildString {
-            hr.opt("平均心率")?.let { append("平均心率：$it bpm\n") }
-            hr.optString("心率范围").takeIf { it.isNotEmpty() }?.let { append("心率范围：$it\n") }
-            hr.optString("心率稳定性").takeIf { it.isNotEmpty() }?.let { append("心率稳定性：$it\n") }
-            hr.optString("置信度").takeIf { it.isNotEmpty() }?.let { append("置信度：$it\n") }
-            hr.optJSONObject("心率变异性")?.let { hrv ->
-                hrv.opt("SDNN_ms")?.let { append("SDNN：$it ms\n") }
-                hrv.opt("RMSSD_ms")?.let { append("RMSSD：$it ms\n") }
-                hrv.opt("pNN50_pct")?.let { append("pNN50：$it %\n") }
-                hrv.optString("解读").takeIf { it.isNotEmpty() }?.let { append("解读：$it\n") }
-                hrv.optString("置信度").takeIf { it.isNotEmpty() }?.let { append("HRV 置信度：$it\n") }
-            }
-        }.trimEnd().takeIf { it.isNotEmpty() }
-    }
+    // 扁平 JSON 格式（DS 输出嵌套对象易产生语法错误，已改为顶层字段）
+    val heartRate = buildString {
+        obj.opt("平均心率")?.let { append("平均心率：$it bpm\n") }
+        obj.optString("心率范围").takeIf { it.isNotEmpty() }?.let { append("心率范围：$it\n") }
+        obj.optString("心率稳定性").takeIf { it.isNotEmpty() }?.let { append("心率稳定性：$it\n") }
+        obj.optString("心率置信度").takeIf { it.isNotEmpty() }?.let { append("置信度：$it\n") }
+        obj.opt("SDNN_ms")?.let { append("SDNN：$it ms\n") }
+        obj.opt("RMSSD_ms")?.let { append("RMSSD：$it ms\n") }
+        obj.opt("pNN50_pct")?.let { append("pNN50：$it %\n") }
+        obj.optString("HRV解读").takeIf { it.isNotEmpty() }?.let { append("HRV 解读：$it\n") }
+        obj.optString("HRV置信度").takeIf { it.isNotEmpty() }?.let { append("HRV 置信度：$it\n") }
+    }.trimEnd().takeIf { it.isNotEmpty() }
 
-    val rhythm = obj.optJSONObject("节律分析")?.let { r ->
-        buildString {
-            r.optString("节律判断").takeIf { it.isNotEmpty() }?.let { append("节律判断：$it\n") }
-            r.optString("RR间期规律性").takeIf { it.isNotEmpty() }?.let { append("RR 规律性：$it\n") }
-            r.optJSONArray("早搏提示")?.let { arr ->
-                if (arr.length() > 0) {
-                    append("早搏提示：")
-                    for (i in 0 until arr.length()) {
-                        val item = arr.optJSONObject(i)
-                        append("${item?.optString("时段", "") ?: ""} ${item?.optString("类型", "") ?: ""}")
-                        if (i < arr.length() - 1) append("；")
-                    }
-                    append("\n")
+    val rhythm = buildString {
+        obj.optString("节律判断").takeIf { it.isNotEmpty() }?.let { append("节律判断：$it\n") }
+        obj.optString("RR间期规律性").takeIf { it.isNotEmpty() }?.let { append("RR 规律性：$it\n") }
+        obj.optJSONArray("早搏提示")?.let { arr ->
+            if (arr.length() > 0) {
+                append("早搏提示：")
+                for (i in 0 until arr.length()) {
+                    append(arr.optString(i))
+                    if (i < arr.length() - 1) append("；")
                 }
+                append("\n")
             }
-            r.optString("置信度").takeIf { it.isNotEmpty() }?.let { append("置信度：$it\n") }
-        }.trimEnd().takeIf { it.isNotEmpty() }
-    }
+        }
+        obj.optString("节律置信度").takeIf { it.isNotEmpty() }?.let { append("置信度：$it\n") }
+    }.trimEnd().takeIf { it.isNotEmpty() }
 
-    val intervals = obj.optJSONObject("间期评估")?.let { iv ->
-        buildString {
-            iv.opt("PR间期_ms")?.let { append("PR 间期：$it ms") }
-            iv.optString("PR判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
-            iv.optString("PR置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
-            append("\n")
-            iv.opt("QRS宽度_ms")?.let { append("QRS 宽度：$it ms") }
-            iv.optString("QRS判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
-            iv.optString("QRS置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
-            append("\n")
-            iv.opt("QTc_ms")?.let { append("QTc：$it ms") }
-            iv.optString("QTc判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
-            iv.optString("QTc置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
-            append("\n")
-            iv.optString("数据来源声明").takeIf { it.isNotEmpty() }?.let { append(it) }
-        }.trimEnd().takeIf { it.isNotEmpty() }
-    }
+    val intervals = buildString {
+        obj.opt("PR间期_ms")?.let { append("PR 间期：$it ms") }
+        obj.optString("PR判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
+        obj.optString("PR置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
+        append("\n")
+        obj.opt("QRS宽度_ms")?.let { append("QRS 宽度：$it ms") }
+        obj.optString("QRS判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
+        obj.optString("QRS置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
+        append("\n")
+        obj.opt("QTc_ms")?.let { append("QTc：$it ms") }
+        obj.optString("QTc判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
+        obj.optString("QTc置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
+        append("\n")
+        obj.optString("间期数据来源").takeIf { it.isNotEmpty() }?.let { append(it) }
+    }.trimEnd().takeIf { it.isNotEmpty() }
 
     val abnormal = obj.optJSONArray("异常提示")?.let { arr ->
         (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotEmpty() } }

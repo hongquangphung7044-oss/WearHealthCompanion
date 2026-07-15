@@ -303,6 +303,46 @@ fun localSignalQualityCheck(ecgData: List<Int>, sampleRateHz: Int): String? {
         return "信号太弱，可能是电极接触不良。请确保手表戴紧、手指完全覆盖上方按键"
     }
 
+    // 检测 PPG 绿灯干扰：手表后台心率监测（绿灯闪烁）会与 ECG 共享光学路径，
+    // 在波形上叠加周期性低频波动，导致心跳难以区分。
+    // 检测方法：对去基线数据做 0.5~2Hz 带通能量占比，若过高提示绿灯干扰。
+    val ppgArtifactRatio = computePpgArtifactRatio(ecgData, sampleRateHz)
+    if (ppgArtifactRatio > 0.35) {
+        return "检测到心率监测绿灯干扰（干扰占比 ${"%.0f%%".format(ppgArtifactRatio * 100)}）。" +
+            "请先在手表上停止后台心率测量（绿灯停止闪烁后再测心电），否则波形会交叠难以区分心跳"
+    }
+
     // 通过——心跳检测、波形质量等交给 API 的 sqGrade 判断
     return null
+}
+
+/**
+ * 估算 PPG 绿灯干扰在信号中的能量占比。
+ *
+ * 绿灯闪烁（约 1Hz）会在 ECG 基线上叠加周期性低频波动。
+ * 用简单的滑动平均（窗口≈1 秒）提取低频成分，计算其能量占总能量的比例。
+ * 比例越高，说明低频干扰越严重（正常 ECG 能量集中在 QRS 高频段）。
+ */
+private fun computePpgArtifactRatio(ecgData: List<Int>, sampleRateHz: Int): Double {
+    if (ecgData.size < sampleRateHz * 2) return 0.0
+    val mean = ecgData.average()
+    val windowSize = sampleRateHz.coerceAtLeast(1) // 1 秒窗口
+    val totalEnergy = ecgData.sumOf { (it - mean) * (it - mean) }.toDouble()
+    if (totalEnergy < 1.0) return 0.0
+
+    // 提取低频成分（滑动平均）并计算其能量
+    var lowFreqEnergy = 0.0
+    val window = ArrayDeque<Int>()
+    var windowSum = 0L
+    for (sample in ecgData) {
+        window.addLast(sample)
+        windowSum += sample
+        if (window.size > windowSize) {
+            windowSum -= window.removeFirst()
+        }
+        val movingAvg = windowSum.toDouble() / window.size
+        val lowFreqComponent = movingAvg - mean
+        lowFreqEnergy += lowFreqComponent * lowFreqComponent
+    }
+    return (lowFreqEnergy / totalEnergy).coerceIn(0.0, 1.0)
 }

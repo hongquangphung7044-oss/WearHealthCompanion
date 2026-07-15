@@ -9,6 +9,7 @@ import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import com.wearhealth.companion.ble.BleApiKeyFetcher
+import com.wearhealth.companion.ble.BleDsSettingsFetcher
 import com.wearhealth.companion.ble.BleEcgUploader
 import com.wearhealth.companion.ble.BleUploadResult
 import com.wearhealth.companion.data.ApiKeyManager
@@ -67,6 +68,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     private val autoSyncPreferences = AutoSyncPreferences(app.applicationContext)
     private val bleUploader = BleEcgUploader(app.applicationContext)
     private val bleApiKeyFetcher = BleApiKeyFetcher(app.applicationContext)
+    private val bleDsSettingsFetcher = BleDsSettingsFetcher(app.applicationContext)
     private val dsSettings = DeepSeekSettings(app.applicationContext)
     private var deepSeekApi = DeepSeekApiClient(dsSettings.getApiKey())
 
@@ -274,9 +276,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         return try {
             val cleaned = com.wearhealth.companion.shared.JsonCleaner.extractJsonObject(reportJson)
             val json = org.json.JSONObject(cleaned)
-            val rhythm = json.optJSONObject("节律分析")
-                ?.optString("节律判断", "")
-                ?: ""
+            // 扁平 JSON 格式：节律判断在顶层
+            val rhythm = json.optString("节律判断", "")
             val labels = mutableListOf<String>()
             when {
                 rhythm.contains("房颤") -> labels.add("AF")
@@ -288,7 +289,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 else -> labels.add("SN")
             }
             // 早搏：DS 报告的"早搏提示"数组非空则标 PAC
-            val earlyBeats = json.optJSONObject("节律分析")?.optJSONArray("早搏提示")
+            val earlyBeats = json.optJSONArray("早搏提示")
             if (earlyBeats != null && earlyBeats.length() > 0) {
                 labels.add("PAC")
             }
@@ -366,6 +367,53 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                     _uiState.value = _uiState.value.copy(
                         syncingToPhone = false,
                         syncMessage = "BLE 获取 Key 失败：${error.message ?: "未知错误"}",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 通过 BLE 从手机同步器拉取 DeepSeek 设置（国行无 GMS 设备的主通道）。
+     * 成功后应用设置并重建 DS 客户端。
+     */
+    fun fetchDsSettingsFromPhone() {
+        if (_uiState.value.syncingToPhone) return
+        _uiState.value = _uiState.value.copy(
+            syncingToPhone = true,
+            syncMessage = "正在通过 BLE 查找手机上的 DeepSeek 设置…",
+        )
+        bleDsSettingsFetcher.fetch { result ->
+            viewModelScope.launch {
+                result.onSuccess { json ->
+                    try {
+                        val obj = org.json.JSONObject(json)
+                        val apiKey = obj.optString(DataLayerPaths.KEY_DS_API_KEY, "")
+                            .takeIf { it.isNotBlank() }
+                        val model = obj.optString(DataLayerPaths.KEY_DS_DEFAULT_MODEL, "")
+                            .takeIf { it.isNotBlank() }
+                        val thinking = obj.optString(DataLayerPaths.KEY_DS_DEFAULT_THINKING, "")
+                            .takeIf { it.isNotBlank() }
+                        val age = obj.optInt(DataLayerPaths.KEY_DS_USER_AGE, 0)
+                        val genderKnown = obj.optBoolean(DataLayerPaths.KEY_DS_USER_GENDER_KNOWN, false)
+                        val isMale = if (genderKnown) obj.optBoolean(DataLayerPaths.KEY_DS_USER_IS_MALE, true) else null
+                        dsSettings.applyFromRemote(apiKey, model, thinking, age, isMale)
+                        deepSeekApi = DeepSeekApiClient(dsSettings.getApiKey())
+                        _uiState.value = _uiState.value.copy(
+                            dsApiKeyConfigured = dsSettings.isConfigured(),
+                            syncingToPhone = false,
+                            syncMessage = "已从手机获取 DeepSeek 设置 ✓",
+                        )
+                    } catch (e: Exception) {
+                        _uiState.value = _uiState.value.copy(
+                            syncingToPhone = false,
+                            syncMessage = "DS 设置解析失败：${e.message}",
+                        )
+                    }
+                }.onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        syncingToPhone = false,
+                        syncMessage = "BLE 获取 DS 设置失败：${error.message ?: "未知错误"}",
                     )
                 }
             }

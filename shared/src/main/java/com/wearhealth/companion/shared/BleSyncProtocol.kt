@@ -22,6 +22,11 @@ object BleSyncProtocol {
     val UPLOAD_UUID: UUID = UUID.fromString("9a4b7d01-2b58-4b02-8bb8-6f15f03e2a01")
     val ACK_UUID: UUID = UUID.fromString("9a4b7d03-2b58-4b02-8bb8-6f15f03e2a01")
     val API_KEY_UUID: UUID = UUID.fromString("9a4b7d02-2b58-4b02-8bb8-6f15f03e2a01")
+    /**
+     * DeepSeek 设置特征值（读）：手表通过 BLE 拉取手机端保存的 DS 配置（JSON）。
+     * 与 [API_KEY_UUID] 同为 READ 特征值，复用同一 GATT 服务，国行无 GMS 设备也可用。
+     */
+    val DS_SETTINGS_UUID: UUID = UUID.fromString("9a4b7d04-2b58-4b02-8bb8-6f15f03e2a01")
     val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
         UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 

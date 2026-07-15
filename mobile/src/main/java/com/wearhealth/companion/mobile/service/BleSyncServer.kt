@@ -22,9 +22,11 @@ import androidx.core.content.ContextCompat
 import com.wearhealth.companion.mobile.data.AppDatabase
 import com.wearhealth.companion.mobile.data.MeasurementRepository
 import com.wearhealth.companion.mobile.data.MobileApiKeyStore
+import com.wearhealth.companion.mobile.data.MobileDeepSeekSettings
 import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.BleMeasurementCodec
 import com.wearhealth.companion.shared.BleSyncProtocol
+import com.wearhealth.companion.shared.DataLayerPaths
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +36,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -119,6 +122,11 @@ class BleSyncServer(private val context: Context) {
             BluetoothGattCharacteristic.PROPERTY_READ,
             BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED,
         )
+        val dsSettings = BluetoothGattCharacteristic(
+            BleSyncProtocol.DS_SETTINGS_UUID,
+            BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED,
+        )
         val service = BluetoothGattService(
             BleSyncProtocol.SERVICE_UUID,
             BluetoothGattService.SERVICE_TYPE_PRIMARY,
@@ -126,6 +134,7 @@ class BleSyncServer(private val context: Context) {
             addCharacteristic(upload)
             addCharacteristic(ack)
             addCharacteristic(apiKey)
+            addCharacteristic(dsSettings)
         }
         val bleAdvertiser = adapter.bluetoothLeAdvertiser
         if (bleAdvertiser == null) {
@@ -236,21 +245,26 @@ class BleSyncServer(private val context: Context) {
             offset: Int,
             characteristic: BluetoothGattCharacteristic,
         ) {
-            val authorized = device.bondState == BluetoothDevice.BOND_BONDED &&
-                device.address == activeDevice?.address &&
-                characteristic.uuid == BleSyncProtocol.API_KEY_UUID
-            // GATT read 前再验证存储值，避免把含 NUL/控制字符的脏 Key 发给手表
-            val bytes = if (authorized) {
-                ApiKeyValidator.normalizeApiKey(MobileApiKeyStore(context).get())
-                    .getOrNull()?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
+            val bonded = device.bondState == BluetoothDevice.BOND_BONDED &&
+                device.address == activeDevice?.address
+            // 按特征值 UUID 分流：HeartVoice API Key 或 DeepSeek 设置 JSON
+            val bytes = if (bonded) {
+                when (characteristic.uuid) {
+                    BleSyncProtocol.API_KEY_UUID ->
+                        ApiKeyValidator.normalizeApiKey(MobileApiKeyStore(context).get())
+                            .getOrNull()?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
+                    BleSyncProtocol.DS_SETTINGS_UUID ->
+                        buildDsSettingsJson().toByteArray(Charsets.UTF_8)
+                    else -> ByteArray(0)
+                }
             } else ByteArray(0)
             val validOffset = offset in 0..bytes.size
             server?.sendResponse(
                 device,
                 requestId,
-                if (authorized && validOffset) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE,
+                if (bonded && validOffset) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE,
                 offset,
-                if (authorized && validOffset) bytes.copyOfRange(offset, bytes.size) else null,
+                if (bonded && validOffset) bytes.copyOfRange(offset, bytes.size) else null,
             )
         }
 
@@ -480,6 +494,31 @@ class BleSyncServer(private val context: Context) {
 
     private inline fun BluetoothGattServer?.orFalse(block: BluetoothGattServer.() -> Boolean): Boolean =
         this?.block() ?: false
+
+    /**
+     * 构造 DeepSeek 设置 JSON（手表通过 BLE 拉取）。
+     * 字段名与 [com.wearhealth.companion.shared.DataLayerPaths] 的 DS 设置 key 一致，
+     * 手表端用同一套 applyFromRemote 解析逻辑。
+     */
+    private fun buildDsSettingsJson(): String {
+        val ds = MobileDeepSeekSettings(context)
+        val json = JSONObject()
+        // API Key 走归一化校验，避免把脏 Key 发给手表
+        ApiKeyValidator.normalizeApiKey(ds.getApiKey()).getOrNull()?.let {
+            json.put(DataLayerPaths.KEY_DS_API_KEY, it)
+        }
+        json.put(DataLayerPaths.KEY_DS_DEFAULT_MODEL, ds.getDefaultModel().name)
+        json.put(DataLayerPaths.KEY_DS_DEFAULT_THINKING, ds.getDefaultThinking().name)
+        json.put(DataLayerPaths.KEY_DS_USER_AGE, ds.getUserAge())
+        val isMale = ds.getUserIsMale()
+        if (isMale != null) {
+            json.put(DataLayerPaths.KEY_DS_USER_GENDER_KNOWN, true)
+            json.put(DataLayerPaths.KEY_DS_USER_IS_MALE, isMale)
+        } else {
+            json.put(DataLayerPaths.KEY_DS_USER_GENDER_KNOWN, false)
+        }
+        return json.toString()
+    }
 
     companion object {
         private const val TAG = "BleSyncServer"

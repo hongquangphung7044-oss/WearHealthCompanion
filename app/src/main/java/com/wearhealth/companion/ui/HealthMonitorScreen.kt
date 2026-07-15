@@ -128,6 +128,8 @@ fun HealthMonitorScreen(
                     balanceError = uiState.dsBalanceError,
                     onSave = { viewModel.saveDeepSeekApiKey(it) },
                     onQueryBalance = { viewModel.queryDeepSeekBalance() },
+                    onFetchFromPhone = { viewModel.fetchDsSettingsFromPhone() },
+                    syncing = uiState.syncingToPhone,
                 )
             }
         }
@@ -836,6 +838,8 @@ private fun DeepSeekConfigCard(
     balanceError: String?,
     onSave: (String) -> Unit,
     onQueryBalance: () -> Unit,
+    onFetchFromPhone: () -> Unit,
+    syncing: Boolean,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var dsKeyInput by remember { mutableStateOf("") }
@@ -919,8 +923,20 @@ private fun DeepSeekConfigCard(
             ) {
                 Text("保存 DS Key", style = MaterialTheme.typography.bodySmall)
             }
+            // 从手机 BLE 拉取 DS 设置（国行无 GMS 设备主通道）
+            Button(
+                onClick = onFetchFromPhone,
+                enabled = !syncing,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    if (syncing) "正在查找手机…" else "从手机 BLE 获取",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Text(
-                text = "可从手机端下发，或在此输入",
+                text = "可从手机端下发，或在此输入或 BLE 拉取",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF78909C),
                 textAlign = TextAlign.Center,
@@ -1105,12 +1121,11 @@ private fun PreMeasureScreen(
 @Composable
 private fun DeepSeekReportCard(reportJson: String) {
     // 解析 JSON（容错：先剥离 Markdown 包裹，解析失败显示原文摘要）
+    // 格式为扁平 JSON（DS 输出嵌套对象易产生语法错误，已改为顶层字段）
     val parsed: Map<String, String> = remember(reportJson) {
         try {
             val cleaned = com.wearhealth.companion.shared.JsonCleaner.extractJsonObject(reportJson)
             val json = org.json.JSONObject(cleaned)
-            val rhythm = json.optJSONObject("节律分析")
-            val hrv = json.optJSONObject("心率分析")?.optJSONObject("心率变异性")
             val abnormals = json.optJSONArray("异常提示")
             val advice = json.optJSONArray("健康建议")
             val abnormalText = if (abnormals != null) {
@@ -1120,10 +1135,10 @@ private fun DeepSeekReportCard(reportJson: String) {
                 (0 until advice.length()).joinToString("；") { advice.optString(it) }
             } else ""
             mapOf(
-                "综合解读" to (json.optString("综合解读", "")),
-                "节律判断" to (rhythm?.optString("节律判断", "") ?: ""),
-                "节律置信度" to (rhythm?.optString("置信度", "") ?: ""),
-                "HRV解读" to (hrv?.optString("解读", "") ?: ""),
+                "综合解读" to json.optString("综合解读", ""),
+                "节律判断" to json.optString("节律判断", ""),
+                "节律置信度" to json.optString("节律置信度", ""),
+                "HRV解读" to json.optString("HRV解读", ""),
                 "异常提示" to abnormalText,
                 "健康建议" to adviceText,
             )
