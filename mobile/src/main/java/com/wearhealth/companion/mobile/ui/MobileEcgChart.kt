@@ -157,19 +157,19 @@ fun MobileEcgChart(
         drawIntoCanvas { canvas ->
             val nc = canvas.nativeCanvas
             val axisPaint = Paint().apply {
-                color = android.graphics.Color.rgb(0x5C, 0x6B, 0x73); textSize = 10f; isAntiAlias = true
+                setColor(android.graphics.Color.rgb(0x5C, 0x6B, 0x73)); textSize = 10f; isAntiAlias = true
             }
             val finePaint = Paint().apply {
-                color = android.graphics.Color.rgb(0xFF, 0xCD, 0xD2); strokeWidth = 0.5f; isAntiAlias = true
+                setColor(android.graphics.Color.rgb(0xFF, 0xCD, 0xD2)); strokeWidth = 0.5f; isAntiAlias = true
             }
             val majorPaint = Paint().apply {
-                color = android.graphics.Color.rgb(0xEF, 0x9A, 0x9A); strokeWidth = 0.8f; isAntiAlias = true
+                setColor(android.graphics.Color.rgb(0xEF, 0x9A, 0x9A)); strokeWidth = 0.8f; isAntiAlias = true
             }
             val baselinePaint = Paint().apply {
-                color = android.graphics.Color.rgb(0xE5, 0x73, 0x73); strokeWidth = 1f; isAntiAlias = true
+                setColor(android.graphics.Color.rgb(0xE5, 0x73, 0x73)); strokeWidth = 1f; isAntiAlias = true
             }
             val borderPaint = Paint().apply {
-                color = android.graphics.Color.rgb(0xE5, 0x73, 0x73)
+                setColor(android.graphics.Color.rgb(0xE5, 0x73, 0x73))
                 strokeWidth = 1f
                 style = Paint.Style.STROKE
                 isAntiAlias = true
