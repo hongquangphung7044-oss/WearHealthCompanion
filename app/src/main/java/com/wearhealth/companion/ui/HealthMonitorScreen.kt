@@ -1002,7 +1002,9 @@ private fun PreMeasureScreen(
     var ageText by remember { mutableStateOf("") }
     var genderSelected by remember { mutableStateOf(0) } // 0=未选, 1=男, 2=女, 3=不提供
     ScalingLazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
