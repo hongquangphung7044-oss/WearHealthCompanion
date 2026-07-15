@@ -11,7 +11,6 @@ import com.google.android.gms.wearable.Wearable
 import com.google.android.gms.wearable.WearableListenerService
 import com.wearhealth.companion.data.ApiKeyManager
 import com.wearhealth.companion.data.EcgHistoryRepository
-import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.DataLayerPaths
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
 import com.wearhealth.companion.shared.MeasurementSerializer
@@ -51,16 +50,13 @@ class WatchWearableListenerService : WearableListenerService() {
             if (path.startsWith(DataLayerPaths.PATH_API_KEY)) {
                 try {
                     val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
-                    val rawKey = dataMap.getString(DataLayerPaths.KEY_API_KEY, "")
-                    // Data Layer 下发同样归一化校验；失败不保存，不覆盖旧有效 Key。
-                    val result = ApiKeyValidator.normalizeApiKey(rawKey)
-                    val normalized = result.getOrNull()
-                    if (normalized != null) {
+                    val apiKey = dataMap.getString(DataLayerPaths.KEY_API_KEY, "")
+                    if (apiKey.isNotBlank()) {
                         Log.i(TAG, "收到手机下发的 API Key，保存中...")
-                        apiKeyManager.saveApiKey(normalized)
+                        apiKeyManager.saveApiKey(apiKey)
                         // ApiKeyManager.saveApiKey 会触发 refreshTrigger，通知 UI 刷新
                     } else {
-                        Log.w(TAG, "收到的 API Key 非法，未保存：${result.exceptionOrNull()?.message}")
+                        Log.w(TAG, "收到的 API Key 为空")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "解析 API Key 数据失败", e)

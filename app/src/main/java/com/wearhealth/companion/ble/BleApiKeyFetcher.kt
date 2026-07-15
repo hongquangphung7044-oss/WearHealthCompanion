@@ -21,7 +21,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
-import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.BleSyncProtocol
 import java.util.ArrayDeque
 
@@ -254,13 +253,11 @@ class BleApiKeyFetcher(private val context: Context) {
                 finish(Result.failure(IllegalStateException("手机拒绝读取 Key（GATT $status）；请确认系统配对与链路加密")))
                 return
             }
-            // 去除 BLE 尾部 NUL padding 并严格校验；中间 NUL/控制字符拒绝，不保存到 ApiKeyManager。
-            val keyResult = ApiKeyValidator.normalizeApiKeyBytes(characteristic.value ?: ByteArray(0))
-            val key = keyResult.getOrNull()
-            if (key == null) {
-                finish(Result.failure(
-                    IllegalStateException(keyResult.exceptionOrNull()?.message ?: "手机端 API Key 无效")
-                ))
+            val key = characteristic.value?.toString(Charsets.UTF_8)?.trim().orEmpty()
+            if (key.isBlank()) {
+                finish(Result.failure(IllegalStateException("手机端尚未保存 API Key")))
+            } else if (key.toByteArray(Charsets.UTF_8).size > MAX_API_KEY_BYTES) {
+                finish(Result.failure(IllegalStateException("手机端 API Key 长度无效")))
             } else {
                 phoneStore.save(gatt.device)
                 finish(Result.success(key))
@@ -328,6 +325,7 @@ class BleApiKeyFetcher(private val context: Context) {
         private const val FETCH_TIMEOUT_MS = 25_000L
         private const val BONDED_CANDIDATE_TIMEOUT_MS = 5_000L
         private const val MAX_BONDED_CANDIDATES = 6
+        private const val MAX_API_KEY_BYTES = 512
         private const val TAG = "BleApiKeyFetcher"
     }
 }

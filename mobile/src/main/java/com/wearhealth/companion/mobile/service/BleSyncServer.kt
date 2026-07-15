@@ -22,7 +22,6 @@ import androidx.core.content.ContextCompat
 import com.wearhealth.companion.mobile.data.AppDatabase
 import com.wearhealth.companion.mobile.data.MeasurementRepository
 import com.wearhealth.companion.mobile.data.MobileApiKeyStore
-import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.BleMeasurementCodec
 import com.wearhealth.companion.shared.BleSyncProtocol
 import kotlinx.coroutines.CancellationException
@@ -239,12 +238,7 @@ class BleSyncServer(private val context: Context) {
             val authorized = device.bondState == BluetoothDevice.BOND_BONDED &&
                 device.address == activeDevice?.address &&
                 characteristic.uuid == BleSyncProtocol.API_KEY_UUID
-            // GATT read 前再次校验存储值；若已存在旧的损坏 Key，不原样返回含 NUL 的 value，
-            // 返回空让手表提示用户在手机重新保存。
-            val bytes = if (authorized) {
-                ApiKeyValidator.normalizeApiKey(MobileApiKeyStore(context).get())
-                    .getOrNull()?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
-            } else ByteArray(0)
+            val bytes = if (authorized) MobileApiKeyStore(context).get().toByteArray(Charsets.UTF_8) else ByteArray(0)
             val validOffset = offset in 0..bytes.size
             server?.sendResponse(
                 device,
