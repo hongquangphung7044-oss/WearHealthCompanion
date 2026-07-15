@@ -21,6 +21,8 @@ data class EcgAnalysisResult(
     val pvcCount: Int,            // 室性早搏次数
     val rawData: String,          // 原始 API 响应（调试用）
     val ecgSamples: List<Int> = emptyList(),  // ECG 波形数据（降采样后，用于结果显示）
+    val analysisMethod: String = "heartvoice", // 分析方式：heartvoice / ds_*
+    val aiReport: String = "",                 // DeepSeek JSON 报告（仅 DS 方式有值）
 )
 
 /**
@@ -39,6 +41,7 @@ fun diagnosisLabelToText(label: String): String = when (label) {
     "ST" -> "ST 段异常"
     "QT" -> "QT 间期异常"
     "WPW" -> "预激综合征"
+    "ARR" -> "疑似心律不齐"
     else -> label
 }
 

@@ -13,17 +13,20 @@ import com.wearhealth.companion.ble.BleEcgUploader
 import com.wearhealth.companion.ble.BleUploadResult
 import com.wearhealth.companion.data.ApiKeyManager
 import com.wearhealth.companion.data.AutoSyncPreferences
+import com.wearhealth.companion.data.DeepSeekSettings
 import com.wearhealth.companion.data.EcgHistoryRepository
 import com.wearhealth.companion.data.HistoryItem
 import com.wearhealth.companion.model.EcgAnalysisResult
 import com.wearhealth.companion.model.EcgCollectionState
 import com.wearhealth.companion.model.computeMinMaxHeartRate
 import com.wearhealth.companion.model.localSignalQualityCheck
+import com.wearhealth.companion.network.DeepSeekApiClient
 import com.wearhealth.companion.network.HeartVoiceApiClient
 import com.wearhealth.companion.sensor.EcgCollector
 import com.wearhealth.companion.service.WatchWearableListenerService
 import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.DataLayerPaths
+import com.wearhealth.companion.shared.EcgFeatureExtractor
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
 import com.wearhealth.companion.shared.MeasurementSerializer
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +49,13 @@ data class EcgUiState(
     val syncingToPhone: Boolean = false,         // 是否正在传送到手机
     val syncMessage: String? = null,             // 传送状态消息
     val autoSyncEnabled: Boolean = true,           // 分析并保存后自动传送
+    // 分析方式选择：heartvoice / ds_flash_fast / ds_flash_balanced（手表端只放 2 档 DS）
+    val analysisMethod: String = "heartvoice",
+    val dsApiKeyConfigured: Boolean = false,      // DeepSeek API Key 是否已配置
+    val dsBalanceText: String? = null,           // DS 余额文本（如 "¥8.66"），null=未查询
+    val dsBalanceLoading: Boolean = false,        // 正在查询余额
+    val dsBalanceError: String? = null,          // 余额查询错误
+    val showPreMeasureDialog: Boolean = false,   // 测量前年龄性别二级界面
 )
 
 class HealthViewModel(app: Application) : AndroidViewModel(app) {
@@ -57,6 +67,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     private val autoSyncPreferences = AutoSyncPreferences(app.applicationContext)
     private val bleUploader = BleEcgUploader(app.applicationContext)
     private val bleApiKeyFetcher = BleApiKeyFetcher(app.applicationContext)
+    private val dsSettings = DeepSeekSettings(app.applicationContext)
+    private var deepSeekApi = DeepSeekApiClient(dsSettings.getApiKey())
 
     private val _uiState = MutableStateFlow(EcgUiState())
     val uiState: StateFlow<EcgUiState> = _uiState.asStateFlow()
@@ -66,6 +78,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
             sdkAvailable = ecgCollector.checkSdkAvailable(),
             apiKeyConfigured = apiKeyManager.isConfigured(),
             autoSyncEnabled = autoSyncPreferences.isEnabled(),
+            dsApiKeyConfigured = dsSettings.isConfigured(),
         )
         // 监听 API Key 变更（手机端下发或本地保存后自动刷新）
         viewModelScope.launch {
@@ -89,7 +102,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun startEcgMeasurement() {
+    fun startEcgMeasurement(method: String = "heartvoice") {
         val current = _uiState.value.ecgState
         if (current is EcgCollectionState.Connecting ||
             current is EcgCollectionState.Collecting ||
@@ -129,31 +142,20 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 ecgState = EcgCollectionState.Analyzing,
             )
 
-            val result = heartVoiceApi.analyzeEcg(ecgData, sampleRate = 500)
+            // 按分析方式分流
+            val result = if (method.startsWith("ds_")) {
+                analyzeWithDeepSeek(ecgData, method)
+            } else {
+                analyzeWithHeartVoice(ecgData)
+            }
 
-            result.onSuccess { analysis ->
-                val waveform = downsample(ecgData, 400)
-                // 本地计算 min/max 心率（API 只返回平均心率）
-                val (minHr, maxHr) = computeMinMaxHeartRate(ecgData, sampleRateHz = 500)
-
-                // WPW 误判过滤：如果 API 返回 WPW 但 PR/QRS 都正常，移除 WPW 诊断
-                val filteredDiagnosis = filterWpwIfConflict(analysis.diagnosis,
-                    analysis.prInterval, analysis.avgQrs)
-
-                val finalResult = analysis.copy(
-                    ecgSamples = waveform,
-                    minHeartRate = minHr,
-                    maxHeartRate = maxHr,
-                    diagnosis = filteredDiagnosis,
-                    // Keep the API isAbnormal field intact; local WPW label filtering is separate.
-                    isAbnormal = analysis.isAbnormal,
-                )
+            result.onSuccess { finalResult ->
                 // 保存到历史记录（同时保存完整原始波形 rawEcgData，不降采样）
                 val savedItem = historyRepo.save(finalResult, rawEcgData = ecgData)
                 _uiState.value = _uiState.value.copy(
                     ecgState = EcgCollectionState.Done(finalResult),
                     ecgResult = finalResult,
-                    liveSamples = waveform,
+                    liveSamples = finalResult.ecgSamples,
                     history = historyRepo.getAll(),
                     syncMessage = if (autoSyncPreferences.isEnabled()) {
                         "分析完成并已保存；正在自动传送到手机…"
@@ -166,6 +168,152 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 _uiState.value = _uiState.value.copy(
                     ecgState = EcgCollectionState.Error(error.message ?: "API 分析失败")
                 )
+            }
+        }
+    }
+
+    /**
+     * HeartVoice 专业 API 分析（原有流程）
+     */
+    private suspend fun analyzeWithHeartVoice(ecgData: List<Int>): Result<EcgAnalysisResult> {
+        val result = heartVoiceApi.analyzeEcg(ecgData, sampleRate = 500)
+        return result.map { analysis ->
+            val waveform = downsample(ecgData, 400)
+            val (minHr, maxHr) = computeMinMaxHeartRate(ecgData, sampleRateHz = 500)
+            val filteredDiagnosis = filterWpwIfConflict(
+                analysis.diagnosis, analysis.prInterval, analysis.avgQrs,
+            )
+            analysis.copy(
+                ecgSamples = waveform,
+                minHeartRate = minHr,
+                maxHeartRate = maxHr,
+                diagnosis = filteredDiagnosis,
+                isAbnormal = analysis.isAbnormal,
+                analysisMethod = "heartvoice",
+            )
+        }
+    }
+
+    /**
+     * DeepSeek 分析流程：
+     * 1. 用 EcgFeatureExtractor 本地提取统计特征（含 HRV + 间期估测）
+     * 2. 调 DeepSeek API 生成 JSON 报告
+     * 3. 把本地估算参数 + DS 报告合并到 EcgAnalysisResult
+     *
+     * [method] 取值：ds_flash_fast / ds_flash_balanced / ds_pro_max
+     */
+    private suspend fun analyzeWithDeepSeek(
+        ecgData: List<Int>,
+        method: String,
+    ): Result<EcgAnalysisResult> {
+        // 1. 提取本地特征（含用户年龄性别）
+        val profile = EcgFeatureExtractor.UserProfile(
+            ageYears = dsSettings.getUserAge(),
+            isMale = dsSettings.getUserIsMale(),
+        )
+        val bundle = EcgFeatureExtractor.extract(ecgData, sampleRateHz = 500, profile = profile)
+        val featureText = EcgFeatureExtractor.toPromptText(bundle)
+        val g = bundle.global
+
+        // 2. 解析 method → DeepSeekApiClient.Model + ThinkingMode
+        val (model, thinking) = when (method) {
+            "ds_flash_fast" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.FAST
+            "ds_flash_balanced" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
+            "ds_pro_max" -> DeepSeekApiClient.Model.PRO to DeepSeekApiClient.ThinkingMode.MAX
+            else -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
+        }
+
+        // 3. 调 DS
+        val dsResult = deepSeekApi.analyzeEcg(featureText, model, thinking)
+        return dsResult.mapCatching { report ->
+            val waveform = downsample(ecgData, 400)
+
+            // 4. DS 报告里的 JSON 字段尝试提取节律判断作为诊断标签（兜底用本地估算）
+            val dsDiagnosis = extractDsDiagnosis(report.reportJson, g)
+
+            EcgAnalysisResult(
+                isAbnormal = dsDiagnosis.any { it !in listOf("SN", "SNT", "SNB") },
+                signalQuality = g.signalQuality.toDouble(),
+                diagnosis = dsDiagnosis,
+                possibleDiagnoses = emptyList(),
+                isReverse = false,
+                avgHeartRate = g.avgHeartRate,
+                minHeartRate = g.minHeartRate,
+                maxHeartRate = g.maxHeartRate,
+                avgQrs = g.qrsWidthMs,
+                avgP = 0,
+                prInterval = g.prIntervalMs,
+                avgQt = g.qtIntervalMs,
+                avgQtc = g.qtcMs,
+                pacCount = 0,
+                pvcCount = 0,
+                rawData = "",  // DS 模式不保留原始 API 响应
+                ecgSamples = waveform,
+                analysisMethod = method,
+                aiReport = report.reportJson,
+            )
+        }
+    }
+
+    /**
+     * 从 DS JSON 报告里提取诊断标签
+     *
+     * 解析"节律分析.节律判断"字段，映射到项目诊断标签：
+     * - 窦性心律 → SN
+     * - 窦性心动过速 → SNT
+     * - 窦性心动过缓 → SNB
+     * - 房颤 → AF
+     * - 房扑 → AFL
+     * - 早搏 → PAC（本设备无法区分 PAC/PVC，统一标 PAC）
+     * 解析失败时用本地特征兜底（RR 变异系数 > 0.15 标"疑似心律不齐"）
+     */
+    private fun extractDsDiagnosis(
+        reportJson: String,
+        g: EcgFeatureExtractor.GlobalFeatures,
+    ): List<String> {
+        return try {
+            val json = org.json.JSONObject(reportJson)
+            val rhythm = json.optJSONObject("节律分析")
+                ?.optString("节律判断", "")
+                ?: ""
+            val labels = mutableListOf<String>()
+            when {
+                rhythm.contains("房颤") -> labels.add("AF")
+                rhythm.contains("房扑") -> labels.add("AFL")
+                rhythm.contains("心动过速") -> labels.add("SNT")
+                rhythm.contains("心动过缓") -> labels.add("SNB")
+                rhythm.contains("不齐") && !rhythm.contains("窦性") -> labels.add("ARR")
+                rhythm.contains("窦性") -> labels.add("SN")
+                else -> labels.add("SN")
+            }
+            // 早搏：DS 报告的"早搏提示"数组非空则标 PAC
+            val earlyBeats = json.optJSONObject("节律分析")?.optJSONArray("早搏提示")
+            if (earlyBeats != null && earlyBeats.length() > 0) {
+                labels.add("PAC")
+            }
+            // 兜底：RR 变异系数 > 0.15 且未标 AF → 标疑似心律不齐
+            if (g.rrIntervalsMs.size > 3 && g.avgHeartRate > 0) {
+                val mean = g.rrIntervalsMs.average()
+                val std = kotlin.math.sqrt(
+                    g.rrIntervalsMs.map { (it - mean) * (it - mean) }.average()
+                )
+                val cv = std / mean
+                if (cv > 0.15 && !labels.contains("AF") && !labels.contains("ARR")) {
+                    labels.add("ARR")
+                }
+            }
+            labels.ifEmpty { listOf("SN") }
+        } catch (e: Exception) {
+            Log.w(TAG, "解析 DS 报告诊断失败，用本地特征兜底", e)
+            // 兜底：根据 RR 变异系数判断
+            if (g.rrIntervalsMs.size > 3 && g.avgHeartRate > 0) {
+                val mean = g.rrIntervalsMs.average()
+                val std = kotlin.math.sqrt(
+                    g.rrIntervalsMs.map { (it - mean) * (it - mean) }.average()
+                )
+                if (std / mean > 0.15) listOf("ARR") else listOf("SN")
+            } else {
+                listOf("SN")
             }
         }
     }
@@ -235,6 +383,77 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(
             apiKeyConfigured = apiKeyManager.isConfigured(),
         )
+    }
+
+    // ========== DeepSeek 设置管理 ==========
+
+    /** 保存 DeepSeek API Key */
+    fun saveDeepSeekApiKey(key: String) {
+        dsSettings.saveApiKey(key)
+        deepSeekApi = DeepSeekApiClient(key)
+        _uiState.value = _uiState.value.copy(
+            dsApiKeyConfigured = true,
+            syncMessage = "DeepSeek API Key 已保存",
+        )
+    }
+
+    /** 刷新 DS 设置状态（收到手机下发后调用） */
+    fun refreshDeepSeekSettings() {
+        deepSeekApi = DeepSeekApiClient(dsSettings.getApiKey())
+        _uiState.value = _uiState.value.copy(
+            dsApiKeyConfigured = dsSettings.isConfigured(),
+        )
+    }
+
+    /** 设置分析方式选择 */
+    fun setAnalysisMethod(method: String) {
+        _uiState.value = _uiState.value.copy(analysisMethod = method)
+    }
+
+    /** 保存用户年龄 */
+    fun saveUserAge(age: Int) {
+        dsSettings.setUserAge(age)
+    }
+
+    /** 保存用户性别 */
+    fun saveUserGender(isMale: Boolean?) {
+        dsSettings.setUserIsMale(isMale)
+    }
+
+    /** 显示/隐藏测量前年龄性别二级界面 */
+    fun setShowPreMeasureDialog(show: Boolean) {
+        _uiState.value = _uiState.value.copy(showPreMeasureDialog = show)
+    }
+
+    /** 查询 DeepSeek 账户余额 */
+    fun queryDeepSeekBalance() {
+        if (_uiState.value.dsBalanceLoading) return
+        if (!dsSettings.isConfigured()) {
+            _uiState.value = _uiState.value.copy(
+                dsBalanceError = "未配置 DeepSeek API Key",
+            )
+            return
+        }
+        _uiState.value = _uiState.value.copy(
+            dsBalanceLoading = true,
+            dsBalanceError = null,
+        )
+        viewModelScope.launch {
+            val result = deepSeekApi.queryBalance()
+            result.onSuccess { balance ->
+                val symbol = if (balance.currency == "CNY") "¥" else "$"
+                _uiState.value = _uiState.value.copy(
+                    dsBalanceLoading = false,
+                    dsBalanceText = "$symbol${balance.totalBalance}",
+                    dsBalanceError = null,
+                )
+            }.onFailure { error ->
+                _uiState.value = _uiState.value.copy(
+                    dsBalanceLoading = false,
+                    dsBalanceError = error.message ?: "余额查询失败",
+                )
+            }
+        }
     }
 
     // ========== 传送到手机：Google Data Layer 优先，BLE GATT 回退 ==========
@@ -360,6 +579,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         rawEcgData = rawEcgData,
         downsampledEcg = ecgSamples,
         sampleRate = 500,
+        analysisMethod = analysisMethod,
+        aiReport = aiReport,
     )
 
     private fun refreshHistoryAfterSync(message: String) {
@@ -416,6 +637,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                         rawEcgData = item.rawEcgData,
                         downsampledEcg = item.ecgSamples,
                         sampleRate = 500,
+                        analysisMethod = item.analysisMethod,
+                        aiReport = item.aiReport,
                     )
                     val putDataMapReq = PutDataMapRequest.create(
                         "${DataLayerPaths.PATH_ECG_MEASUREMENT}/${item.timestamp}"

@@ -22,6 +22,9 @@ object DataLayerPaths {
     /** 手机 → 手表：发送 API Key。完整路径: /api_key */
     const val PATH_API_KEY = "/api_key"
 
+    /** 手机 → 手表：发送 DeepSeek 设置（Key + 默认模型 + 思考强度）。完整路径: /deepseek_settings */
+    const val PATH_DEEPSEEK_SETTINGS = "/deepseek_settings"
+
     /** 手机 → 手表：请求同步未传送数据。完整路径: /sync_request */
     const val PATH_SYNC_REQUEST = "/sync_request"
 
@@ -52,7 +55,17 @@ object DataLayerPaths {
     /** Non-secret per-submission value; makes an identical retry emit a new DataItem event. */
     const val KEY_TRANSFER_NONCE = "transferNonce"
     const val KEY_DOWNSAMPLED_ECG = "downsampledEcg"  // 降采样波形（用于列表缩略图）
+    const val KEY_ANALYSIS_METHOD = "analysisMethod"   // 分析方式：heartvoice / ds_*
+    const val KEY_AI_REPORT = "aiReport"               // DeepSeek JSON 报告
 
     // API Key 字段
     const val KEY_API_KEY = "apiKey"
+
+    // DeepSeek 设置字段（手机 → 手表下发）
+    const val KEY_DS_API_KEY = "dsApiKey"
+    const val KEY_DS_DEFAULT_MODEL = "dsDefaultModel"       // FLASH / PRO
+    const val KEY_DS_DEFAULT_THINKING = "dsDefaultThinking" // FAST / BALANCED / MAX
+    const val KEY_DS_USER_AGE = "dsUserAge"                 // 用户年龄（0=未知）
+    const val KEY_DS_USER_IS_MALE = "dsUserIsMale"          // 用户性别（null=未知用 false 占位 + 三态标志）
+    const val KEY_DS_USER_GENDER_KNOWN = "dsUserGenderKnown" // 性别是否已知
 }

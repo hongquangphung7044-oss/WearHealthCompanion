@@ -37,6 +37,10 @@ object MeasurementSerializer {
         putInt(DataLayerPaths.KEY_PAC_COUNT, data.pacCount)
         putInt(DataLayerPaths.KEY_PVC_COUNT, data.pvcCount)
         putInt(DataLayerPaths.KEY_SAMPLE_RATE, data.sampleRate)
+        putString(DataLayerPaths.KEY_ANALYSIS_METHOD, data.analysisMethod)
+        if (data.aiReport.isNotEmpty()) {
+            putString(DataLayerPaths.KEY_AI_REPORT, data.aiReport)
+        }
         // A retry with the same timestamp and ECG bytes must still generate TYPE_CHANGED so the
         // phone can persist idempotently and resend an ACK that may have been lost previously.
         putString(DataLayerPaths.KEY_TRANSFER_NONCE, java.util.UUID.randomUUID().toString())
@@ -85,6 +89,8 @@ object MeasurementSerializer {
             rawEcgData = rawEcg,
             downsampledEcg = downsampled,
             sampleRate = dataMap.getInt(DataLayerPaths.KEY_SAMPLE_RATE, 500),
+            analysisMethod = dataMap.getString(DataLayerPaths.KEY_ANALYSIS_METHOD, "heartvoice"),
+            aiReport = dataMap.getString(DataLayerPaths.KEY_AI_REPORT, ""),
         )
     }
 
@@ -117,6 +123,10 @@ object MeasurementSerializer {
             put("pac", data.pacCount)
             put("pvc", data.pvcCount)
             put("sampleRate", data.sampleRate)
+            put("analysisMethod", data.analysisMethod)
+            if (data.aiReport.isNotEmpty()) {
+                put("aiReport", data.aiReport)
+            }
         }.toString()
     }
 
@@ -151,6 +161,8 @@ object MeasurementSerializer {
             pvcCount = o.optInt("pvc"),
             rawEcgData = emptyList(),  // 原始波形从单独的列读取
             sampleRate = o.optInt("sampleRate", 500),
+            analysisMethod = o.optString("analysisMethod", "heartvoice"),
+            aiReport = o.optString("aiReport", ""),
         )
     }
 }

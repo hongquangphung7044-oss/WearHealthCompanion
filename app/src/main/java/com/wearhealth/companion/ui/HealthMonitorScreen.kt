@@ -6,11 +6,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -26,6 +28,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -111,6 +114,17 @@ fun HealthMonitorScreen(
                     onSave = { key -> viewModel.saveApiKey(key) },
                     onFetchFromPhone = { viewModel.fetchApiKeyFromPhone() },
                     syncing = uiState.syncingToPhone,
+                )
+            }
+            // DeepSeek 配置卡片（紧凑，折叠式）
+            item {
+                DeepSeekConfigCard(
+                    configured = uiState.dsApiKeyConfigured,
+                    balanceText = uiState.dsBalanceText,
+                    balanceLoading = uiState.dsBalanceLoading,
+                    balanceError = uiState.dsBalanceError,
+                    onSave = { viewModel.saveDeepSeekApiKey(it) },
+                    onQueryBalance = { viewModel.queryDeepSeekBalance() },
                 )
             }
         }
@@ -324,6 +338,14 @@ fun HealthMonitorScreen(
 
         // 底部按钮
         if (!uiState.showHistory) {
+            // 分析方式选择条（3 档横向紧凑布局）
+            item {
+                AnalysisMethodSelector(
+                    selected = uiState.analysisMethod,
+                    dsConfigured = uiState.dsApiKeyConfigured,
+                    onSelect = { viewModel.setAnalysisMethod(it) },
+                )
+            }
             item {
                 val canMeasure = state is EcgCollectionState.Idle ||
                         state is EcgCollectionState.Error ||
@@ -338,7 +360,16 @@ fun HealthMonitorScreen(
                     is EcgCollectionState.Analyzing -> "分析中..."
                 }
                 Button(
-                    onClick = { if (canMeasure) viewModel.startEcgMeasurement() },
+                    onClick = {
+                        if (canMeasure) {
+                            // DS 方式需要先收集年龄性别（若未配置）
+                            if (uiState.analysisMethod.startsWith("ds_")) {
+                                viewModel.setShowPreMeasureDialog(true)
+                            } else {
+                                viewModel.startEcgMeasurement(uiState.analysisMethod)
+                            }
+                        }
+                    },
                     enabled = canMeasure && uiState.sdkAvailable,
                 ) { Text(buttonText) }
             }
@@ -368,6 +399,19 @@ fun HealthMonitorScreen(
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
+    }
+
+    // 测量前年龄性别二级界面（DS 方式触发）
+    if (uiState.showPreMeasureDialog) {
+        PreMeasureDialog(
+            onConfirm = { age, isMale ->
+                viewModel.saveUserAge(age)
+                viewModel.saveUserGender(isMale)
+                viewModel.setShowPreMeasureDialog(false)
+                viewModel.startEcgMeasurement(uiState.analysisMethod)
+            },
+            onDismiss = { viewModel.setShowPreMeasureDialog(false) },
+        )
     }
 }
 
@@ -506,6 +550,11 @@ private fun EcgResultCard(result: com.wearhealth.companion.model.EcgAnalysisResu
             )
             Text("（偶发早搏正常，频繁需就医）",
                 style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
+        }
+
+        // DeepSeek AI 解读报告（仅 DS 分析方式）
+        if (result.aiReport.isNotEmpty()) {
+            DeepSeekReportCard(reportJson = result.aiReport)
         }
     }
 }
@@ -670,6 +719,22 @@ private fun HistoryDetailCard(item: HistoryItem) {
                 style = MaterialTheme.typography.bodySmall,
                 color = if (item.pacCount + item.pvcCount > 10) Color(0xFFEF5350) else Color(0xFFFF9800))
         }
+        // 分析方式标记 + DS 报告
+        if (item.analysisMethod != "heartvoice") {
+            Text(
+                text = "分析方式: " + when (item.analysisMethod) {
+                    "ds_flash_fast" -> "DS闪速"
+                    "ds_flash_balanced" -> "DS深度"
+                    "ds_pro_max" -> "DS Pro Max"
+                    else -> item.analysisMethod
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF9C27B0),
+            )
+        }
+        if (item.aiReport.isNotEmpty()) {
+            DeepSeekReportCard(reportJson = item.aiReport)
+        }
     }
 }
 
@@ -750,6 +815,318 @@ private fun ApiKeyInputCard(
             enabled = apiKeyInput.isNotBlank() && !syncing,
         ) {
             Text("保存", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+/**
+ * DeepSeek 配置卡片（紧凑折叠式）
+ *
+ * 与 HeartVoice API Key 卡片平级，显示 DS Key 状态 + 余额查询 + Key 输入。
+ */
+@Composable
+private fun DeepSeekConfigCard(
+    configured: Boolean,
+    balanceText: String?,
+    balanceLoading: Boolean,
+    balanceError: String?,
+    onSave: (String) -> Unit,
+    onQueryBalance: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var dsKeyInput by remember { mutableStateOf("") }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+    ) {
+        // 折叠头：点击展开/收起
+        Button(
+            onClick = { expanded = !expanded },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF1A1A2E),
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                text = "DeepSeek 设置 " + if (configured) "✓" else "（未配置）",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (configured) Color(0xFF9C27B0) else Color(0xFFFF9800),
+            )
+        }
+        // 余额行（已配置时显示）
+        if (configured) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "余额: " + (balanceText ?: "未查询"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFB0BEC5),
+                )
+                Button(
+                    onClick = onQueryBalance,
+                    enabled = !balanceLoading,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF263238)),
+                ) {
+                    Text(
+                        if (balanceLoading) "查询中…" else "刷新",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 10.sp,
+                    )
+                }
+            }
+            balanceError?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFFEF5350))
+            }
+        }
+        // 展开后显示 Key 输入框
+        if (expanded) {
+            BasicTextField(
+                value = dsKeyInput,
+                onValueChange = { dsKeyInput = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                textStyle = TextStyle(color = Color.White, fontSize = 12.sp),
+                cursorBrush = SolidColor(Color(0xFF9C27B0)),
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true,
+                decorationBox = { inner ->
+                    if (dsKeyInput.isEmpty()) {
+                        Text(
+                            text = "输入 DeepSeek API Key",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF78909C),
+                        )
+                    }
+                    inner()
+                },
+            )
+            Button(
+                onClick = {
+                    onSave(dsKeyInput)
+                    dsKeyInput = ""
+                    expanded = false
+                },
+                enabled = dsKeyInput.isNotBlank(),
+            ) {
+                Text("保存 DS Key", style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                text = "可从手机端下发，或在此输入",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF78909C),
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/**
+ * 分析方式选择条（3 档横向紧凑布局）
+ * DS 未配置 Key 时仍可选，但测量时会提示先配置。
+ */
+@Composable
+private fun AnalysisMethodSelector(
+    selected: String,
+    dsConfigured: Boolean,
+    onSelect: (String) -> Unit,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+    ) {
+        Text(
+            text = "分析方式",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF78909C),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            val options = listOf(
+                Triple("heartvoice", "专业API", Color(0xFF4CAF50)),
+                Triple("ds_flash_fast", "DS闪速", Color(0xFF64B5F6)),
+                Triple("ds_flash_balanced", "DS深度", Color(0xFF9C27B0)),
+            )
+            options.forEach { (method, label, color) ->
+                val isSelected = selected == method
+                Button(
+                    onClick = { onSelect(method) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSelected) color else Color(0xFF263238),
+                        contentColor = Color.White,
+                    ),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 10.sp,
+                    )
+                }
+            }
+        }
+        if (!dsConfigured && selected.startsWith("ds_")) {
+            Text(
+                text = "⚠️ 未配置 DS Key，请先在设置页填写",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFFF9800),
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/**
+ * 测量前年龄性别二级界面（DS 方式触发）
+ *
+ * 收集用户年龄和性别，影响 QTc/HRV 判断阈值。
+ * 年龄可跳过（填 0），性别可跳过（选"不提供"）。
+ */
+@Composable
+private fun PreMeasureDialog(
+    onConfirm: (age: Int, isMale: Boolean?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var ageText by remember { mutableStateOf("") }
+    var genderSelected by remember { mutableStateOf(0) } // 0=未选, 1=男, 2=女, 3=不提供
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("补充信息（可选）", style = MaterialTheme.typography.titleSmall) },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = "年龄性别影响 QTc/HRV 阈值，可跳过",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF78909C),
+                    textAlign = TextAlign.Center,
+                )
+                Text("年龄", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+                BasicTextField(
+                    value = ageText,
+                    onValueChange = { ageText = it.filter { c -> c.isDigit() }.take(3) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                    cursorBrush = SolidColor(Color(0xFF64B5F6)),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    decorationBox = { inner ->
+                        if (ageText.isEmpty()) {
+                            Text("填写年龄（可空）", style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
+                        }
+                        inner()
+                    },
+                )
+                Text("性别", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf("男" to 1, "女" to 2, "不提供" to 3).forEach { (label, value) ->
+                        Button(
+                            onClick = { genderSelected = value },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (genderSelected == value) Color(0xFF64B5F6) else Color(0xFF263238),
+                            ),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text(label, style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val age = ageText.toIntOrNull() ?: 0
+                val isMale = when (genderSelected) {
+                    1 -> true
+                    2 -> false
+                    else -> null
+                }
+                onConfirm(age, isMale)
+            }) { Text("开始测量", style = MaterialTheme.typography.bodySmall) }
+        },
+        dismissButton = {
+            Button(onClick = onDismiss) { Text("取消", style = MaterialTheme.typography.bodySmall) }
+        },
+    )
+}
+
+/**
+ * DeepSeek AI 解读报告卡片
+ *
+ * 解析 DS 返回的 JSON 报告，在手表上展示关键字段：
+ * - 综合解读（2-4 句中文）
+ * - 节律判断 + 置信度
+ * - 心率变异性解读
+ * - 异常提示
+ * - 健康建议
+ */
+@Composable
+private fun DeepSeekReportCard(reportJson: String) {
+    // 解析 JSON（容错：解析失败显示原文摘要）
+    val parsed: Map<String, String> = remember(reportJson) {
+        try {
+            val json = org.json.JSONObject(reportJson)
+            val rhythm = json.optJSONObject("节律分析")
+            val hrv = json.optJSONObject("心率分析")?.optJSONObject("心率变异性")
+            val abnormals = json.optJSONArray("异常提示")
+            val advice = json.optJSONArray("健康建议")
+            val abnormalText = if (abnormals != null) {
+                (0 until abnormals.length()).joinToString("；") { abnormals.optString(it) }
+            } else ""
+            val adviceText = if (advice != null) {
+                (0 until advice.length()).joinToString("；") { advice.optString(it) }
+            } else ""
+            mapOf(
+                "综合解读" to (json.optString("综合解读", "")),
+                "节律判断" to (rhythm?.optString("节律判断", "") ?: ""),
+                "节律置信度" to (rhythm?.optString("置信度", "") ?: ""),
+                "HRV解读" to (hrv?.optString("解读", "") ?: ""),
+                "异常提示" to abnormalText,
+                "健康建议" to adviceText,
+            )
+        } catch (e: Exception) {
+            mapOf("综合解读" to reportJson.take(200))
+        }
+    }
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+    ) {
+        Text("—— DeepSeek AI 解读 ——",
+            style = MaterialTheme.typography.bodySmall, color = Color(0xFF9C27B0))
+        parsed["综合解读"]?.takeIf { it.isNotBlank() }?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFE1BEE7), textAlign = TextAlign.Center)
+        }
+        parsed["节律判断"]?.takeIf { it.isNotBlank() }?.let {
+            Text("节律: $it" +
+                (parsed["节律置信度"]?.takeIf { c -> c.isNotBlank() }?.let { " (置信度:$it)" } ?: ""),
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+        }
+        parsed["HRV解读"]?.takeIf { it.isNotBlank() }?.let {
+            Text("HRV: $it", style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFB0BEC5), textAlign = TextAlign.Center)
+        }
+        parsed["异常提示"]?.takeIf { it.isNotBlank() }?.let {
+            Text("⚠️ $it", style = MaterialTheme.typography.bodySmall, color = Color(0xFFFF9800))
+        }
+        parsed["健康建议"]?.takeIf { it.isNotBlank() }?.let {
+            Text("建议: $it", style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF78909C), textAlign = TextAlign.Center)
         }
     }
 }

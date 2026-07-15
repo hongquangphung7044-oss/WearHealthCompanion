@@ -25,6 +25,8 @@ import java.nio.IntBuffer
  * @param rawEcgData 完整原始 ECG 波形（mV×1000 整数，500Hz × 30s ≈ 15000 点）
  * @param downsampledEcg 降采样波形（约 400 点，用于列表缩略图）
  * @param sampleRate 采样率 Hz
+ * @param analysisMethod 分析方式："heartvoice"（专业API）/ "ds_flash_fast" / "ds_flash_balanced" / "ds_pro_max"
+ * @param aiReport DeepSeek 生成的 JSON 报告（仅 DS 分析方式有值；HeartVoice 为空字符串）
  */
 data class EcgMeasurementTransfer(
     val timestamp: Long,
@@ -46,6 +48,8 @@ data class EcgMeasurementTransfer(
     val rawEcgData: List<Int>,
     val downsampledEcg: List<Int> = emptyList(),
     val sampleRate: Int = 500,
+    val analysisMethod: String = "heartvoice",
+    val aiReport: String = "",
 )
 
 /**

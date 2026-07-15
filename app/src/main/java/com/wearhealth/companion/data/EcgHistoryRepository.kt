@@ -47,6 +47,8 @@ class EcgHistoryRepository(context: Context) {
             ecgSamples = result.ecgSamples,
             rawEcgData = rawEcgData,
             syncedToPhone = false,
+            analysisMethod = result.analysisMethod,
+            aiReport = result.aiReport,
         )
         list.add(0, saved)
         // 最多保留 50 条
@@ -112,6 +114,10 @@ class EcgHistoryRepository(context: Context) {
                 put("samples", samples)
                 put("sync", item.syncedToPhone)
                 put("raw", raw)
+                put("analysisMethod", item.analysisMethod)
+                if (item.aiReport.isNotEmpty()) {
+                    put("aiReport", item.aiReport)
+                }
             })
         }
         return arr.toString()
@@ -155,6 +161,8 @@ class EcgHistoryRepository(context: Context) {
                 ecgSamples = samples,
                 rawEcgData = raw,
                 syncedToPhone = o.optBoolean("sync", false),
+                analysisMethod = o.optString("analysisMethod", "heartvoice"),
+                aiReport = o.optString("aiReport", ""),
             ))
         }
         return list
@@ -191,4 +199,6 @@ data class HistoryItem(
     val ecgSamples: List<Int>,                 // 降采样波形（用于手表显示）
     val rawEcgData: List<Int> = emptyList(),   // 完整原始波形（用于传送到手机，不降采样）
     val syncedToPhone: Boolean = false,        // 是否已同步到手机
+    val analysisMethod: String = "heartvoice", // 分析方式：heartvoice / ds_*
+    val aiReport: String = "",                 // DeepSeek JSON 报告（仅 DS 方式有值）
 )
