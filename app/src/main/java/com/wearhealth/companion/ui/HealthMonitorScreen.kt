@@ -36,7 +36,6 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
-import androidx.wear.compose.material3.AlertDialog
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
 import androidx.wear.compose.material3.MaterialTheme
@@ -988,6 +987,7 @@ private fun AnalysisMethodSelector(
  *
  * 收集用户年龄和性别，影响 QTc/HRV 判断阈值。
  * 年龄可跳过（填 0），性别可跳过（选"不提供"）。
+ * 用标准 Compose Dialog 实现（Wear OS AlertDialog 签名不兼容 confirmButton）。
  */
 @Composable
 private fun PreMeasureDialog(
@@ -996,70 +996,80 @@ private fun PreMeasureDialog(
 ) {
     var ageText by remember { mutableStateOf("") }
     var genderSelected by remember { mutableStateOf(0) } // 0=未选, 1=男, 2=女, 3=不提供
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("补充信息（可选）", style = MaterialTheme.typography.titleSmall) },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    text = "年龄性别影响 QTc/HRV 阈值，可跳过",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF78909C),
-                    textAlign = TextAlign.Center,
-                )
-                Text("年龄", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
-                BasicTextField(
-                    value = ageText,
-                    onValueChange = { ageText = it.filter { c -> c.isDigit() }.take(3) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                    cursorBrush = SolidColor(Color(0xFF64B5F6)),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    decorationBox = { inner ->
-                        if (ageText.isEmpty()) {
-                            Text("填写年龄（可空）", style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
-                        }
-                        inner()
-                    },
-                )
-                Text("性别", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    listOf("男" to 1, "女" to 2, "不提供" to 3).forEach { (label, value) ->
-                        Button(
-                            onClick = { genderSelected = value },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (genderSelected == value) Color(0xFF64B5F6) else Color(0xFF263238),
-                            ),
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(label, style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
-                        }
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1A1A2E), RoundedCornerShape(12.dp))
+                .padding(12.dp),
+        ) {
+            Text(
+                text = "补充信息（可选）",
+                style = MaterialTheme.typography.titleSmall,
+                color = Color(0xFF64B5F6),
+            )
+            Text(
+                text = "年龄性别影响 QTc/HRV 阈值，可跳过",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF78909C),
+                textAlign = TextAlign.Center,
+            )
+            Text("年龄", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+            BasicTextField(
+                value = ageText,
+                onValueChange = { ageText = it.filter { c -> c.isDigit() }.take(3) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF263238), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                cursorBrush = SolidColor(Color(0xFF64B5F6)),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                decorationBox = { inner ->
+                    if (ageText.isEmpty()) {
+                        Text("填写年龄（可空）", style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
+                    }
+                    inner()
+                },
+            )
+            Text("性别", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf("男" to 1, "女" to 2, "不提供" to 3).forEach { (label, value) ->
+                    Button(
+                        onClick = { genderSelected = value },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (genderSelected == value) Color(0xFF64B5F6) else Color(0xFF263238),
+                        ),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(label, style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
                     }
                 }
             }
-        },
-        confirmButton = {
-            Button(onClick = {
-                val age = ageText.toIntOrNull() ?: 0
-                val isMale = when (genderSelected) {
-                    1 -> true
-                    2 -> false
-                    else -> null
-                }
-                onConfirm(age, isMale)
-            }) { Text("开始测量", style = MaterialTheme.typography.bodySmall) }
-        },
-        dismissButton = {
-            Button(onClick = onDismiss) { Text("取消", style = MaterialTheme.typography.bodySmall) }
-        },
-    )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF455A64)),
+                    modifier = Modifier.weight(1f),
+                ) { Text("取消", style = MaterialTheme.typography.bodySmall) }
+                Button(
+                    onClick = {
+                        val age = ageText.toIntOrNull() ?: 0
+                        val isMale = when (genderSelected) {
+                            1 -> true
+                            2 -> false
+                            else -> null
+                        }
+                        onConfirm(age, isMale)
+                    },
+                    modifier = Modifier.weight(1f),
+                ) { Text("开始测量", style = MaterialTheme.typography.bodySmall) }
+            }
+        }
+    }
 }
 
 /**
