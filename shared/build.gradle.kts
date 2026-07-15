@@ -27,6 +27,8 @@ dependencies {
     implementation(libs.play.services.wearable)
     // OkHttp: DeepSeek API 客户端（手表+手机共用）
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Coroutines: DeepSeekApiClient.analyzeEcg/queryBalance 使用 withContext(Dispatchers.IO)
+    implementation(libs.kotlinx.coroutines.android)
     // Unit tests cover binary framing/CRC/ACK and payload round trips without device hardware.
     testImplementation("junit:junit:4.13.2")
 }
