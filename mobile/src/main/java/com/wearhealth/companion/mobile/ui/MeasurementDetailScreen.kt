@@ -205,9 +205,10 @@ private fun DetailContent(
                     samples = data.rawEcgData,
                     modifier = Modifier.fillMaxWidth(),
                     interactive = true,
+                    sampleRate = data.sampleRate,
                 )
                 Text(
-                    "当前为单导联波形概览，振幅会自适应缩放；可用于观察趋势，不是标准诊断心电图纸。",
+                    "单导联波形；纵轴固定 ±2mV，横轴为时间（秒）；可拖动查看、双指缩放看细节。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(4.dp),

@@ -1,5 +1,6 @@
 package com.wearhealth.companion.mobile.ui
 
+import android.graphics.Paint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -18,18 +19,23 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
+import kotlin.math.floor
 
 /**
  * 手机端 ECG 波形图组件
  *
- * 固定时间/电压比例（交互模式）：
- * - 1x 缩放时每秒 100px（手机屏约 360px 宽 → 显示约 3.6 秒，约 3-4 个心跳）
- * - 固定电压比例 50px/mV（接近标准 10mm/mV 视觉比例）
- * - 网格按 ECG 标准刻度（1mm 细格 / 5mm 大格）
+ * 交互模式（interactive=true）：
+ * - 初始 1x 时全部数据铺满绘图区（打开即见全貌），放大后看细节
+ * - 固定电压比例 ±2mV（不再自适应拉伸）
+ * - 坐标轴标注：底部时间（秒），左侧电压（mV）
+ * - 去基线用中位数（抗前段电极建立期漂移）
  *
- * 缩略图模式（interactive=false）保持自适应填充。
+ * 缩略图模式（interactive=false）保持自适应填充，无坐标轴。
  *
  * @param samples ECG 数据（mV×1000 整数）
  * @param modifier 布局修饰符
@@ -60,9 +66,9 @@ fun MobileEcgChart(
                 if (interactive) {
                     Modifier.pointerInput(samples) {
                         detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(0.2f, 10f)
+                            scale = (scale * zoom).coerceIn(1f, 10f)
                             val panNormalized = pan.x / size.width
-                            val maxOffset = 1f - 1f / scale.coerceAtLeast(1f)
+                            val maxOffset = 1f - 1f / scale
                             if (maxOffset > 0f) {
                                 offsetX = (offsetX - panNormalized).coerceIn(0f, maxOffset)
                             }
@@ -76,10 +82,10 @@ fun MobileEcgChart(
         if (samples.isEmpty()) return@Canvas
         val w = size.width
         val h = size.height
-        val midY = h / 2f
 
         if (!interactive) {
-            // 缩略图模式：自适应填充
+            // 缩略图模式：自适应填充（保持不变）
+            val midY = h / 2f
             val mean = samples.average()
             val centered = samples.map { (it - mean).toFloat() }
             val range = ((centered.maxOrNull() ?: 1f) - (centered.minOrNull() ?: -1f)).coerceAtLeast(1f)
@@ -106,62 +112,146 @@ fun MobileEcgChart(
             return@Canvas
         }
 
-        // ===== 交互模式：固定时间/电压比例 =====
-        val basePxPerSecond = 100f
-        val pxPerMillivolt = 50f
+        // ===== 交互模式：初始铺满 + 缩放看细节 =====
+        // 边距：左侧给 Y 轴标注，底部给 X 轴标注
+        val leftPad = 38f
+        val bottomPad = 20f
+        val topPad = 6f
+        val rightPad = 6f
+        val plotLeft = leftPad
+        val plotTop = topPad
+        val plotRight = w - rightPad
+        val plotBottom = h - bottomPad
+        val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
+        val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
+        val midY = plotTop + plotH / 2f
 
-        val pxPerSecond = basePxPerSecond * scale
-        val stepX = pxPerSecond / sampleRate.toFloat()
+        // 时长推断：降采样数据（点数/采样率 < 5 秒）按 30 秒处理
+        val durationSec = if (sampleRate > 0 && samples.size.toFloat() / sampleRate > 5f) {
+            samples.size.toFloat() / sampleRate
+        } else 30f
+        val effectiveRate = if (durationSec > 0f) samples.size.toFloat() / durationSec else sampleRate.toFloat()
 
-        val totalContentWidth = samples.size * stepX
-        val maxScroll = (totalContentWidth - w).coerceAtLeast(0f)
+        // X 轴：scale=1 时全部铺满，scale>1 放大
+        val baseStepX = if (samples.size > 1) plotW / (samples.size - 1) else plotW
+        val stepX = baseStepX * scale
+        val totalContentWidth = (samples.size - 1) * stepX
+        val maxScroll = (totalContentWidth - plotW).coerceAtLeast(0f)
         val scrollPx = offsetX * maxScroll
+
         val firstIdx = (scrollPx / stepX).toInt().coerceIn(0, samples.size - 1)
-        val lastIdx = ((scrollPx + w) / stepX).toInt().coerceIn(firstIdx, samples.size - 1)
+        val lastIdx = ((scrollPx + plotW) / stepX).toInt().coerceIn(firstIdx, samples.size - 1)
         val visibleSamples = samples.subList(firstIdx, lastIdx + 1)
 
-        val mean = visibleSamples.average()
-        val yScale = pxPerMillivolt / 1000f
+        // 去基线：中位数（抗前段电极建立期漂移，比均值更稳定）
+        val sortedVisible = visibleSamples.sorted()
+        val median = if (sortedVisible.isNotEmpty()) sortedVisible[sortedVisible.size / 2].toFloat() else 0f
 
-        // ===== 网格：按 ECG 标准刻度 =====
-        val fineStepX = pxPerSecond / 25f
-        val majorStepX = pxPerSecond / 5f
-        val fineStepY = pxPerMillivolt / 10f
-        val majorStepY = pxPerMillivolt / 2f
+        // Y 轴：固定 ±2mV 电压窗口（数据是 mV×1000 整数）
+        val yScale = plotH / (4f * 1000f)
 
-        val fineColor = Color(0xFFFFCDD2)
-        val majorColor = Color(0xFFEF9A9A)
+        // 时间刻度：根据可见时长选择合适的间隔
+        val visibleSec = if (effectiveRate > 0) (lastIdx - firstIdx + 1) / effectiveRate else 0f
+        val timeStep = chooseTimeStepMobile(visibleSec)
 
-        var gx = scrollPx % fineStepX
-        while (gx < w) {
-            if (gx >= 0) drawLine(fineColor, Offset(gx, 0f), Offset(gx, h), 0.5f)
-            gx += fineStepX
+        drawIntoCanvas { canvas ->
+            val nc = canvas.nativeCanvas
+            val axisPaint = Paint().apply {
+                color = android.graphics.Color.rgb(0x5C, 0x6B, 0x73); textSize = 10f; isAntiAlias = true
+            }
+            val finePaint = Paint().apply {
+                color = android.graphics.Color.rgb(0xFF, 0xCD, 0xD2); strokeWidth = 0.5f; isAntiAlias = true
+            }
+            val majorPaint = Paint().apply {
+                color = android.graphics.Color.rgb(0xEF, 0x9A, 0x9A); strokeWidth = 0.8f; isAntiAlias = true
+            }
+            val baselinePaint = Paint().apply {
+                color = android.graphics.Color.rgb(0xE5, 0x73, 0x73); strokeWidth = 1f; isAntiAlias = true
+            }
+            val borderPaint = Paint().apply {
+                color = android.graphics.Color.rgb(0xE5, 0x73, 0x73)
+                strokeWidth = 1f
+                style = Paint.Style.STROKE
+                isAntiAlias = true
+            }
+            val fm = axisPaint.fontMetrics
+            val textVertCenter = -(fm.ascent + fm.descent) / 2f
+
+            // ===== Y 网格 + 电压标注（-2 ~ +2 mV，每 1mV 一条） =====
+            var mV = -2f
+            while (mV <= 2f) {
+                val y = midY - mV * 1000f * yScale
+                if (y in plotTop..plotBottom) {
+                    val p = if (mV == 0f) majorPaint else finePaint
+                    nc.drawLine(plotLeft, y, plotRight, y, p)
+                    val label = if (mV == 0f) "0" else "${mV.toInt()}"
+                    nc.drawText(label, 4f, y + textVertCenter, axisPaint)
+                }
+                mV += 1f
+            }
+            // mV 单位
+            nc.drawText("mV", 4f, plotTop - fm.ascent + 2f, axisPaint)
+
+            // 基线（0mV 线加粗）
+            nc.drawLine(plotLeft, midY, plotRight, midY, baselinePaint)
+
+            // ===== X 网格 + 时间标注（秒） =====
+            val startSec = if (effectiveRate > 0) firstIdx / effectiveRate else 0f
+            val endSec = if (effectiveRate > 0) (lastIdx + 1) / effectiveRate else 0f
+            var t = floor(startSec / timeStep).toFloat() * timeStep
+            while (t <= endSec + timeStep) {
+                if (t >= 0f) {
+                    val idx = (t * effectiveRate).toInt()
+                    if (idx in 0 until samples.size) {
+                        val x = plotLeft + idx * stepX - scrollPx
+                        if (x in plotLeft..plotRight) {
+                            nc.drawLine(x, plotTop, x, plotBottom, majorPaint)
+                            val label = formatTimeLabelMobile(t)
+                            val tw = axisPaint.measureText(label)
+                            val textX = (x - tw / 2f).coerceIn(plotLeft, plotRight - tw)
+                            nc.drawText(label, textX, plotBottom + 14f, axisPaint)
+                        }
+                    }
+                }
+                t += timeStep
+            }
+            // s 单位（右下角）
+            nc.drawText("s", plotRight - 10f, plotBottom + 14f, axisPaint)
+
+            // 绘图区边框
+            nc.drawRect(plotLeft, plotTop, plotRight, plotBottom, borderPaint)
         }
-        var gy = midY % fineStepY
-        while (gy < h) {
-            if (gy >= 0) drawLine(fineColor, Offset(0f, gy), Offset(w, gy), 0.5f)
-            gy += fineStepY
-        }
-        var mx = scrollPx % majorStepX
-        while (mx < w) {
-            if (mx >= 0) drawLine(majorColor, Offset(mx, 0f), Offset(mx, h), 1f)
-            mx += majorStepX
-        }
-        var my = midY % majorStepY
-        while (my < h) {
-            if (my >= 0) drawLine(majorColor, Offset(0f, my), Offset(w, my), 1f)
-            my += majorStepY
-        }
 
-        drawLine(Color(0xFFE57373), Offset(0f, midY), Offset(w, midY), 1f)
-
+        // ===== ECG 波形 =====
         val path = Path()
         for (i in visibleSamples.indices) {
             val sampleIdx = firstIdx + i
-            val x = sampleIdx * stepX - scrollPx
-            val y = midY - ((visibleSamples[i] - mean).toFloat() * yScale)
+            val x = plotLeft + sampleIdx * stepX - scrollPx
+            val y = (midY - (visibleSamples[i] - median) * yScale).coerceIn(plotTop, plotBottom)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
         drawPath(path, color = color, style = Stroke(width = 1.5f, cap = StrokeCap.Round))
+    }
+}
+
+/** 根据可见时长选择合适的时间刻度间隔（目标约 4~6 条刻度线） */
+private fun chooseTimeStepMobile(visibleSec: Float): Float {
+    val target = (visibleSec / 5f).coerceAtLeast(0.1f)
+    val steps = floatArrayOf(0.1f, 0.2f, 0.5f, 1f, 2f, 5f, 10f)
+    var best = steps[0]
+    var bestDiff = abs(target - best)
+    for (s in steps) {
+        val d = abs(target - s)
+        if (d < bestDiff) { best = s; bestDiff = d }
+    }
+    return best
+}
+
+/** 格式化时间标注：<1s 显示毫秒，整秒显示整数，否则保留一位小数 */
+private fun formatTimeLabelMobile(sec: Float): String {
+    return when {
+        sec < 1f -> "${(sec * 1000).toInt()}"
+        sec == sec.toInt().toFloat() -> "${sec.toInt()}"
+        else -> "%.1f".format(sec)
     }
 }
