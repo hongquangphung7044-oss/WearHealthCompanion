@@ -22,6 +22,7 @@ import com.wearhealth.companion.model.localSignalQualityCheck
 import com.wearhealth.companion.network.HeartVoiceApiClient
 import com.wearhealth.companion.sensor.EcgCollector
 import com.wearhealth.companion.service.WatchWearableListenerService
+import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.DataLayerPaths
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
 import com.wearhealth.companion.shared.MeasurementSerializer
@@ -174,17 +175,21 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 保存 API Key（用户在手表端输入或由手机下发后调用）
      *
+     * 保存前进行 NUL/控制字符校验；校验失败显示中文错误，不保存也不重建客户端。
      * 保存后会重建 HeartVoiceApiClient 并刷新 UI 状态。
      */
     fun saveApiKey(key: String) {
-        val trimmed = key.trim()
-        if (trimmed.isEmpty()) {
-            _uiState.value = _uiState.value.copy(syncMessage = "API Key 不能为空")
+        val result = ApiKeyValidator.normalizeApiKey(key)
+        val normalized = result.getOrNull()
+        if (normalized == null) {
+            _uiState.value = _uiState.value.copy(
+                syncMessage = result.exceptionOrNull()?.message ?: "API Key 无效"
+            )
             return
         }
-        apiKeyManager.saveApiKey(trimmed)
+        apiKeyManager.saveApiKey(normalized)
         // 用新的 API Key 重建客户端
-        heartVoiceApi = HeartVoiceApiClient(trimmed)
+        heartVoiceApi = HeartVoiceApiClient(normalized)
         _uiState.value = _uiState.value.copy(
             apiKeyConfigured = true,
             syncMessage = "API Key 已保存",

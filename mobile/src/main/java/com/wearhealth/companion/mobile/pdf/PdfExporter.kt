@@ -160,7 +160,7 @@ object PdfExporter {
         y += 13
         y = drawWrappedText(
             canvas,
-            "单导联；振幅自适应缩放；网格仅作视觉辅助，不代表标准 25 mm/s 纸速或 10 mm/mV 增益。",
+            "单导联；纵轴按标准 10 mm/mV 增益；为在一页内呈现完整 30 秒，横轴时间已压缩（非标准 25 mm/s 纸速），可用手机端交互图按标准比例查看细节。",
             marginX,
             y,
             contentWidth,
@@ -168,7 +168,7 @@ object PdfExporter {
         )
         val chartHeight = 205f
         if (transfer.rawEcgData.isNotEmpty()) {
-            drawEcgChart(canvas, transfer.rawEcgData, marginX, y, contentWidth, chartHeight)
+            drawEcgChart(canvas, transfer.rawEcgData, marginX, y, contentWidth, chartHeight, transfer.sampleRate)
         } else {
             canvas.drawText("无波形数据", marginX, y + chartHeight / 2, smallPaint)
         }
@@ -229,28 +229,71 @@ object PdfExporter {
         y: Float,
         width: Float,
         height: Float,
+        sampleRate: Int,
     ) {
         val chart = android.graphics.RectF(x, y, x + width, y + height)
         canvas.drawRect(chart, Paint().apply { color = Color.rgb(0xFF, 0xF5, 0xF5) })
+        if (samples.size < 2) return
+
+        val midY = y + height / 2f
+
+        // 固定电压比例：标准 10 mm/mV。PDF 用户单位 1 unit = 25.4/72 mm。
+        val unitsPerMm = 25.4f / 72f
+        val yScale = (10f * unitsPerMm) / 1000f // 数据为 mV×1000，1 mV → 10mm
+
         val fine = Paint().apply { color = Color.rgb(0xFF, 0xCD, 0xD2); strokeWidth = 0.4f }
         val major = Paint().apply { color = Color.rgb(0xEF, 0x9A, 0x9A); strokeWidth = 0.8f }
-        for (i in 0..50) canvas.drawLine(x + width * i / 50f, y, x + width * i / 50f, y + height, if (i % 5 == 0) major else fine)
-        for (i in 0..30) canvas.drawLine(x, y + height * i / 30f, x + width, y + height * i / 30f, if (i % 5 == 0) major else fine)
-        if (samples.size < 2) return
+        val baselinePaint = Paint().apply { color = Color.rgb(0xE5, 0x73, 0x73); strokeWidth = 0.8f }
+
+        // 时间轴：为在一页内呈现完整 30 秒，横轴已压缩（非标准 25 mm/s）。
+        val durationSeconds = if (sampleRate > 0) samples.size.toFloat() / sampleRate.toFloat() else 0f
+        val xPerSecond = if (durationSeconds > 0f) width / durationSeconds else width
+        val xMinorStep = xPerSecond * 0.5f   // 0.5s
+        val xMajorStep = xPerSecond           // 1s
+
+        // X 网格（时间）：每 1s 一条粗线，中间 0.5s 一条细线
+        var sec = 0
+        while (sec * xMajorStep <= width + 0.5f) {
+            val mx = x + sec * xMajorStep
+            canvas.drawLine(mx, y, mx, y + height, major)
+            val halfStep = sec * xMajorStep + xMinorStep
+            if (halfStep < width) {
+                val fx = x + halfStep
+                canvas.drawLine(fx, y, fx, y + height, fine)
+            }
+            sec++
+        }
+
+        // Y 网格（电压）：以基线为基准，每 1mm(0.1mV) 一条细线，每 5mm(0.5mV) 一条粗线
+        val yMinorStep = unitsPerMm
+        val yMajorStep = 5f * unitsPerMm
+        var k = 0
+        while (true) {
+            val up = midY - k * yMinorStep
+            val down = midY + k * yMinorStep
+            val paint = if (k % 5 == 0) major else fine
+            var drew = false
+            if (up >= y) { canvas.drawLine(x, up, x + width, up, paint); drew = true }
+            if (k > 0 && down <= y + height) { canvas.drawLine(x, down, x + width, down, paint); drew = true }
+            if (!drew && k > 0) break
+            k++
+        }
+
+        // 基线
+        canvas.drawLine(x, midY, x + width, midY, baselinePaint)
+
+        // 去基线后按固定电压比例绘制波形（超出图表范围则裁剪，避免夸张拉伸）
         val mean = samples.average()
-        val centered = samples.map { (it - mean).toFloat() }
-        val range = ((centered.maxOrNull() ?: 1f) - (centered.minOrNull() ?: -1f)).coerceAtLeast(1f)
-        val yScale = height * 0.75f / range
-        val midY = y + height / 2f
         val path = Path()
-        centered.forEachIndexed { index, sample ->
-            val px = x + index * width / (centered.size - 1).toFloat()
-            val py = midY - sample * yScale
+        val stepX = width / (samples.size - 1).toFloat()
+        samples.forEachIndexed { index, sample ->
+            val px = x + index * stepX
+            val py = (midY - (sample - mean).toFloat() * yScale).coerceIn(y, y + height)
             if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
         }
         canvas.drawPath(path, Paint().apply {
             color = Color.rgb(0x0D, 0x47, 0xA1)
-            strokeWidth = 1f
+            strokeWidth = 0.8f
             isAntiAlias = true
             style = Paint.Style.STROKE
         })

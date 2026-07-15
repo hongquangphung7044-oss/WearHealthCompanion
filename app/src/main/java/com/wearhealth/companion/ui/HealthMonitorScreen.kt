@@ -103,27 +103,15 @@ fun HealthMonitorScreen(
             }
         }
 
-        // API Key 输入界面：未配置时显示完整输入卡；已有 Key 时仍保留 BLE 更新入口。
-        if (!uiState.apiKeyConfigured && !uiState.showHistory) {
+        // API Key 输入界面：始终显示输入卡（未配置时提示"请配置"，已配置时提示"更新"）。
+        if (!uiState.showHistory) {
             item {
                 ApiKeyInputCard(
+                    alreadyConfigured = uiState.apiKeyConfigured,
                     onSave = { key -> viewModel.saveApiKey(key) },
                     onFetchFromPhone = { viewModel.fetchApiKeyFromPhone() },
                     syncing = uiState.syncingToPhone,
                 )
-            }
-        } else if (uiState.apiKeyConfigured && !uiState.showHistory) {
-            item {
-                Button(
-                    onClick = { viewModel.fetchApiKeyFromPhone() },
-                    enabled = !uiState.syncingToPhone,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
-                ) {
-                    Text(
-                        if (uiState.syncingToPhone) "正在查找手机…" else "从手机 BLE 更新 Key",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
             }
         }
 
@@ -386,7 +374,7 @@ fun HealthMonitorScreen(
 /**
  * ECG 波形绘制（Canvas）
  *
- * 关键：先去基线（减均值），再用动态范围自适应缩放。
+ * 关键：先去基线（减均值），再用固定电压比例绘制（不再自适应拉伸）。
  */
 @Composable
 private fun EcgWaveform(
@@ -405,17 +393,14 @@ private fun EcgWaveform(
         // 去基线
         val mean = samples.average()
         val centered = samples.map { (it - mean).toFloat() }
-        // 自适应缩放
-        val maxVal = centered.maxOrNull() ?: 1f
-        val minVal = centered.minOrNull() ?: -1f
-        val range = (maxVal - minVal).coerceAtLeast(1f)
-        val scale = (h * 0.75f) / range
+        // 固定电压比例：图表高度代表 ±2mV 窗口（4mV 总量），不再自适应拉伸
+        val yScale = h / (4f * 1000f)
 
         val path = Path()
         val stepX = if (samples.size > 1) w / (samples.size - 1) else w
         for (i in centered.indices) {
             val x = i * stepX
-            val y = midY - (centered[i] * scale)
+            val y = (midY - (centered[i] * yScale)).coerceIn(0f, h)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
         drawPath(path, color = color, style = Stroke(width = 2f, cap = StrokeCap.Round))
@@ -696,6 +681,7 @@ private fun HistoryDetailCard(item: HistoryItem) {
  */
 @Composable
 private fun ApiKeyInputCard(
+    alreadyConfigured: Boolean,
     onSave: (String) -> Unit,
     onFetchFromPhone: () -> Unit,
     syncing: Boolean,
@@ -709,9 +695,9 @@ private fun ApiKeyInputCard(
             .padding(horizontal = 4.dp),
     ) {
         Text(
-            text = "请配置 API Key",
+            text = if (alreadyConfigured) "更新 API Key" else "请配置 API Key",
             style = MaterialTheme.typography.titleSmall,
-            color = Color(0xFFFF9800),
+            color = if (alreadyConfigured) Color(0xFF4CAF50) else Color(0xFFFF9800),
             textAlign = TextAlign.Center,
         )
         Text(

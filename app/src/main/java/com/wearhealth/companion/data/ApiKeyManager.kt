@@ -1,6 +1,7 @@
 package com.wearhealth.companion.data
 
 import android.content.Context
+import com.wearhealth.companion.shared.ApiKeyValidator
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
@@ -17,11 +18,12 @@ class ApiKeyManager(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /** 读取运行时保存的 API Key；全新安装返回空字符串。 */
-    fun getApiKey(): String = prefs.getString(KEY_API_KEY, "").orEmpty()
+    fun getApiKey(): String = prefs.getString(KEY_API_KEY, "").orEmpty().trim()
 
-    /** 保存 API Key */
+    /** 保存 API Key（含 NUL/控制字符校验，校验失败不覆盖旧 Key） */
     fun saveApiKey(key: String) {
-        prefs.edit().putString(KEY_API_KEY, key.trim()).apply()
+        val normalized = ApiKeyValidator.normalizeApiKey(key).getOrNull() ?: return
+        prefs.edit().putString(KEY_API_KEY, normalized).apply()
         notifyChanged()
     }
 

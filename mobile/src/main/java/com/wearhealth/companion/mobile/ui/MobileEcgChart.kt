@@ -24,16 +24,19 @@ import androidx.compose.ui.unit.dp
 /**
  * 手机端 ECG 波形图组件
  *
- * 相比手表端的 InteractiveEcgChart，提供更大的显示尺寸与更专业的网格背景：
- * - 经典 ECG 心电图纸风格：浅粉背景 + 粉色网格（大格 5mm，细格 1mm 比例）
- * - 单指拖动平移、双指缩放（1x~10x）
- * - 自适应去基线 + 幅度缩放
+ * 固定时间/电压比例（交互模式）：
+ * - 1x 缩放时每秒 100px（手机屏约 360px 宽 → 显示约 3.6 秒，约 3-4 个心跳）
+ * - 固定电压比例 50px/mV（接近标准 10mm/mV 视觉比例）
+ * - 网格按 ECG 标准刻度（1mm 细格 / 5mm 大格）
+ *
+ * 缩略图模式（interactive=false）保持自适应填充。
  *
  * @param samples ECG 数据（mV×1000 整数）
  * @param modifier 布局修饰符
  * @param color 波形颜色
- * @param interactive true=可拖动缩放，false=静态显示
- * @param chartHeight 图表高度，详情页用 240dp，列表缩略图用 100dp
+ * @param interactive true=可拖动缩放，false=静态缩略图
+ * @param chartHeight 图表高度
+ * @param sampleRate 采样率 Hz（默认 500）
  */
 @Composable
 fun MobileEcgChart(
@@ -42,10 +45,9 @@ fun MobileEcgChart(
     color: Color = Color(0xFF0D47A1),
     interactive: Boolean = true,
     chartHeight: androidx.compose.ui.unit.Dp = 240.dp,
+    sampleRate: Int = 500,
 ) {
-    // 缩放比例（1.0 = 默认显示全部）
     var scale by remember { mutableFloatStateOf(1f) }
-    // 水平偏移（0f = 最左，1f = 最右）
     var offsetX by remember { mutableFloatStateOf(0f) }
 
     Canvas(
@@ -53,17 +55,16 @@ fun MobileEcgChart(
             .height(chartHeight)
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFFFFF5F5)) // 浅粉背景，模拟心电图纸
+            .background(Color(0xFFFFF5F5))
             .then(
                 if (interactive) {
                     Modifier.pointerInput(samples) {
                         detectTransformGestures { _, pan, zoom, _ ->
-                            // 缩放（限制 1x ~ 10x）
-                            scale = (scale * zoom).coerceIn(1f, 10f)
-                            // 拖动（只在放大时有效）
-                            if (scale > 1f) {
-                                val panNormalized = pan.x / size.width
-                                offsetX = (offsetX - panNormalized).coerceIn(0f, 1f - 1f / scale)
+                            scale = (scale * zoom).coerceIn(0.2f, 10f)
+                            val panNormalized = pan.x / size.width
+                            val maxOffset = 1f - 1f / scale.coerceAtLeast(1f)
+                            if (maxOffset > 0f) {
+                                offsetX = (offsetX - panNormalized).coerceIn(0f, maxOffset)
                             }
                         }
                     }
@@ -77,61 +78,88 @@ fun MobileEcgChart(
         val h = size.height
         val midY = h / 2f
 
-        // 计算可见窗口
-        val visibleCount = (samples.size / scale).toInt().coerceAtLeast(10)
-        val maxStart = (samples.size - visibleCount).coerceAtLeast(0)
-        val startIdx = (offsetX * maxStart).toInt()
-        val endIdx = (startIdx + visibleCount).coerceAtMost(samples.size)
-        val visibleSamples = samples.subList(startIdx, endIdx)
+        if (!interactive) {
+            // 缩略图模式：自适应填充
+            val mean = samples.average()
+            val centered = samples.map { (it - mean).toFloat() }
+            val range = ((centered.maxOrNull() ?: 1f) - (centered.minOrNull() ?: -1f)).coerceAtLeast(1f)
+            val yScale = (h * 0.75f) / range
+            val fineColor = Color(0xFFFFCDD2)
+            val majorColor = Color(0xFFEF9A9A)
+            var fineX = 0f
+            while (fineX < w) { drawLine(fineColor, Offset(fineX, 0f), Offset(fineX, h), 0.5f); fineX += w / 50 }
+            var fineY = 0f
+            while (fineY < h) { drawLine(fineColor, Offset(0f, fineY), Offset(w, fineY), 0.5f); fineY += h / 30f }
+            var majorX = 0f
+            while (majorX < w) { drawLine(majorColor, Offset(majorX, 0f), Offset(majorX, h), 1f); majorX += w / 10 }
+            var majorY = 0f
+            while (majorY < h) { drawLine(majorColor, Offset(0f, majorY), Offset(w, majorY), 1f); majorY += h / 6f }
+            drawLine(Color(0xFFE57373), Offset(0f, midY), Offset(w, midY), 1f)
+            val path = Path()
+            val stepX = if (samples.size > 1) w / (samples.size - 1) else w
+            for (i in centered.indices) {
+                val x = i * stepX
+                val y = midY - (centered[i] * yScale)
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            drawPath(path, color = color, style = Stroke(width = 1.5f, cap = StrokeCap.Round))
+            return@Canvas
+        }
 
-        // 去基线
+        // ===== 交互模式：固定时间/电压比例 =====
+        val basePxPerSecond = 100f
+        val pxPerMillivolt = 50f
+
+        val pxPerSecond = basePxPerSecond * scale
+        val stepX = pxPerSecond / sampleRate.toFloat()
+
+        val totalContentWidth = samples.size * stepX
+        val maxScroll = (totalContentWidth - w).coerceAtLeast(0f)
+        val scrollPx = offsetX * maxScroll
+        val firstIdx = (scrollPx / stepX).toInt().coerceIn(0, samples.size - 1)
+        val lastIdx = ((scrollPx + w) / stepX).toInt().coerceIn(firstIdx, samples.size - 1)
+        val visibleSamples = samples.subList(firstIdx, lastIdx + 1)
+
         val mean = visibleSamples.average()
-        val centered = visibleSamples.map { (it - mean).toFloat() }
-        // 自适应缩放
-        val maxVal = centered.maxOrNull() ?: 1f
-        val minVal = centered.minOrNull() ?: -1f
-        val range = (maxVal - minVal).coerceAtLeast(1f)
-        val yScale = (h * 0.75f) / range
+        val yScale = pxPerMillivolt / 1000f
 
-        // ===== 专业 ECG 网格背景 =====
-        // 细格（1mm）
+        // ===== 网格：按 ECG 标准刻度 =====
+        val fineStepX = pxPerSecond / 25f
+        val majorStepX = pxPerSecond / 5f
+        val fineStepY = pxPerMillivolt / 10f
+        val majorStepY = pxPerMillivolt / 2f
+
         val fineColor = Color(0xFFFFCDD2)
-        val fineStep = w / 50  // 50 条细竖线
-        var fineX = 0f
-        while (fineX < w) {
-            drawLine(fineColor, Offset(fineX, 0f), Offset(fineX, h), 0.5f)
-            fineX += fineStep
-        }
-        val fineStepY = h / 30f
-        var fineY = 0f
-        while (fineY < h) {
-            drawLine(fineColor, Offset(0f, fineY), Offset(w, fineY), 0.5f)
-            fineY += fineStepY
-        }
-        // 大格（5mm）
         val majorColor = Color(0xFFEF9A9A)
-        val majorStep = w / 10 // 10 条大竖线
-        var majorX = 0f
-        while (majorX < w) {
-            drawLine(majorColor, Offset(majorX, 0f), Offset(majorX, h), 1f)
-            majorX += majorStep
+
+        var gx = scrollPx % fineStepX
+        while (gx < w) {
+            if (gx >= 0) drawLine(fineColor, Offset(gx, 0f), Offset(gx, h), 0.5f)
+            gx += fineStepX
         }
-        val majorStepY = h / 6f
-        var majorY = 0f
-        while (majorY < h) {
-            drawLine(majorColor, Offset(0f, majorY), Offset(w, majorY), 1f)
-            majorY += majorStepY
+        var gy = midY % fineStepY
+        while (gy < h) {
+            if (gy >= 0) drawLine(fineColor, Offset(0f, gy), Offset(w, gy), 0.5f)
+            gy += fineStepY
+        }
+        var mx = scrollPx % majorStepX
+        while (mx < w) {
+            if (mx >= 0) drawLine(majorColor, Offset(mx, 0f), Offset(mx, h), 1f)
+            mx += majorStepX
+        }
+        var my = midY % majorStepY
+        while (my < h) {
+            if (my >= 0) drawLine(majorColor, Offset(0f, my), Offset(w, my), 1f)
+            my += majorStepY
         }
 
-        // 基线
         drawLine(Color(0xFFE57373), Offset(0f, midY), Offset(w, midY), 1f)
 
-        // 绘制 ECG 波形
         val path = Path()
-        val stepX = if (visibleSamples.size > 1) w / (visibleSamples.size - 1) else w
-        for (i in centered.indices) {
-            val x = i * stepX
-            val y = midY - (centered[i] * yScale)
+        for (i in visibleSamples.indices) {
+            val sampleIdx = firstIdx + i
+            val x = sampleIdx * stepX - scrollPx
+            val y = midY - ((visibleSamples[i] - mean).toFloat() * yScale)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
         drawPath(path, color = color, style = Stroke(width = 1.5f, cap = StrokeCap.Round))

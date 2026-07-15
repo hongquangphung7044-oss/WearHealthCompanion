@@ -25,6 +25,7 @@ import com.wearhealth.companion.mobile.service.BleSyncRuntime
 import com.wearhealth.companion.mobile.service.BleSyncStatusStore
 import com.wearhealth.companion.mobile.service.DataLayerManager
 import com.wearhealth.companion.mobile.service.PhoneWearableListenerService
+import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -205,19 +206,16 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Save the key locally for BLE pull, then also submit it over Data Layer when available. */
     fun sendApiKey(key: String) {
-        val trimmed = key.trim()
-        if (trimmed.isEmpty()) {
-            _apiKeySendResult.value = "API Key 不能为空"
+        val result = ApiKeyValidator.normalizeApiKey(key)
+        val normalized = result.getOrNull()
+        if (normalized == null) {
+            _apiKeySendResult.value = result.exceptionOrNull()?.message ?: "API Key 无效"
             return
         }
-        if (trimmed.toByteArray(Charsets.UTF_8).size > MAX_API_KEY_BYTES) {
-            _apiKeySendResult.value = "API Key 长度无效"
-            return
-        }
-        mobileApiKeyStore.save(trimmed)
+        mobileApiKeyStore.save(normalized)
         _apiKeySendResult.value = "API Key 已保存到手机；请在手表点“从手机 BLE 获取”"
         viewModelScope.launch {
-            if (dataLayer.sendApiKeyToWatch(trimmed)) {
+            if (dataLayer.sendApiKeyToWatch(normalized)) {
                 _apiKeySendResult.value = "API Key 已保存，并已通过 Google 通道提交；国行手表也可主动通过 BLE 获取"
             }
         }
@@ -244,6 +242,16 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repository.delete(id)
             onDeleted()
+        }
+    }
+
+    /** 清除手机端缓存：API Key + 所有 ECG 历史记录，并重启 BLE 同步器。手表端不受影响。 */
+    fun clearCache() {
+        viewModelScope.launch {
+            repository.deleteAll()
+            mobileApiKeyStore.clear()
+            BleSyncRuntime.restart(getApplication())
+            BleSyncStatusStore.setMessage("已清除手机端缓存（API Key、ECG 历史）并重启 BLE 监听")
         }
     }
 
@@ -293,6 +301,5 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "MobileViewModel"
-        private const val MAX_API_KEY_BYTES = 512
     }
 }

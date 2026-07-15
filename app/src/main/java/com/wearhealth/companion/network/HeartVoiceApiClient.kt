@@ -2,6 +2,7 @@ package com.wearhealth.companion.network
 
 import android.util.Log
 import com.wearhealth.companion.model.EcgAnalysisResult
+import com.wearhealth.companion.shared.ApiKeyValidator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -41,6 +42,16 @@ class HeartVoiceApiClient(
                 return@withContext Result.failure(IllegalStateException("未配置 HeartVoice API Key"))
             }
 
+            // HTTP 请求前最终验证：防止含 NUL/控制字符的 Key 进入 OkHttp Authorization 头
+            val keyResult = ApiKeyValidator.normalizeApiKey(apiKey)
+            val safeKey = keyResult.getOrNull()
+            if (safeKey == null) {
+                val reason = keyResult.exceptionOrNull()?.message
+                return@withContext Result.failure(
+                    IllegalStateException(reason ?: "API Key 含不可见字符，请重新从手机更新")
+                )
+            }
+
             try {
                 val jsonArray = JSONArray()
                 ecgData.forEach { jsonArray.put(it) }
@@ -56,7 +67,7 @@ class HeartVoiceApiClient(
 
                 val request = Request.Builder()
                     .url("$BASE_URL/ecg/1-lead/analyze")
-                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Authorization", "Bearer $safeKey")
                     .addHeader("Content-Type", "application/json")
                     .post(jsonBody.toString().toRequestBody(JSON_MEDIA_TYPE))
                     .build()

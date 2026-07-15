@@ -13,7 +13,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Watch
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -25,6 +27,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -134,6 +137,38 @@ fun SettingsScreen(
                         onClick = { viewModel.restartBleSync() },
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("重新连接（重启 BLE 监听）") }
+                    Spacer(Modifier.height(8.dp))
+                    var showClearCacheDialog by remember { mutableStateOf(false) }
+                    OutlinedButton(
+                        onClick = { showClearCacheDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) { Text("删除缓存并重启 BLE") }
+                    if (showClearCacheDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showClearCacheDialog = false },
+                            title = { Text("删除缓存？") },
+                            text = {
+                                Text(
+                                    "将清除手机端保存的 API Key 和所有已同步的 ECG 历史记录，并重启 BLE 同步器。\n" +
+                                        "手表端的历史记录和 API Key 不受影响。",
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        showClearCacheDialog = false
+                                        viewModel.clearCache()
+                                    },
+                                ) { Text("确认删除", color = MaterialTheme.colorScheme.error) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showClearCacheDialog = false }) { Text("取消") }
+                            },
+                        )
+                    }
                     Text(
                         text = "手表不会常驻连接：获取 Key 或传 ECG 时才主动连接，完成后会断开。若传送失败，先点上方重新连接，再立即从手表详情重试。",
                         style = MaterialTheme.typography.bodySmall,
