@@ -125,7 +125,8 @@ class EcgFeatureExtractorTest {
     fun segmentsCoverEntireDuration() {
         val ecg = syntheticEcg(30f, (0 until 35).map { it * 0.857f })
         val bundle = EcgFeatureExtractor.extract(ecg, sampleRate)
-        assertEquals("应有 30 段", 30, bundle.segments.size)
+        // 0.5 秒一段，30 秒应有 60 段
+        assertEquals("应有 60 段", 60, bundle.segments.size)
         // 第一段从 0.0 开始
         assertEquals(0f, bundle.segments[0].startSec)
         // 最后一段到 30.0 结束
@@ -152,8 +153,9 @@ class EcgFeatureExtractorTest {
             rTimes.add(t)
             t += 0.857f
         }
-        // 在第 6 秒插入一个额外 R 波（早搏）
-        rTimes.add(6, 6.5f)
+        // 在第 6 秒插入一个额外 R 波（早搏），确保与原 6.x R 波落在同一 0.5 秒段
+        // 0.857s 周期下第 7 个 R 波约在 6.3s，插入 6.4s 保证两者都在 6.0-6.5s 段
+        rTimes.add(6, 6.4f)
         rTimes.sort()
         val ecg = syntheticEcg(30f, rTimes)
         val bundle = EcgFeatureExtractor.extract(ecg, sampleRate)
