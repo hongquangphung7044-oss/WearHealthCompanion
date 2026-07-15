@@ -38,8 +38,13 @@ class JsonCleanerTest {
     fun convertsFullWidthComma() {
         val raw = "{\"平均心率”：70，“最低心率”：60}"
         val cleaned = JsonCleaner.extractJsonObject(raw)
-        // 全角引号和逗号都应转半角
-        assertTrue("应包含半角逗号", cleaned.contains("\",\""))
+        // 全角逗号 ， 应已转为半角 ,
+        assertTrue("不应残留全角逗号", !cleaned.contains("，"))
+        assertTrue("应包含半角逗号", cleaned.contains(","))
+        // 清洗后应能被 JSONObject 解析
+        val json = JSONObject(cleaned)
+        assertEquals(70, json.optInt("平均心率"))
+        assertEquals(60, json.optInt("最低心率"))
     }
 
     @Test
