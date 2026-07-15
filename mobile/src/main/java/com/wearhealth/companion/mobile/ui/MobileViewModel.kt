@@ -100,15 +100,16 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     val dsBalanceError: StateFlow<String?> = _dsBalanceError.asStateFlow()
 
     /** DeepSeek 设置是否已配置 */
-    val dsConfigured: StateFlow<Boolean> = MutableStateFlow(dsSettings.isConfigured()).asStateFlow()
+    private val _dsConfigured = MutableStateFlow(dsSettings.isConfigured())
+    val dsConfigured: StateFlow<Boolean> = _dsConfigured.asStateFlow()
 
     /** 当前 DS 默认模型 */
-    val dsDefaultModel: StateFlow<DeepSeekApiClient.Model> =
-        MutableStateFlow(dsSettings.getDefaultModel()).asStateFlow()
+    private val _dsDefaultModel = MutableStateFlow(dsSettings.getDefaultModel())
+    val dsDefaultModel: StateFlow<DeepSeekApiClient.Model> = _dsDefaultModel.asStateFlow()
 
     /** 当前 DS 默认思考强度 */
-    val dsDefaultThinking: StateFlow<DeepSeekApiClient.ThinkingMode> =
-        MutableStateFlow(dsSettings.getDefaultThinking()).asStateFlow()
+    private val _dsDefaultThinking = MutableStateFlow(dsSettings.getDefaultThinking())
+    val dsDefaultThinking: StateFlow<DeepSeekApiClient.ThinkingMode> = _dsDefaultThinking.asStateFlow()
 
     /** PDF export result uses a content URI and a user-visible shared-storage label. */
     private val _pdfExportResult = MutableStateFlow<PdfExportResult?>(null)
@@ -280,7 +281,7 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
             repository.deleteAll()
             mobileApiKeyStore.clear()
             dsSettings.clearApiKey()
-            (dsConfigured as MutableStateFlow).value = false
+            _dsConfigured.value = false
             BleSyncRuntime.restart(getApplication())
             BleSyncStatusStore.setMessage("已清除手机端缓存（API Key、ECG 历史）并重启 BLE 监听")
         }
@@ -301,14 +302,14 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         if (apiKey.isNotBlank()) {
             dsSettings.saveApiKey(apiKey)
             deepSeekApi = DeepSeekApiClient(apiKey)
-            (dsConfigured as MutableStateFlow).value = true
+            _dsConfigured.value = true
         }
         dsSettings.setDefaultModel(model)
         dsSettings.setDefaultThinking(thinking)
         dsSettings.setUserAge(userAge)
         dsSettings.setUserIsMale(userIsMale)
-        (dsDefaultModel as MutableStateFlow).value = model
-        (dsDefaultThinking as MutableStateFlow).value = thinking
+        _dsDefaultModel.value = model
+        _dsDefaultThinking.value = thinking
 
         _dsSendResult.value = "DeepSeek 设置已保存"
         viewModelScope.launch {

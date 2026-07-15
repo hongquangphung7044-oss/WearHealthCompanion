@@ -14,6 +14,7 @@ import android.provider.MediaStore
 import com.wearhealth.companion.mobile.ui.diagnosisSummary
 import com.wearhealth.companion.mobile.ui.diagnosisToText
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
+import com.wearhealth.companion.shared.JsonCleaner
 import org.json.JSONObject
 import java.io.OutputStream
 import java.text.SimpleDateFormat
@@ -87,7 +88,7 @@ object PdfExporter {
             document.finishPage(page)
 
             // 第二页：DeepSeek AI 解读专属页（仅 DS 测量存在）
-            if (transfer.analysisMethod == "deepseek" && transfer.aiReport.isNotBlank()) {
+            if (transfer.analysisMethod.startsWith("ds_") && transfer.aiReport.isNotBlank()) {
                 val aiPageInfo = PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, 2).create()
                 val aiPage = document.startPage(aiPageInfo)
                 drawAiReport(aiPage.canvas, transfer)
@@ -137,12 +138,12 @@ object PdfExporter {
             normalPaint,
         )
         y += 16
-        val methodLabel = when (transfer.analysisMethod) {
-            "deepseek" -> "分析方法：DeepSeek 第二套分析（本地特征 + 大模型推理）"
+        val methodLabel = when {
+            transfer.analysisMethod.startsWith("ds_") -> "分析方法：DeepSeek 第二套分析（本地特征 + 大模型推理）"
             else -> "分析方法：HeartVoice 专业 API"
         }
         canvas.drawText(methodLabel, marginX, y, normalPaint)
-        if (transfer.analysisMethod == "deepseek" && transfer.aiReport.isNotBlank()) {
+        if (transfer.analysisMethod.startsWith("ds_") && transfer.aiReport.isNotBlank()) {
             canvas.drawText("（详见第二页 AI 解读专属页）", marginX, y + 13, smallPaint)
             y += 13
         }
@@ -392,7 +393,10 @@ object PdfExporter {
         )
         y += 10
 
-        val obj = runCatching { JSONObject(transfer.aiReport) }.getOrNull() ?: run {
+        val obj = runCatching {
+            val cleaned = JsonCleaner.extractJsonObject(transfer.aiReport)
+            JSONObject(cleaned)
+        }.getOrNull() ?: run {
             canvas.drawText("AI 报告解析失败", marginX, y, normalPaint)
             return
         }

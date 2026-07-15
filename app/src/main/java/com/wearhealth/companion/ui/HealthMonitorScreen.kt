@@ -5,8 +5,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -57,12 +60,13 @@ fun HealthMonitorScreen(
     val uiState by viewModel.uiState.collectAsState()
     val listState = rememberScalingLazyListState()
 
-    ScalingLazyColumn(
-        modifier = modifier,
-        state = listState,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
+    Box(modifier = modifier.fillMaxSize()) {
+        ScalingLazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
         // 标题
         item {
             Text(
@@ -398,20 +402,21 @@ fun HealthMonitorScreen(
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
-    }
+        } // 关闭 ScalingLazyColumn
 
-    // 测量前年龄性别二级界面（DS 方式触发）
-    if (uiState.showPreMeasureDialog) {
-        PreMeasureDialog(
-            onConfirm = { age, isMale ->
-                viewModel.saveUserAge(age)
-                viewModel.saveUserGender(isMale)
-                viewModel.setShowPreMeasureDialog(false)
-                viewModel.startEcgMeasurement(uiState.analysisMethod)
-            },
-            onDismiss = { viewModel.setShowPreMeasureDialog(false) },
-        )
-    }
+        // 测量前年龄性别二级界面（DS 方式触发，全屏覆盖，非弹窗）
+        if (uiState.showPreMeasureDialog) {
+            PreMeasureScreen(
+                onConfirm = { age, isMale ->
+                    viewModel.saveUserAge(age)
+                    viewModel.saveUserGender(isMale)
+                    viewModel.setShowPreMeasureDialog(false)
+                    viewModel.startEcgMeasurement(uiState.analysisMethod)
+                },
+                onDismiss = { viewModel.setShowPreMeasureDialog(false) },
+            )
+        }
+    } // 关闭 Box
 }
 
 /**
@@ -985,46 +990,49 @@ private fun AnalysisMethodSelector(
 /**
  * 测量前年龄性别二级界面（DS 方式触发）
  *
+ * 全屏 ScalingLazyColumn 页面（与主屏同风格），非弹窗，避免圆表内容拥挤。
  * 收集用户年龄和性别，影响 QTc/HRV 判断阈值。
  * 年龄可跳过（填 0），性别可跳过（选"不提供"）。
- * 用标准 Compose Dialog 实现（Wear OS AlertDialog 签名不兼容 confirmButton）。
  */
 @Composable
-private fun PreMeasureDialog(
+private fun PreMeasureScreen(
     onConfirm: (age: Int, isMale: Boolean?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var ageText by remember { mutableStateOf("") }
     var genderSelected by remember { mutableStateOf(0) } // 0=未选, 1=男, 2=女, 3=不提供
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF1A1A2E), RoundedCornerShape(12.dp))
-                .padding(12.dp),
-        ) {
+    ScalingLazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item {
             Text(
                 text = "补充信息（可选）",
-                style = MaterialTheme.typography.titleSmall,
-                color = Color(0xFF64B5F6),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
             )
+        }
+        item {
             Text(
                 text = "年龄性别影响 QTc/HRV 阈值，可跳过",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF78909C),
                 textAlign = TextAlign.Center,
             )
-            Text("年龄", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+        }
+        item {
+            Text("年龄", style = MaterialTheme.typography.bodyMedium, color = Color(0xFFB0BEC5))
+        }
+        item {
             BasicTextField(
                 value = ageText,
                 onValueChange = { ageText = it.filter { c -> c.isDigit() }.take(3) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Color(0xFF263238), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
                 cursorBrush = SolidColor(Color(0xFF64B5F6)),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -1035,8 +1043,15 @@ private fun PreMeasureDialog(
                     inner()
                 },
             )
-            Text("性别", style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        }
+        item {
+            Text("性别", style = MaterialTheme.typography.bodyMedium, color = Color(0xFFB0BEC5))
+        }
+        item {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 listOf("男" to 1, "女" to 2, "不提供" to 3).forEach { (label, value) ->
                     Button(
                         onClick = { genderSelected = value },
@@ -1045,29 +1060,32 @@ private fun PreMeasureDialog(
                         ),
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text(label, style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
+                        Text(label, style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
                     }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Button(
-                    onClick = onDismiss,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF455A64)),
-                    modifier = Modifier.weight(1f),
-                ) { Text("取消", style = MaterialTheme.typography.bodySmall) }
-                Button(
-                    onClick = {
-                        val age = ageText.toIntOrNull() ?: 0
-                        val isMale = when (genderSelected) {
-                            1 -> true
-                            2 -> false
-                            else -> null
-                        }
-                        onConfirm(age, isMale)
-                    },
-                    modifier = Modifier.weight(1f),
-                ) { Text("开始测量", style = MaterialTheme.typography.bodySmall) }
-            }
+        }
+        item { Spacer(Modifier.height(4.dp)) }
+        item {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF455A64)),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("取消", style = MaterialTheme.typography.bodyMedium) }
+        }
+        item {
+            Button(
+                onClick = {
+                    val age = ageText.toIntOrNull() ?: 0
+                    val isMale = when (genderSelected) {
+                        1 -> true
+                        2 -> false
+                        else -> null
+                    }
+                    onConfirm(age, isMale)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("开始测量", style = MaterialTheme.typography.bodyMedium) }
         }
     }
 }
@@ -1084,10 +1102,11 @@ private fun PreMeasureDialog(
  */
 @Composable
 private fun DeepSeekReportCard(reportJson: String) {
-    // 解析 JSON（容错：解析失败显示原文摘要）
+    // 解析 JSON（容错：先剥离 Markdown 包裹，解析失败显示原文摘要）
     val parsed: Map<String, String> = remember(reportJson) {
         try {
-            val json = org.json.JSONObject(reportJson)
+            val cleaned = com.wearhealth.companion.shared.JsonCleaner.extractJsonObject(reportJson)
+            val json = org.json.JSONObject(cleaned)
             val rhythm = json.optJSONObject("节律分析")
             val hrv = json.optJSONObject("心率分析")?.optJSONObject("心率变异性")
             val abnormals = json.optJSONArray("异常提示")

@@ -272,7 +272,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         g: EcgFeatureExtractor.GlobalFeatures,
     ): List<String> {
         return try {
-            val json = org.json.JSONObject(reportJson)
+            val cleaned = com.wearhealth.companion.shared.JsonCleaner.extractJsonObject(reportJson)
+            val json = org.json.JSONObject(cleaned)
             val rhythm = json.optJSONObject("节律分析")
                 ?.optString("节律判断", "")
                 ?: ""

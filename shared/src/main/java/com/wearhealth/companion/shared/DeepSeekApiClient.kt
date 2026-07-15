@@ -174,8 +174,11 @@ class DeepSeekApiClient(
             Log.i(TAG, "DeepSeek 分析完成: ${content.length} 字符, " +
                     "tokens=$promptTokens+$completionTokens=$totalTokens")
 
+            // 剥离大模型可能附加的 Markdown 代码块包裹，存储纯净 JSON
+            val cleanedContent = JsonCleaner.extractJsonObject(content)
+
             Result.success(DeepSeekReport(
-                reportJson = content,
+                reportJson = cleanedContent,
                 model = model.id,
                 thinkingMode = thinkingMode.name,
                 promptTokens = promptTokens,

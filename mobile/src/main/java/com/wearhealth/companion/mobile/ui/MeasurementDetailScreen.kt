@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.wearhealth.companion.mobile.pdf.PdfExporter
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
+import com.wearhealth.companion.shared.JsonCleaner
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -249,7 +250,7 @@ private fun DetailContent(
         }
 
         // DeepSeek 第二套分析报告（仅 DS 测量存在）
-        if (data.analysisMethod == "deepseek" && data.aiReport.isNotBlank()) {
+        if (data.analysisMethod.startsWith("ds_") && data.aiReport.isNotBlank()) {
             AiReportCard(aiReportJson = data.aiReport)
         }
 
@@ -448,7 +449,8 @@ private data class ParsedAiReport(
 )
 
 private fun parseAiReport(json: String): ParsedAiReport {
-    val obj = JSONObject(json)
+    val cleaned = JsonCleaner.extractJsonObject(json)
+    val obj = JSONObject(cleaned)
 
     val heartRate = obj.optJSONObject("心率分析")?.let { hr ->
         buildString {
