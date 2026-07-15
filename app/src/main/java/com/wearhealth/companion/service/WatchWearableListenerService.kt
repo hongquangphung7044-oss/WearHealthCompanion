@@ -11,6 +11,7 @@ import com.google.android.gms.wearable.Wearable
 import com.google.android.gms.wearable.WearableListenerService
 import com.wearhealth.companion.data.ApiKeyManager
 import com.wearhealth.companion.data.EcgHistoryRepository
+import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.DataLayerPaths
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
 import com.wearhealth.companion.shared.MeasurementSerializer
