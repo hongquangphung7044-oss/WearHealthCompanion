@@ -212,7 +212,8 @@ class EcgFeatureExtractorTest {
 
     @Test
     fun intervalsZeroForInsufficientBeats() {
-        val ecg = syntheticEcg(30f, listOf(1f, 2f, 3f))
+        // 2 个 R 波 < 3 的间期估测门槛，应返回 0
+        val ecg = syntheticEcg(30f, listOf(5f, 6f))
         val g = EcgFeatureExtractor.extract(ecg, sampleRate).global
         assertEquals(0, g.qrsWidthMs)
         assertEquals(0, g.prIntervalMs)
