@@ -73,9 +73,13 @@ class WatchWearableListenerService : WearableListenerService() {
             if (path.startsWith(DataLayerPaths.PATH_DEEPSEEK_SETTINGS)) {
                 try {
                     val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
-                    val dsKey = dataMap.getString(DataLayerPaths.KEY_DS_API_KEY, null)
-                    val defaultModel = dataMap.getString(DataLayerPaths.KEY_DS_DEFAULT_MODEL, null)
-                    val defaultThinking = dataMap.getString(DataLayerPaths.KEY_DS_DEFAULT_THINKING, null)
+                    // DataMap.getString 的默认值参数为非空类型，用 "" 兜底再转 null（表示"未下发，保留原值"）
+                    val dsKey = dataMap.getString(DataLayerPaths.KEY_DS_API_KEY, "")
+                        .takeIf { it.isNotBlank() }
+                    val defaultModel = dataMap.getString(DataLayerPaths.KEY_DS_DEFAULT_MODEL, "")
+                        .takeIf { it.isNotBlank() }
+                    val defaultThinking = dataMap.getString(DataLayerPaths.KEY_DS_DEFAULT_THINKING, "")
+                        .takeIf { it.isNotBlank() }
                     val userAge = dataMap.getInt(DataLayerPaths.KEY_DS_USER_AGE, 0)
                     val genderKnown = dataMap.getBoolean(DataLayerPaths.KEY_DS_USER_GENDER_KNOWN, false)
                     val userIsMale = if (genderKnown) dataMap.getBoolean(DataLayerPaths.KEY_DS_USER_IS_MALE, true) else null
