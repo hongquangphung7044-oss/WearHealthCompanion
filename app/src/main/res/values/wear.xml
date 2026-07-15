@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Allows the phone companion to discover a compatible watch app. -->
+    <string-array name="android_wear_capabilities">
+        <item>wearhealth_watch_sync_v1</item>
+    </string-array>
+</resources>

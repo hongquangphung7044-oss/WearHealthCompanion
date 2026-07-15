@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Allows the watch to discover the correct phone synchronizer, not merely any node. -->
+    <string-array name="android_wear_capabilities">
+        <item>wearhealth_phone_sync_v1</item>
+    </string-array>
+</resources>

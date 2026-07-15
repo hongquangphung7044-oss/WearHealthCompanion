@@ -1,0 +1,20 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/app/build/
+/.kotlin/
+
+# 签名文件不提交（只作为 GitHub Secret）
+.keystore/*.keystore
+.keystore/*.jks
+.keystore/upload_secrets.py
+
+# Samsung Health Sensor SDK 不提交（机密，只作为 GitHub Secret）
+app/libs/*.aar

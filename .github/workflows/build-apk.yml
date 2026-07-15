@@ -1,0 +1,150 @@
+name: Build Release APK
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+# Serialize releases for the same ref. This also prevents two successful runs from racing while
+# they update the generated README block; queued runs are never cancelled midway through release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Test README build-status updater
+        run: python3 -m unittest scripts/test_update_readme_build_status.py
+
+      - name: Decode signing keystore
+        run: |
+          mkdir -p /home/runner/.keystore
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /home/runner/.keystore/release.keystore
+          ls -lh /home/runner/.keystore/release.keystore
+
+      - name: Decode Samsung Health Sensor SDK
+        run: |
+          set -euo pipefail
+          mkdir -p app/libs
+          PART1="${{ secrets.SAMSUNG_SDK_B64_1 }}"
+          PART2="${{ secrets.SAMSUNG_SDK_B64_2 }}"
+          test -n "$PART1"
+          test -n "$PART2"
+          printf '%s%s' "$PART1" "$PART2" | base64 -d > app/libs/samsung-health-sensor-api.aar
+          test -s app/libs/samsung-health-sensor-api.aar
+          echo "Samsung SDK 已解码"
+          ls -lh app/libs/samsung-health-sensor-api.aar
+
+      - name: Build Release APKs（手表 + 手机）
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+          VERSION_NAME: 1.0.${{ github.run_number }}
+          KEYSTORE_PATH: /home/runner/.keystore/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew :shared:testReleaseUnitTest :app:assembleRelease :mobile:assembleRelease --no-daemon --stacktrace
+
+      - name: Rename and verify APKs
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          VER="${{ github.run_number }}"
+
+          mapfile -t WATCH_APKS < <(find app/build/outputs/apk/release -type f -name "*.apk")
+          mapfile -t MOBILE_APKS < <(find mobile/build/outputs/apk/release -type f -name "*.apk")
+          test "${#WATCH_APKS[@]}" -eq 1
+          test "${#MOBILE_APKS[@]}" -eq 1
+          test -s app/libs/samsung-health-sensor-api.aar
+
+          WATCH_NAME="WearHealthCompanion-watch-v1.0.${VER}-code${VER}-ecg.apk"
+          MOBILE_NAME="WearHealthCompanion-mobile-v1.0.${VER}-code${VER}.apk"
+          cp "${WATCH_APKS[0]}" "artifacts/$WATCH_NAME"
+          cp "${MOBILE_APKS[0]}" "artifacts/$MOBILE_NAME"
+
+          test -s "artifacts/$WATCH_NAME"
+          test -s "artifacts/$MOBILE_NAME"
+          test "$(find artifacts -maxdepth 1 -type f -name '*.apk' | wc -l)" -eq 2
+          sha256sum artifacts/*.apk
+          ls -lh artifacts/
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WearHealthCompanion-apk
+          path: artifacts/*.apk
+          retention-days: 30
+
+      - name: Create GitHub Release (on push to main)
+        if: github.ref_type == 'branch'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.apk
+          name: "Build #${{ github.run_number }} (v1.0.${{ github.run_number }})"
+          tag_name: "build-${{ github.run_number }}"
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          prerelease: false
+
+      - name: Create GitHub Release (on tag)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.apk
+          generate_release_notes: true
+          tag_name: ${{ github.ref_name }}
+
+      - name: Update README with successful build status
+        if: github.ref_type == 'branch'
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          RUN_ID: ${{ github.run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # This step runs only after tests, both APKs, Artifact upload and Release succeeded.
+          # Keep real-device findings outside the generated block: CI success is not BLE proof.
+          # Start from the latest main so an older concurrent run cannot overwrite a newer block.
+          git pull --rebase origin main
+          GENERATED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          python3 scripts/update_readme_build_status.py \
+            --build "$BUILD_NUMBER" \
+            --run-id "$RUN_ID" \
+            --source-sha "$SOURCE_SHA" \
+            --repository "$REPOSITORY" \
+            --generated-at "$GENERATED_AT"
+
+          git diff --check
+          if git diff --quiet -- README.md; then
+            echo "README build status is already current"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: update successful build #${BUILD_NUMBER} [skip ci]"
+          # Push without force. If main changes in this short final window, fail rather than
+          # overwrite work; the next successful build will refresh the generated block.
+          git push origin HEAD:main
