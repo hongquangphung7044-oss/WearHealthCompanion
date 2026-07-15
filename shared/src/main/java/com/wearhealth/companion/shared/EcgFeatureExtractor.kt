@@ -44,6 +44,10 @@ object EcgFeatureExtractor {
         val rAmplitudeMv: Float,        // R 波平均振幅
         val signalQuality: Float,       // 0~1
         val noiseSegments: List<String>,// 噪声段时段标记
+        // 节律判别辅助特征（帮助 DS 区分窦性/房颤/早搏）
+        val rrVariabilityCoef: Float,   // RR 变异系数 = SDNN/meanRR，>0.15 提示心律不齐/房颤
+        val poincarePattern: String,    // Poincaré 散点形态描述（彗星形/扇形/鱼雷形/复杂形）
+        val shortLongPairs: Int,        // 短-长 RR 配对数（早搏代偿间隙特征）
     )
 
     /** 逐秒分段特征 */
@@ -82,6 +86,7 @@ object EcgFeatureExtractor {
         val rrIntervals = computeRRIntervals(rPeaks, sampleRateHz)
         val hr = computeHeartRateStats(rrIntervals)
         val hrv = computeHrv(rrIntervals)
+        val rhythm = computeRhythmFeatures(rrIntervals)
         val intervals = estimateIntervals(ecgData, sampleRateHz, rPeaks, hr.avgHr)
         val rAmp = computeRAmplitude(ecgData, rPeaks, sampleRateHz)
         val segments = extractSegments(ecgData, sampleRateHz, rPeaks, durationSec)
@@ -110,6 +115,9 @@ object EcgFeatureExtractor {
             rAmplitudeMv = rAmp,
             signalQuality = sigQuality,
             noiseSegments = noiseSegs,
+            rrVariabilityCoef = rhythm.variabilityCoef,
+            poincarePattern = rhythm.poincarePattern,
+            shortLongPairs = rhythm.shortLongPairs,
         )
         return FeatureBundle(global, segments, profile)
     }
@@ -238,6 +246,71 @@ object EcgFeatureExtractor {
         return HrvStats(sdnn, rmssd, pnn50)
     }
 
+    /**
+     * 节律判别辅助特征（帮助 DS 区分窦性/房颤/早搏）
+     *
+     * - RR 变异系数 CV = SDNN/meanRR：
+     *   * <0.05 窦性心律（很规律）
+     *   * 0.05~0.15 窦性心律不齐/呼吸性变异（青年人常见）
+     *   * >0.15 高度不规律，提示房颤或心律不齐
+     * - Poincaré 散点形态（RRn vs RRn+1）：
+     *   * 彗星形(comet)：窄而长，沿对角线 → 窦性心律
+     *   * 扇形(fan)：宽而散，远离对角线 → 房颤
+     *   * 鱼雷形(torpedo)：窄短 → 窦性心律不齐
+     *   * 复杂形(complex)：多个簇 → 早搏/异位心律
+     * - 短-长 RR 配对：相邻 RR 中"短(前)<均值×0.8 且 长(后)>均值×1.2"
+     *   是早搏代偿间隙的典型特征
+     */
+    private data class RhythmFeatures(
+        val variabilityCoef: Float,
+        val poincarePattern: String,
+        val shortLongPairs: Int,
+    )
+
+    private fun computeRhythmFeatures(rrIntervals: List<Int>): RhythmFeatures {
+        if (rrIntervals.size < 4) {
+            return RhythmFeatures(0f, "数据不足", 0)
+        }
+        val mean = rrIntervals.average()
+        if (mean < 1.0) return RhythmFeatures(0f, "数据不足", 0)
+
+        // 变异系数
+        val variance = rrIntervals.map { (it - mean) * (it - mean) }.average()
+        val sdnn = sqrt(variance)
+        val cv = (sdnn / mean).toFloat()
+
+        // Poincaré 散点形态：计算 RRn vs RRn+1 偏离对角线的程度
+        val pairs = ArrayList<Pair<Double, Double>>()
+        for (i in 0 until rrIntervals.size - 1) {
+            pairs.add(Pair(rrIntervals[i].toDouble(), rrIntervals[i + 1].toDouble()))
+        }
+        // 垂直对角线方向的散布宽度（SD2），和对角线方向的散布长度（SD1）
+        // 对角线方向：x=y，垂直方向：x=-y。用旋转后标准差近似。
+        val sd1List = pairs.map { (it.first + it.second) / sqrt(2.0) - (mean + mean) / sqrt(2.0) }
+        val sd2List = pairs.map { (it.first - it.second) / sqrt(2.0) }
+        val sd1 = sqrt(sd1List.map { it * it }.average())  // 对角线方向（短期变异）
+        val sd2 = sqrt(sd2List.map { it * it }.average())  // 垂直方向（长期变异）
+        val ratio = if (sd1 > 0) sd2 / sd1 else 0.0
+
+        val pattern = when {
+            cv < 0.05 -> "彗星形(规律)"
+            cv < 0.15 && ratio > 1.5 -> "鱼雷形(轻度不齐)"
+            cv >= 0.15 && sd2 > sd1 * 1.5 -> "扇形(高度不规律，疑似房颤)"
+            pairs.size > 8 && cv < 0.15 -> "复杂形(疑似早搏)"
+            else -> "彗星形(规律)"
+        }
+
+        // 短-长 RR 配对（早搏代偿间隙）
+        var shortLongPairs = 0
+        for (i in 0 until rrIntervals.size - 1) {
+            val isShort = rrIntervals[i] < mean * 0.8
+            val isLong = rrIntervals[i + 1] > mean * 1.2
+            if (isShort && isLong) shortLongPairs++
+        }
+
+        return RhythmFeatures(cv, pattern, shortLongPairs)
+    }
+
     private data class IntervalEstimates(
         val qrsMean: Int, val qrsStd: Int,
         val prMean: Int, val prStd: Int,
@@ -247,9 +320,10 @@ object EcgFeatureExtractor {
     /**
      * 间期估测（精度有限，约 ±15ms 误差）
      *
-     * QRS: R 峰前后各 60ms 窗口，找最大上升斜率点（Q 起点）和最大下降斜率点（S 终点）
+     * QRS: 阈值交叉法——以 R 峰幅度的 25% 为阈值，找上升/下降穿越点作为 Q/S 边界。
+     *      比斜率法更接近真实 QRS 宽度（腕表 R 波上升支斜率峰值偏靠 R 峰，斜率法会偏小）。
      * PR: R 峰前推 250ms 窗口找 P 波候选（小幅正向峰）→ 到 R 峰的间隔
-     * QT: R 峰后 100~500ms 窗口找 T 波峰，T 波结束点（斜率回零）到 QRS 起点
+     * QT: R 峰后 100~500ms 窗口，去基线后用平滑导数找 T 波峰，减少基线漂移误判
      */
     private fun estimateIntervals(
         ecgData: List<Int>,
@@ -264,32 +338,32 @@ object EcgFeatureExtractor {
         val qtIntervals = mutableListOf<Int>()
 
         for (rIdx in rPeaks) {
-            // QRS 估测：R 峰前 60ms 找最大上升斜率点（Q），后 60ms 找最大下降斜率点（S）
-            val qSearchStart = maxOf(0, rIdx - sampleRateHz * 60 / 1000)
-            val sSearchEnd = minOf(ecgData.size, rIdx + sampleRateHz * 60 / 1000)
+            // QRS 估测：阈值交叉法
+            val qSearchStart = maxOf(0, rIdx - sampleRateHz * 80 / 1000)
+            val sSearchEnd = minOf(ecgData.size, rIdx + sampleRateHz * 80 / 1000)
             if (sSearchEnd - qSearchStart < 10) continue
 
-            // 去基线均值用于 T 波极性判断
-            val segStart = qSearchStart
-            val segEnd = sSearchEnd
-            val segMean = ecgData.subList(segStart, segEnd).average()
+            val segMean = ecgData.subList(qSearchStart, sSearchEnd).average()
+            val rAmpVal = ecgData[rIdx].toDouble() - segMean
+            if (rAmpVal < 50.0) continue  // R 波太小，不可靠
 
-            // 找 Q 点：R 峰前最大正向斜率的起点
+            // 阈值 = R 峰幅度的 25%（QRS 起止通常在 R 峰 25% 处）
+            val qrsThreshold = rAmpVal * 0.25
+
+            // 找 Q 点：R 峰前第一个低于阈值的点（从基线上升穿越阈值处）
             var qPoint = rIdx
-            var maxSlope = 0.0
-            for (i in qSearchStart until rIdx) {
-                if (i + 5 < ecgData.size) {
-                    val slope = abs((ecgData[i + 5] - ecgData[i]).toDouble())
-                    if (slope > maxSlope) { maxSlope = slope; qPoint = i }
+            for (i in rIdx downTo qSearchStart) {
+                if ((ecgData[i].toDouble() - segMean) < qrsThreshold) {
+                    qPoint = i
+                    break
                 }
             }
-            // 找 S 点：R 峰后最大负向斜率的终点
+            // 找 S 点：R 峰后第一个低于阈值的点（从基线下降穿越阈值处）
             var sPoint = rIdx
-            var maxNegSlope = 0.0
             for (i in rIdx until sSearchEnd) {
-                if (i + 5 < ecgData.size) {
-                    val slope = abs((ecgData[i + 5] - ecgData[i]).toDouble())
-                    if (slope > maxNegSlope) { maxNegSlope = slope; sPoint = i + 5 }
+                if ((ecgData[i].toDouble() - segMean) < qrsThreshold) {
+                    sPoint = i
+                    break
                 }
             }
             val qrsMs = (sPoint - qPoint) * 1000 / sampleRateHz
@@ -298,7 +372,6 @@ object EcgFeatureExtractor {
             // PR 估测：R 峰前推 250ms 找 P 波（小幅正向峰）
             val pSearchStart = maxOf(0, rIdx - sampleRateHz * 250 / 1000)
             if (pSearchStart < qSearchStart) {
-                // 在 P 搜索窗口找局部最大值（P 波）
                 val pSeg = ecgData.subList(pSearchStart, qSearchStart)
                 if (pSeg.isNotEmpty()) {
                     val pIdx = pSeg.indices.maxByOrNull { pSeg[it] } ?: 0
@@ -308,18 +381,38 @@ object EcgFeatureExtractor {
                 }
             }
 
-            // QT 估测：R 峰后 100~500ms 找 T 波峰
+            // QT 估测：去基线后用平滑导数找 T 波峰，减少基线漂移误判
             val tSearchStart = rIdx + sampleRateHz * 100 / 1000
             val tSearchEnd = minOf(ecgData.size, rIdx + sampleRateHz * 500 / 1000)
-            if (tSearchEnd > tSearchStart) {
+            if (tSearchEnd > tSearchStart + 10) {
                 val tSeg = ecgData.subList(tSearchStart, tSearchEnd)
-                if (tSeg.isNotEmpty()) {
-                    // T 波是局部最大值（正向 T 波）或最小值（负向 T 波），取绝对值最大的
-                    val tMaxIdx = tSeg.indices.maxByOrNull { tSeg[it] }
-                    val tMinIdx = tSeg.indices.minByOrNull { tSeg[it] }
-                    val tIdx = if (tMaxIdx != null && tMinIdx != null) {
-                        if (abs(tSeg[tMaxIdx] - segMean) > abs(tSeg[tMinIdx] - segMean)) tMaxIdx else tMinIdx
-                    } else tMaxIdx ?: tMinIdx ?: continue
+                // 用窗口中位数去基线（比均值抗基线漂移）
+                val tSorted = tSeg.sorted()
+                val tMedian = tSorted[tSorted.size / 2].toDouble()
+                // 平滑后求一阶导数，找导数过零点（T 波峰处导数由正转负或由负转正）
+                val smoothWin = 5
+                val smoothed = DoubleArray(tSeg.size)
+                for (i in tSeg.indices) {
+                    val from = maxOf(0, i - smoothWin / 2)
+                    val to = minOf(tSeg.size, i + smoothWin / 2 + 1)
+                    var sum = 0.0
+                    for (j in from until to) sum += tSeg[j]
+                    smoothed[i] = sum / (to - from) - tMedian
+                }
+                // 找去基线后绝对值最大的极值点作为 T 波峰（比原始极值法抗基线漂移）
+                var tIdx = -1
+                var maxDev = 0.0
+                for (i in smoothed.indices) {
+                    if (i > 0 && i < smoothed.size - 1) {
+                        val isPeak = (smoothed[i] > smoothed[i - 1] && smoothed[i] >= smoothed[i + 1]) ||
+                            (smoothed[i] < smoothed[i - 1] && smoothed[i] <= smoothed[i + 1])
+                        if (isPeak && abs(smoothed[i]) > maxDev) {
+                            maxDev = abs(smoothed[i])
+                            tIdx = i
+                        }
+                    }
+                }
+                if (tIdx >= 0) {
                     val tPeakGlobal = tSearchStart + tIdx
                     val qtMs = (tPeakGlobal - qPoint) * 1000 / sampleRateHz
                     if (qtMs in 250..600) qtIntervals.add(qtMs)
@@ -467,6 +560,14 @@ object EcgFeatureExtractor {
         if (g.noiseSegments.isNotEmpty()) {
             sb.append("噪声段:${g.noiseSegments.joinToString("; ")}\n")
         }
+        sb.append("\n")
+
+        // 节律判别特征（帮助区分窦性/房颤/早搏，基于 RR 间期序列）
+        sb.append("[节律判别特征]\n")
+        sb.append("RR变异系数:${"%.3f".format(g.rrVariabilityCoef)}")
+        sb.append("(${if (g.rrVariabilityCoef < 0.05f) "规律" else if (g.rrVariabilityCoef < 0.15f) "轻度不齐" else "高度不规律"})\n")
+        sb.append("Poincaré散点形态:${g.poincarePattern}\n")
+        sb.append("短-长RR配对数(早搏代偿):${g.shortLongPairs}个\n")
         sb.append("\n")
 
         // 逐秒分段表
