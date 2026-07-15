@@ -222,10 +222,15 @@ object EcgFeatureExtractor {
             abs(hr - median).toDouble() / median <= 0.3
         }
         if (filtered.isEmpty()) return HeartRateStats(0, 0, 0)
+        // 用 P10-P90 分位数替代 min/max，排除早搏代偿间隙/瞬时噪声导致的极端值
+        // 17岁窦性心律不齐 RR 可变 ±20%，min/max 会把呼吸性低峰当作最低心率
+        val sortedFiltered = filtered.sorted()
+        val p10Idx = (sortedFiltered.size * 0.10).toInt().coerceIn(0, sortedFiltered.lastIndex)
+        val p90Idx = (sortedFiltered.size * 0.90).toInt().coerceIn(0, sortedFiltered.lastIndex)
         return HeartRateStats(
             avgHr = filtered.average().toInt(),
-            minHr = filtered.min(),
-            maxHr = filtered.max(),
+            minHr = sortedFiltered[p10Idx],
+            maxHr = sortedFiltered[p90Idx],
         )
     }
 
@@ -299,20 +304,22 @@ object EcgFeatureExtractor {
         val sd2 = sqrt(sd2List.map { it * it }.average())  // 垂直方向（长期变异）
         val ratio = if (sd1 > 0) sd2 / sd1 else 0.0
 
-        val pattern = when {
-            cv < 0.05 -> "彗星形(规律)"
-            cv < 0.15 && ratio > 1.5 -> "鱼雷形(轻度不齐)"
-            cv >= 0.15 && sd2 > sd1 * 1.5 -> "扇形(高度不规律，疑似房颤)"
-            pairs.size > 8 && cv < 0.15 -> "复杂形(疑似早搏)"
-            else -> "彗星形(规律)"
-        }
-
-        // 短-长 RR 配对（早搏代偿间隙）
+        // 短-长 RR 配对（早搏代偿间隙）——先算，供散点形态分类使用
         var shortLongPairs = 0
         for (i in 0 until rrIntervals.size - 1) {
             val isShort = rrIntervals[i] < mean * 0.8
             val isLong = rrIntervals[i + 1] > mean * 1.2
             if (isShort && isLong) shortLongPairs++
+        }
+
+        // 散点形态分类（需同时考虑 CV、SD1/SD2 比值、短-长配对数）
+        // 注意：短-长配对数≥3 才提示早搏（1-2 个可能是正常呼吸性变异）
+        val pattern = when {
+            cv < 0.05 -> "彗星形(规律)"
+            cv < 0.15 && ratio > 1.5 -> "鱼雷形(轻度不齐)"
+            cv >= 0.15 && sd2 > sd1 * 1.5 -> "扇形(高度不规律，疑似房颤)"
+            shortLongPairs >= 3 && cv < 0.15 -> "复杂形(疑似早搏)"
+            else -> "彗星形(规律)"
         }
 
         return RhythmFeatures(cv, pattern, shortLongPairs)
@@ -359,8 +366,9 @@ object EcgFeatureExtractor {
             // 判断 R 波极性：R 峰值相对基线是正还是负
             val rIsPositive = ecgData[rIdx].toDouble() > segMedian
 
-            // 阈值 = R 峰幅度的 25%（QRS 起止通常在 R 峰 25% 处）
-            val qrsThreshold = rAmpVal * 0.25
+            // 阈值 = R 峰幅度的 15%（25% 只抓到 R 波尖峰，漏掉 Q/S 波导致 QRS 偏窄）
+            // 15% 更接近临床 QRS 起止点（PQ 交界→ST 段起点）
+            val qrsThreshold = rAmpVal * 0.15
 
             // 找 Q 点：R 峰前第一个幅度低于阈值的点（从基线穿越阈值处）
             var qPoint = rIdx
@@ -591,13 +599,20 @@ object EcgFeatureExtractor {
         // 逐秒分段表
         sb.append("[逐秒分段]\n")
         sb.append("时段(s)  R波  振幅范围(mV)  峰峰值(mV)  最大斜率(mV/s)  RMS(mV)\n")
-        for (seg in bundle.segments) {
+        for ((idx, seg) in bundle.segments.withIndex()) {
             val range = "${"%.2f".format(seg.ampMinMv)}~${"%.2f".format(seg.ampMaxMv)}"
+            val prevSeg = bundle.segments.getOrNull(idx - 1)
+            val nextSeg = bundle.segments.getOrNull(idx + 1)
             val note = when {
                 seg.rmsMv < 0.05f -> "  ← 噪声段"
-                seg.rPeakCount == 2 -> "  ← 本秒2个R波(可能早搏)"
-                seg.rPeakCount == 0 && bundle.segments.indexOf(seg) > 0 ->
-                    "  ← 本秒无R波(可能代偿间隙)"
+                // 2个R波+下一秒0个R波=短RR+代偿间隙，才是早搏特征
+                // 70bpm时RR≈857ms，每6秒自然有一个1秒桶含2个R波，属正常
+                seg.rPeakCount == 2 && nextSeg != null && nextSeg.rPeakCount == 0 ->
+                    "  ← 短RR+代偿间隙(早搏可能)"
+                seg.rPeakCount == 0 && prevSeg != null && prevSeg.rPeakCount == 2 ->
+                    "  ← 代偿间隙(配合前秒短RR)"
+                seg.rPeakCount == 0 && idx > 0 ->
+                    "  ← 本秒无R波(心率<60或代偿间隙)"
                 else -> ""
             }
             sb.append("${"%.1f".format(seg.startSec)}-${"%.1f".format(seg.endSec)}  ${seg.rPeakCount}  $range  ${"%.2f".format(seg.peakToPeakMv)}  ${"%.2f".format(seg.maxSlopeMvPerSec)}  ${"%.2f".format(seg.rmsMv)}$note\n")

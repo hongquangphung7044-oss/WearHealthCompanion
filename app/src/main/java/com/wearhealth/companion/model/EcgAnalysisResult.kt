@@ -274,8 +274,12 @@ fun computeMinMaxHeartRate(ecgData: List<Int>, sampleRateHz: Int): Pair<Int, Int
     }
 
     if (filtered2.isEmpty()) return 0 to 0
-    // 最低和最高心率
-    return filtered2.min() to filtered2.max()
+    // 用 P10-P90 分位数替代 min/max，排除早搏代偿间隙/呼吸性窦性心律不齐导致的极端值
+    // 17岁窦性心律不齐 RR 可变 ±20%，直接取 min 会把呼吸性低峰误当最低心率
+    val sortedHrs = filtered2.sorted()
+    val p10Idx = (sortedHrs.size * 0.10).toInt().coerceIn(0, sortedHrs.lastIndex)
+    val p90Idx = (sortedHrs.size * 0.90).toInt().coerceIn(0, sortedHrs.lastIndex)
+    return sortedHrs[p10Idx] to sortedHrs[p90Idx]
 }
 
 /**
