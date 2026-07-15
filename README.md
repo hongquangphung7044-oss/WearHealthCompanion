@@ -509,6 +509,35 @@ Data Layer `/api_key` 仍保留，GMS 可用时手机也会尝试提交。
 
 不要在交接文档中记录任何 Secret 实值。
 
+### BLE Key NUL 字符三层防御
+
+实机曾出现手表错误：
+
+```text
+Unexpected char 0x00 at 29 in Authorization value
+```
+
+含义：从手机 BLE 更新 Key 后，`Authorization: Bearer <Key>` 中混入了 `0x00` NUL 控制字符；OkHttp 在本地拒绝该 HTTP Header，请求通常尚未发送到 HeartVoice。这不是额度耗尽，也不是 HeartVoice 401/403/429。原因多为 BLE characteristic value 尾部被协议栈填充 `0x00`，普通 `trim()` 无法处理；若 Key 中间也存在 NUL 则更危险。
+
+已在 `shared/ApiKeyValidator` 实现两端一致的归一化与校验规则，并在三层强制执行：
+
+1. **手机输入保存前**（`MobileViewModel.sendApiKey` / `MobileApiKeyStore.save`）：归一化校验；失败显示中文错误且不保存，**不覆盖已有有效 Key**。
+2. **手机 BLE GATT read 前**（`BleSyncServer.onCharacteristicReadRequest`）：再次校验存储值；若已存在旧的损坏 Key，不原样返回含 NUL 的 value，返回空让手表提示用户在手机重新保存。
+3. **手表 BLE 接收时**（`BleApiKeyFetcher.onCharacteristicRead`）：读取 `ByteArray` → 去尾部 `0x00` padding → UTF-8 解码 → 严格校验；失败显示中文提示，不保存到 `ApiKeyManager`。
+4. **手表 Data Layer 下发**（`WatchWearableListenerService`）与**手表手工输入**（`HealthViewModel.saveApiKey` / `ApiKeyManager.saveApiKey`）同样归一化校验后才保存。
+5. **HTTP 请求前最终防线**（`HeartVoiceApiClient.analyzeEcg`）：构造 `Authorization: Bearer <key>` 前再次校验；非法时返回中文错误，不把 OkHttp 英文异常直接暴露给用户，也不发送请求。
+
+规则要点：
+
+- 只自动移除**尾部** `0x00` NUL padding（BLE 传输常见）；
+- **中间** NUL / 换行 / 回车 / tab / 其它控制字符（`< 0x20` 或 `0x7F`）一律**拒绝**，不静默删除后继续；
+- 空 Key 拒绝；UTF-8 字节超过 512 拒绝；
+- 只允许适合 HTTP Header 的可见 ASCII（`0x21..0x7E`）；
+- 校验失败**不得覆盖**手表/手机已有的有效 Key；
+- 不在日志或 UI 中显示 Key 内容（日志仅记录“非法，未保存”，不回显 Key）。
+
+用户处理方法：若手表仍提示 Key 含不可见字符，请在手机“设置”页用纯文本重新保存一次 HeartVoice Key，再在手表点“从手机 BLE 更新 Key”。纯 JVM 单元测试（`shared/ApiKeyValidatorTest`）覆盖正常 Key、首尾空格、尾部一个/多个 NUL、中间 NUL、换行、回车、tab、空串、超长、校验失败不覆盖旧 Key、最终 Authorization 值不含控制字符等场景，由 CI `:shared:testReleaseUnitTest` 运行，不含任何真实 Secret。
+
 ---
 
 ## 10. CI、签名与发布

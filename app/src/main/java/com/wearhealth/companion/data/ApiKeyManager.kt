@@ -1,6 +1,7 @@
 package com.wearhealth.companion.data
 
 import android.content.Context
+import com.wearhealth.companion.shared.ApiKeyValidator
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
@@ -21,7 +22,9 @@ class ApiKeyManager(context: Context) {
 
     /** 保存 API Key */
     fun saveApiKey(key: String) {
-        prefs.edit().putString(KEY_API_KEY, key.trim()).apply()
+        // 防御性校验：仅保存归一化后合法的 Key；非法输入不覆盖已有有效 Key。
+        val normalized = ApiKeyValidator.normalizeApiKey(key).getOrNull() ?: return
+        prefs.edit().putString(KEY_API_KEY, normalized).apply()
         notifyChanged()
     }
 
