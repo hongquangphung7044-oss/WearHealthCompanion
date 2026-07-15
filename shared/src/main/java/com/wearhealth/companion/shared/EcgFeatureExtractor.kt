@@ -149,14 +149,18 @@ object EcgFeatureExtractor {
         val polarity = if (negativePeak > positivePeak) -1.0 else 1.0
         val oriented = DoubleArray(filtered.size) { idx -> filtered[idx] * polarity }
 
-        // 自适应阈值
-        val rms = sqrt(oriented.map { it * it }.average())
-        val threshold = rms * 2.0
-        if (threshold < 50.0) return emptyList()
+        // 自适应阈值：用信号幅度的 75 分位数（避开基线段拉低 RMS 的问题）。
+        // 之前用 rms*2.0，RMS 含大量平坦基线，阈值偏高导致正常 R 波被滤掉（31秒仅检出4个→8bpm）。
+        val absSorted = oriented.map { abs(it) }.sorted()
+        val p75 = if (absSorted.isNotEmpty()) absSorted[(absSorted.size * 0.75).toInt()] else 0.0
+        // 阈值取 max(75分位数, 全局最大值的 30%)，保证 R 波不被基线噪声误触，又不漏检正常 R 波
+        val peakMax = absSorted.lastOrNull() ?: 0.0
+        val threshold = maxOf(p75, peakMax * 0.30)
+        if (threshold < 20.0) return emptyList() // 数据几乎全平，无意义
 
         // R 峰检测
         val rPeaks = mutableListOf<Int>()
-        val refractory = sampleRateHz / 3
+        val refractory = sampleRateHz / 3  // 300ms 不应期（最高 200bpm）
         var lastPeakIdx = -refractory * 2
         val checkRange = sampleRateHz / 50
 
@@ -169,9 +173,10 @@ object EcgFeatureExtractor {
                 if (j != i && oriented[j] > oriented[i]) { isLocalMax = false; break }
             }
             if (!isLocalMax) continue
+            // 斜率门槛放宽：只要 R 峰相对 50ms 前有上升即可（原 threshold*0.5 过严）
             val slopeIdx = maxOf(0, i - sampleRateHz / 20)
             val slope = oriented[i] - oriented[slopeIdx]
-            if (slope < threshold * 0.5) continue
+            if (slope < threshold * 0.2) continue
             if ((i - lastPeakIdx) < refractory) continue
             rPeaks.add(i)
             lastPeakIdx = i

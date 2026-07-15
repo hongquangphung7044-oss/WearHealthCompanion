@@ -180,7 +180,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun analyzeWithHeartVoice(ecgData: List<Int>): Result<EcgAnalysisResult> {
         val result = heartVoiceApi.analyzeEcg(ecgData, sampleRate = 500)
         return result.map { analysis ->
-            val waveform = downsample(ecgData, 400)
+            val waveform = downsample(ecgData, 1200)
             val (minHr, maxHr) = computeMinMaxHeartRate(ecgData, sampleRateHz = 500)
             val filteredDiagnosis = filterWpwIfConflict(
                 analysis.diagnosis, analysis.prInterval, analysis.avgQrs,
@@ -228,7 +228,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         // 3. 调 DS
         val dsResult = deepSeekApi.analyzeEcg(featureText, model, thinking)
         return dsResult.mapCatching { report ->
-            val waveform = downsample(ecgData, 400)
+            val waveform = downsample(ecgData, 1200)
 
             // 4. DS 报告里的 JSON 字段尝试提取节律判断作为诊断标签（兜底用本地估算）
             val dsDiagnosis = extractDsDiagnosis(report.reportJson, g)
@@ -768,14 +768,30 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(history = emptyList(), historyDetail = null)
     }
 
+    /**
+     * 降采样并保留局部极值（R 波尖峰不丢失）。
+     *
+     * 之前用均匀抽样，30 秒 15000 点压到 400 点（每点 75ms）会把 R 波尖峰削平，
+     * 波形退化成正弦波。改为分桶取 min+max，目标点数提升到 1200（每点约 25ms），
+     * 既能在一屏内呈现完整波形，又保留 R 波形态。
+     */
     private fun downsample(data: List<Int>, targetSize: Int): List<Int> {
         if (data.size <= targetSize) return data
-        val step = data.size.toFloat() / targetSize
-        val result = mutableListOf<Int>()
+        val bucketSize = data.size.toFloat() / targetSize
+        val result = ArrayList<Int>(targetSize * 2)
         var idx = 0f
-        while (idx < data.size && result.size < targetSize) {
-            result.add(data[idx.toInt()])
-            idx += step
+        while (idx < data.size) {
+            val end = minOf((idx + bucketSize).toInt(), data.size)
+            var minVal = Int.MAX_VALUE
+            var maxVal = Int.MIN_VALUE
+            for (i in idx.toInt() until end) {
+                val v = data[i]
+                if (v < minVal) minVal = v
+                if (v > maxVal) maxVal = v
+            }
+            if (result.isEmpty() || result.last() != minVal) result.add(minVal)
+            result.add(maxVal)
+            idx += bucketSize
         }
         return result
     }

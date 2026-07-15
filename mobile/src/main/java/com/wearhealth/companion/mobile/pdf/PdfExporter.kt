@@ -332,9 +332,9 @@ object PdfExporter {
 
         // 去基线后按固定电压比例绘制波形（超出图表范围则裁剪，避免夸张拉伸）
         // PDF 每点约 0.034 单位，15000 点会画成一片实心墨块无法区分心跳。
-        // 降采样到约 width*2 个点（每像素 2 点，保留 R 波尖峰不丢失）。
+        // 降采样到约 width*4 个点（每像素 4 点，保留 R 波尖峰不丢失，波形更清晰）。
         val mean = samples.average()
-        val targetPoints = (width * 2).toInt().coerceAtLeast(2)
+        val targetPoints = (width * 4).toInt().coerceAtLeast(2)
         val drawn = if (samples.size > targetPoints) {
             downsampleKeepPeaks(samples, targetPoints)
         } else {
