@@ -146,17 +146,16 @@ class EcgFeatureExtractorTest {
 
     @Test
     fun detectsEarlyBeatInSegment() {
-        // 第 6 秒放 2 个 R 波，第 7 秒不放（模拟早搏 + 代偿间隙）
+        // 构造早搏场景：在 6.0-6.5s 这一段内放两个间隔 400ms 的 R 波（>300ms 不应期）
+        // 模拟早搏：第 6 秒段出现 2 个 R 波，后续代偿间隙
         val rTimes = mutableListOf<Float>()
-        var t = 0.3f
-        while (t < 30f) {
-            rTimes.add(t)
-            t += 0.857f
-        }
-        // 在第 6 秒插入一个额外 R 波（早搏），确保与原 6.x R 波落在同一 0.5 秒段
-        // 0.857s 周期下第 7 个 R 波约在 6.3s，插入 6.4s 保证两者都在 6.0-6.5s 段
-        rTimes.add(6, 6.4f)
-        rTimes.sort()
+        // 前 6 秒每秒 1 个 R 波
+        for (i in 0 until 6) rTimes.add(i.toFloat() + 0.2f)
+        // 第 6 秒段放 2 个 R 波（6.05 和 6.45，间隔 400ms，都在 6.0-6.5s 段内）
+        rTimes.add(6.05f)
+        rTimes.add(6.45f)
+        // 第 7 秒段代偿间隙不放 R 波，第 8 秒起恢复正常
+        for (i in 8 until 30) rTimes.add(i.toFloat() + 0.2f)
         val ecg = syntheticEcg(30f, rTimes)
         val bundle = EcgFeatureExtractor.extract(ecg, sampleRate)
         // 应该至少有一段 R 波数 = 2
