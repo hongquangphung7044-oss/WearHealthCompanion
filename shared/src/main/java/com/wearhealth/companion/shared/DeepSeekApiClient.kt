@@ -121,7 +121,7 @@ class DeepSeekApiClient(
             val body = JSONObject().apply {
                 put("model", model.id)
                 put("messages", messages)
-                put("max_tokens", 2000)
+                put("max_tokens", 6000)  // V4-Flash 输出上限 8K，设 6K 防 Max 档思维链混入 content 导致截断
                 put("response_format", JSONObject().put("type", "json_object"))
                 // 思考强度参数：根据 ThinkingMode 组合 thinking + reasoning_effort
                 // 注意：思考模式(thinking=enabled)不支持 temperature/top_p 等采样参数
