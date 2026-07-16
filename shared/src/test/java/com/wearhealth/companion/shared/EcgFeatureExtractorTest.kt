@@ -193,6 +193,28 @@ class EcgFeatureExtractorTest {
         assertTrue("应检测到噪声段: ${g.noiseSegments}", g.noiseSegments.isNotEmpty())
     }
 
+    @Test
+    fun detectsRPeaksInCleanSegmentDespiteNoiseInOtherSegment() {
+        // 场景：前 15 秒干净 70bpm 规则 R 波，后 15 秒大振幅运动伪差（噪声幅度 3.0mV，远超 R 波）
+        // 当前全局阈值会被噪声段拉高 → 干净段 R 波漏检
+        // 分段自适应阈值应让干净段正常检出（前 15 秒约 18 个 R 波，允许 ±3 误差）
+        val rng = java.util.Random(20260716L)  // 固定种子，测试可复现
+        val rTimes = (0 until 18).map { it * 0.857f }  // 前 15 秒约 17-18 个 R 波（70bpm）
+        val ecg1 = syntheticEcg(15f, rTimes, rAmplitudeMv = 1.0f, noiseLevel = 0.02f, seed = 100L)
+        // 后 15 秒大振幅噪声（运动伪差，幅度 3.0mV，是 R 波的 3 倍）
+        val noiseSamples = (0 until sampleRate * 15).map {
+            ((rng.nextGaussian() * 3.0).toInt() * 1000)  // 3.0mV 标准差高斯噪声
+        }
+        val ecg = ecg1 + noiseSamples
+        val g = EcgFeatureExtractor.extract(ecg, sampleRate).global
+        // 前 15 秒干净段应检出约 17 个 R 波（70bpm × 15s ≈ 17.5）
+        // 全局阈值被噪声拉高时会漏检大半；分段自适应应保留干净段检出
+        assertTrue(
+            "干净段 R 波应被检出（全局阈值被噪声拉高会漏检），实际 ${g.rPeakCount}",
+            g.rPeakCount >= 14,
+        )
+    }
+
     // ===== 间期估测 =====
 
     @Test

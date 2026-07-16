@@ -184,12 +184,31 @@ object EcgFeatureExtractor {
             envelope[i] = sum / (to - from)
         }
 
-        // 4. 自适应阈值 = 均值 + 2×标准差（NeuroKit 风格统计阈值）
-        val envMean = envelope.average()
-        val envVar = envelope.map { (it - envMean) * (it - envMean) }.average()
-        val envStd = sqrt(envVar)
-        val threshold = envMean + envStd * 2.0
-        if (threshold < 3.0) return emptyList()  // 梯度信号阈值较低
+        // 4. 分段自适应阈值（解决局部噪声污染全局阈值）
+        // 旧实现用全局 envMean+2×envStd，真实信号中某段有大运动伪差时 envStd 被拉高，
+        // 导致干净段的 R 波梯度全部低于阈值 → 漏检 → 心率虚低（如 33bpm）+ 虚假长 RR。
+        // 分段阈值：按 4 秒窗口分段计算各自 mean+2×std，逐点用所属段阈值判定。
+        // 4 秒覆盖约 4-5 个心动周期，统计稳健；窗口太短（如 1 秒）样本不足 std 不稳。
+        // 依据：Pan-Tompkins 原版用自适应阈值但带短时记忆；分段独立阈值是工程改进，
+        // 避免单一噪声段污染整段测量（非临床金标准，针对 wrist-wear 噪声场景）
+        val segLen = sampleRateHz * 4  // 4 秒一段
+        val thresholds = DoubleArray(envelope.size)
+        for (segStart in 0 until envelope.size step segLen) {
+            val segEnd = minOf(envelope.size, segStart + segLen)
+            var sum = 0.0
+            for (i in segStart until segEnd) sum += envelope[i]
+            val segMean = if (segEnd > segStart) sum / (segEnd - segStart) else 0.0
+            var varSum = 0.0
+            for (i in segStart until segEnd) {
+                val d = envelope[i] - segMean
+                varSum += d * d
+            }
+            val segStd = if (segEnd > segStart) sqrt(varSum / (segEnd - segStart)) else 0.0
+            val segThreshold = segMean + segStd * 2.0
+            for (i in segStart until segEnd) thresholds[i] = segThreshold
+        }
+        // 全局最低阈值保护：纯静音段阈值可能极低，加 floor 避免噪声误判
+        val globalFloor = 3.0
 
         // 5. R 峰检测：阈值 + 局部最大 + 不应期
         // 不应期 200ms（Pan-Tompkins 原版 MINPEAKDISTANCE=200ms，生理上 RR 不可能 <200ms）
@@ -200,7 +219,8 @@ object EcgFeatureExtractor {
         val checkRange = sampleRateHz / 50  // ±10ms 局部最大检查（500/50=10样本=±10ms）
 
         for (i in envelope.indices) {
-            if (envelope[i] < threshold) continue
+            val thr = maxOf(thresholds[i], globalFloor)
+            if (envelope[i] < thr) continue
             val lo = maxOf(0, i - checkRange)
             val hi = minOf(envelope.size, i + checkRange + 1)
             var isLocalMax = true
@@ -249,8 +269,10 @@ object EcgFeatureExtractor {
                 if (rrAvg < 1.0) continue
 
                 if (rr > rrAvg * 1.66) {
-                    // 半阈值搜索漏检区间
-                    val backThr = threshold * 0.5
+                    // 半阈值搜索漏检区间：用搜索区间中点的分段阈值（漏检段阈值）
+                    val midIdx = (rPeaks[k - 1] + rPeaks[k]) / 2
+                    val midThr = if (midIdx in thresholds.indices) thresholds[midIdx] else globalFloor
+                    val backThr = maxOf(midThr, globalFloor) * 0.5
                     val searchStart = rPeaks[k - 1] + refractory
                     val searchEnd = rPeaks[k] - refractory
                     if (searchEnd <= searchStart) continue
