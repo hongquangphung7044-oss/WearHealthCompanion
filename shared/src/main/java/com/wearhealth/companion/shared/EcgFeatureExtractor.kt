@@ -87,13 +87,16 @@ object EcgFeatureExtractor {
         val durationSec = if (sampleRateHz > 0) ecgData.size.toFloat() / sampleRateHz else 0f
         val rPeaks = detectRPeaks(ecgData, sampleRateHz)
 
-        // 噪声段掩码剔除：先识别噪声段（rms<0.05 的 1 秒段），剔除落在噪声段内的 R 波。
+        // 噪声段掩码剔除：先识别噪声段（rms<0.10 的 1 秒段），剔除落在噪声段内的 R 波。
         // 这些 R 波多为低振幅噪声偶尔触发的误检，不应进入 HRV/心率/间期/segments 统计。
         // 跨噪声段的 RR（前段尾→后段头）也会因 R 波剔除而不产生，避免虚假长/短 RR 污染节律判别。
         // 依据：视图模型建议第 2 条"噪声段强制剔除不参与 HRV/节律运算"；
         //       Lueken 2023 (Sensors) 证实信号质量差的段显著增加房颤误分类概率
+        // 噪声段阈值 0.10mV：真实 wrist ECG 有效段（含 R 波）RMS 通常 >0.15mV
+        // （R 波振幅 0.5-1.5mV，1 秒内 1-2 个 R 波）；0.10mV 以下几乎不含有效 R 波信息。
+        // 旧阈值 0.05mV 太严格，0.1mV 噪声段（RMS≈0.058）漏标 → 误检 R 波不剔除 → 虚假 RR。
         val segmentsRaw = extractSegments(ecgData, sampleRateHz, rPeaks, durationSec)
-        val noiseSampleRanges = segmentsRaw.filter { it.rmsMv < 0.05f }
+        val noiseSampleRanges = segmentsRaw.filter { it.rmsMv < 0.10f }
             .map { (it.startSec * sampleRateHz).toInt() until (it.endSec * sampleRateHz).toInt() }
         val effectiveRPeaks = if (noiseSampleRanges.isEmpty()) rPeaks
             else rPeaks.filter { peak -> noiseSampleRanges.none { range -> peak in range } }
@@ -109,7 +112,7 @@ object EcgFeatureExtractor {
         val rAmp = computeRAmplitude(ecgData, effectiveRPeaks, sampleRateHz)
         // 重算 segments 用 effectiveRPeaks，让噪声段 rPeakCount=0
         val segments = extractSegments(ecgData, sampleRateHz, effectiveRPeaks, durationSec)
-        val noiseSegs = segments.filter { it.rmsMv < 0.05f }
+        val noiseSegs = segments.filter { it.rmsMv < 0.10f }
             .map { "${"%.1f".format(it.startSec)}-${"%.1f".format(it.endSec)}s(噪声)" }
         val sigQuality = computeSignalQuality(segments, effectiveRPeaks.size, durationSec)
 
@@ -205,14 +208,11 @@ object EcgFeatureExtractor {
         // 依据：Pan-Tompkins 原版用自适应阈值但带短时记忆；分段独立阈值是工程改进，
         // 避免单一噪声段污染整段测量（非临床金标准，针对 wrist-wear 噪声场景）
         //
-        // 双约束（修复平坦段回归 bug）：
-        // 纯 mean+2×std 在平坦段（无 R 波）std 极小 → 阈值 ≈ 噪声峰值 → 大量虚假 R 峰
-        // → 虚假短 RR → HRV 被错误计算 + 心率范围虚高（如 172bpm）。
-        // 加中位数×1.5 下限：中位数抗稀疏 R 波峰值污染（R 波仅占 ~7% 样本），稳健估计
-        // 噪声基底；1.5× 噪声基底要求 R 波包络至少为噪声 1.5 倍（SNR>1.5）。
-        // 依据：Pan-Tompkins 检测要求信号峰 / 噪声峰 > 1.5（PT 原版 THRESHOLD1 = NOISE_LEVEL
-        // + 0.25×(SIGNAL_LEVEL - NOISE_LEVEL)，当 SIGNAL/NOISE < 1.5 时不触发检测）。
-        // mean+2×std 在有 R 波段（双峰分布高 std）仍为主导约束，中位数下限不影响检出。
+        // 历史教训：曾尝试加 median×1.5 下限防平坦段误检，但真实 wrist ECG 数据
+        // （samples/ECG_diagnostic_*.txt）证实 R 波包络峰仅为噪声中位数 ~1.4 倍，
+        // median×1.5 把所有真实 R 波压掉 → R 波检测 0 个 → 心率 0（彻底失效）。
+        // 平坦段误检改由噪声段掩码剔除（extract() 中 RMS<0.1 的段剔除）兜底，
+        // 不在检测层用 median 约束压阈值。
         val segLen = sampleRateHz * 4  // 4 秒一段
         val thresholds = DoubleArray(envelope.size)
         for (segStart in 0 until envelope.size step segLen) {
@@ -228,15 +228,10 @@ object EcgFeatureExtractor {
                 varSum += d * d
             }
             val segStd = sqrt(varSum / segSize)
-            // 段中位数：排序后取中间值。中位数不受稀疏 R 波峰影响（R 波仅占 ~7% 样本），
-            // 是噪声基底的稳健估计。copyOfRange + sort 复杂度 O(n log n)，每段 2000 点可接受。
-            val segSorted = envelope.copyOfRange(segStart, segEnd).also { it.sort() }
-            val segMedian = segSorted[segSize / 2]
-            // 双约束：mean+2std 检出 R 波（双峰分布高 std），median×1.5 防平坦段噪声误检
-            val segThreshold = maxOf(segMean + segStd * 2.0, segMedian * 1.5)
+            val segThreshold = segMean + segStd * 2.0
             for (i in segStart until segEnd) thresholds[i] = segThreshold
         }
-        // 全局最低阈值保护：纯静音/全零段中位数=0，加 floor 避免噪声误判
+        // 全局最低阈值保护：纯静音/全零段阈值可能极低，加 floor 避免噪声误判
         val globalFloor = 3.0
 
         // 5. R 峰检测：阈值 + 局部最大 + 不应期
@@ -815,7 +810,7 @@ object EcgFeatureExtractor {
     ): Float {
         if (segments.isEmpty()) return 0f
         // 因子1：噪声段占比（越少越好）
-        val noiseRatio = segments.count { it.rmsMv < 0.05f }.toFloat() / segments.size
+        val noiseRatio = segments.count { it.rmsMv < 0.10f }.toFloat() / segments.size
         val noiseScore = 1f - noiseRatio
         // 因子2：期望心率 60-100bpm，30秒应有 30~50 个 R 波
         val expectedMin = (durationSec * 1f).toInt()   // 30bpm × 0.5
@@ -897,7 +892,7 @@ object EcgFeatureExtractor {
             val prevSeg = bundle.segments.getOrNull(idx - 1)
             val nextSeg = bundle.segments.getOrNull(idx + 1)
             val note = when {
-                seg.rmsMv < 0.05f -> "  ← 噪声段"
+                seg.rmsMv < 0.10f -> "  ← 噪声段"
                 // 2个R波+下一秒0个R波=短RR+代偿间隙，才是早搏特征
                 // 70bpm时RR≈857ms，每6秒自然有一个1秒桶含2个R波，属正常
                 seg.rPeakCount == 2 && nextSeg != null && nextSeg.rPeakCount == 0 ->
