@@ -310,7 +310,7 @@ class EcgFeatureExtractorTest {
     @Test
     fun detectsRPeaksInMotionArtifactSignal() {
         // 场景：运动后 wrist ECG——心率快（107bpm）+ 强肌电干扰（envelope 右偏长尾）
-        // 真实数据（samples/运动后.txt）：mean+2std 阈值被高噪声底拉高，
+        // 真实数据（samples/运动后.txt）：mean+2.0std 阈值被高噪声底拉高，
         // R 波 envelope 峰仅 0.85~1.11 倍阈值 → 漏检 60%（21 个 vs 期望 53）
         //
         // 合成信号复现"右偏长尾 envelope"：
@@ -318,9 +318,9 @@ class EcgFeatureExtractorTest {
         // - 需叠加"脉冲式"肌电突发（偶发大尖峰）+ 降 R 波振幅（运动后电极接触变化）
         // - 肌电突发让 envelope 产生少量极高值（长尾），mean+2std 被长尾拉高
         //
-        // 百分位 0.92 阈值对右偏长尾分布更稳健（不被长尾拉高），能多检出 ~50% R 波
-        // Python 验证（verify_red.py，6 seed）：mean+2std 检出 21-29，百分位 0.92+形态验证检出 37-45
-        // 5 份真实样本验证（verify_real.py）：4/5 准确不回归，运动后改善（21→34 R 波）
+        // 修复：mean+1.7×std 阈值（k 从 2.0 降到 1.7），让运动后边缘 R 波通过
+        // Python 验证（verify_k18.py，6 seed）：mean+2.0std 检出 21-29，mean+1.7std 检出 34-49
+        // 5 份真实样本验证：静息/活动后全部准确（HR 偏差 <15bpm），运动后 21→36 R 波改善
         val rTimes = mutableListOf<Float>()
         var t = 0.5f
         while (t < 30f) { rTimes.add(t); t += 0.56f }  // 107bpm, 约 53 个 R 波
@@ -334,10 +334,10 @@ class EcgFeatureExtractorTest {
             ecg[i] = ecg[i] + ((muscle + burst) * 1000).toInt()
         }
         val g = EcgFeatureExtractor.extract(ecg.toList(), sampleRate).global
-        // 期望 53 个，mean+2std 漏检检出 ~21-29，百分位 0.92+形态验证检出 ~37-45
-        // 断言 >=33（比 mean+2std 最高 29 高，验证显著改善；比 Python 最低 37 低 4，留 Kotlin/Python 随机差异余量）
+        // 期望 53 个，mean+2.0std 漏检检出 ~21-29，mean+1.7std 检出 ~34-49
+        // 断言 >=33（比 mean+2.0std 最高 29 高，验证显著改善；比 Python 最低 34 低 1，留 Kotlin/Python 随机差异余量）
         assertTrue(
-            "运动后强肌电干扰信号应检出多数 R 波（mean+2std 漏检 60% 检出 ~21-29），实际 ${g.rPeakCount}",
+            "运动后强肌电干扰信号应检出多数 R 波（mean+2.0std 漏检 60% 检出 ~21-29），实际 ${g.rPeakCount}",
             g.rPeakCount >= 33,
         )
     }
