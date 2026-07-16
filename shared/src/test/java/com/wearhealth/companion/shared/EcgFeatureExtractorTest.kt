@@ -235,6 +235,25 @@ class EcgFeatureExtractorTest {
     }
 
     @Test
+    fun detectsRPeaksInModerateNoiseRealisticSignal() {
+        // 场景：30 秒 70bpm 规则 R 波（振幅 1.0mV）+ 中等噪声（0.15mV），模拟真实 wrist ECG。
+        // 真实数据（samples/ECG_diagnostic_20260716_*.txt）显示：envelope R 波峰仅为噪声中位数
+        // 的 ~1.4 倍（envMax≈106, median≈75）。median*1.5 要求比值≥1.5，把所有真实 R 波压掉
+        // → R 波检测返回 0 → 心率 0（三个真实测量全部复现此 bug）。
+        // mean+2std 阈值（≈86~93）低于 envMax（≈92~106），本应检出 R 波。
+        // 此测试用 rAmp=1.0 + noise=0.15 复现该特征（envMax/(median*1.5)≈0.92 < 1.0）。
+        val rTimes = (0 until 35).map { it * 0.857f }  // 70bpm
+        val ecg = syntheticEcg(30f, rTimes, rAmplitudeMv = 1.0f, noiseLevel = 0.15f, seed = 100L)
+        val g = EcgFeatureExtractor.extract(ecg, sampleRate).global
+        // 应检出约 35 个 R 波（允许 ±15），median*1.5 bug 下会返回 0
+        // 阈值依据：合成信号检出 28 个，真实中等噪声 wrist ECG 检出 21-26 个（samples/ 验证）
+        assertTrue(
+            "中等噪声真实信号应检出 R 波（median*1.5 阈值过高会全漏检），实际 ${g.rPeakCount}",
+            g.rPeakCount >= 20,
+        )
+    }
+
+    @Test
     fun noiseSegmentRPeaksDoNotPolluteStats() {
         // 场景：0-10s 干净 70bpm + 10-20s 低振幅高斯噪声（被标噪声段）+ 20-30s 干净 70bpm
         // 噪声段内偶尔的高斯尖峰可能触发 R 波检测（误检），这些虚假 R 波：
