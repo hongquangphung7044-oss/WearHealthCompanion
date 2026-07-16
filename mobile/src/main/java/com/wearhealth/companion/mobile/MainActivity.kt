@@ -9,13 +9,16 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Surface
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -119,6 +122,11 @@ private fun MobileAppTheme(content: @Composable () -> Unit) {
     else androidx.compose.material3.darkColorScheme()
     MaterialTheme(
         colorScheme = if (androidx.compose.foundation.isSystemInDarkTheme()) dark else light,
+        shapes = Shapes(
+            small = RoundedCornerShape(8.dp),
+            medium = RoundedCornerShape(12.dp),
+            large = RoundedCornerShape(16.dp),
+        ),
         content = { Surface(modifier = Modifier.fillMaxSize(), content = content) },
     )
 }
