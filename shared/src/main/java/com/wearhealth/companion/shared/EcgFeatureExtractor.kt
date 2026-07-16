@@ -85,10 +85,10 @@ object EcgFeatureExtractor {
         val durationSec = if (sampleRateHz > 0) ecgData.size.toFloat() / sampleRateHz else 0f
         val rPeaks = detectRPeaks(ecgData, sampleRateHz)
         val rrIntervals = computeRRIntervals(rPeaks, sampleRateHz)
-        val hr = computeHeartRateStats(rrIntervals)
-        // HRV 用剔早搏的 RR（偏离均值>25% 的剔除），避免早搏短长 RR 污染 SDNN/RMSSD
-        // 节律判别保留原始 RR（保早搏特征），两条通路各司其职
+        // RR 双通路：HRV 和心率统计用剔早搏 RR，节律判别保原始 RR
+        // 早搏短长 RR 会同时污染 HRV 和心率范围（短 RR→虚高 maxHr，长 RR→虚低 minHr）
         val rrForHrv = filterEctopicBeats(rrIntervals)
+        val hr = computeHeartRateStats(rrForHrv, profile.ageYears)
         val hrv = computeHrv(rrForHrv)
         val rhythm = computeRhythmFeatures(rrIntervals)
         val intervals = estimateIntervals(ecgData, sampleRateHz, rPeaks, hr.avgHr)
@@ -327,28 +327,37 @@ object EcgFeatureExtractor {
     private data class HeartRateStats(val avgHr: Int, val minHr: Int, val maxHr: Int)
 
     /**
-     * 心率统计（抗 R 波误检设计）
+     * 心率统计（抗 R 波误检 + 抗早搏设计）
      *
      * 已知问题（已修复）：旧实现用 P10-P90 分位数，30 秒短记录仅 ~40 个 RR，
      * 10% 误检就能把 P90 拉到虚高值（如真实 80bpm 测出 120bpm）。
      *
-     * 新策略（中位数核心，抗误检）：
-     * 1. avgHr 用中位数 RR 反算（60000/medianRR），中位数对 ≤49% 误检完全免疫
-     * 2. min/max 限制在中位数 ±15% 范围内的 RR（窦性心律不齐正常呼吸性变异 <15%，
-     *    超过 15% 多为早搏/误检，不应计入"心率范围"）
-     * 3. 早搏 RR 不进入心率统计（节律判别另有原始 RR 通路），避免短长 RR 污染心率
+     * 策略（全部有文献依据）：
+     * 1. avgHr 用中位数 RR 反算（60000/medianRR）——中位数对 ≤49% 的误检/早搏完全免疫
+     *    （数学性质：中位数不受极端值影响，除非极端值过半）
+     * 2. 心率范围基于呼吸性窦性心律不齐的正常变异幅度：
+     *    Hiss 1976 (J Appl Physiol, PMID 993161): Percent variation = 23.2 - 0.35 × age
+     *    - 18岁 ≈ 17%，40岁 ≈ 9%，年轻人呼吸性变异显著
+     *    - 未知年龄用 ±20%（覆盖文献报告的年轻人最大变异 17% + 3% 余量）
+     *    超过此范围的 RR 视为早搏/误检/噪声，不纳入心率范围统计
+     * 3. 输入应为已剔早搏的 RR（filterEctopicBeats），避免短长 RR 污染心率
      */
-    private fun computeHeartRateStats(rrIntervals: List<Int>): HeartRateStats {
+    private fun computeHeartRateStats(rrIntervals: List<Int>, ageYears: Int): HeartRateStats {
         if (rrIntervals.size < 3) return HeartRateStats(0, 0, 0)
         val medianRR = rrIntervals.median()
         if (medianRR <= 0) return HeartRateStats(0, 0, 0)
         val medianHR = (60000.0 / medianRR).toInt()
         if (medianHR !in 40..200) return HeartRateStats(0, 0, 0)
 
-        // 正常窦性 RR 范围：中位数 ±15%（呼吸性窦性心律不齐正常范围）
-        // 早搏短长 RR 和误检 RR 均被排除，不污染心率统计
-        val lowerBound = medianRR * 0.85
-        val upperBound = medianRR * 1.15
+        // 呼吸性窦性心律不齐的正常变异范围（Hiss 1976 公式）
+        // 未知年龄(ageYears<=0)用 20%（覆盖年轻人最大变异 17% + 余量）
+        val variationPct = if (ageYears > 0) {
+            (23.2 - 0.35 * ageYears).coerceIn(5.0, 20.0) / 100.0
+        } else {
+            0.20
+        }
+        val lowerBound = medianRR * (1 - variationPct)
+        val upperBound = medianRR * (1 + variationPct)
         val normalRRs = rrIntervals.filter { it.toDouble() in lowerBound..upperBound }
         val rrForRange = if (normalRRs.size >= 3) normalRRs else rrIntervals
 
@@ -742,14 +751,15 @@ object EcgFeatureExtractor {
         sb.append("[全局指标]\n")
         sb.append("采样率:${g.sampleRateHz}Hz 时长:${"%.1f".format(g.durationSec)}s 总点数:${g.totalSamples}\n")
         sb.append("R波检测:${g.rPeakCount}个 平均心率:${g.avgHeartRate}bpm 范围:${g.minHeartRate}-${g.maxHeartRate}bpm\n")
-        // RR 序列标注异常值（偏离均值>25% 标*），帮助 DS 直观识别早搏（短RR）和代偿间隙（长RR）
+        // RR 序列标注异常值（偏离均值>20% 标*，与 filterEctopicBeats 阈值一致，Karey 2019）
+        // 帮助 DS 直观识别早搏（短RR）和代偿间隙（长RR）
         if (g.rrIntervalsMs.isNotEmpty()) {
             val rrMean = g.rrIntervalsMs.average()
             val rrAnnotated = g.rrIntervalsMs.joinToString(" ") { rr ->
                 val dev = if (rrMean > 0) abs(rr - rrMean) / rrMean else 0.0
-                if (dev > 0.25) "[$rr*]" else "$rr"
+                if (dev > 0.20) "[$rr*]" else "$rr"
             }
-            sb.append("RR间期序列(ms，[*]为偏离均值>25%的异常间期):$rrAnnotated\n")
+            sb.append("RR间期序列(ms，[*]为偏离均值>20%的异常间期，多为早搏/误检):$rrAnnotated\n")
             // RR 差值序列：正值=RR变长，负值=RR变短；大幅正负交替=短-长配对=早搏特征
             if (g.rrIntervalsMs.size >= 2) {
                 val rrDiffs = (1 until g.rrIntervalsMs.size).joinToString(",") {
