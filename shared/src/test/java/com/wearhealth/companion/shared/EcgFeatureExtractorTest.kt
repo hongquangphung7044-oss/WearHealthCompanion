@@ -126,6 +126,25 @@ class EcgFeatureExtractorTest {
         assertEquals(0f, g.rmssdMs)
     }
 
+    @Test
+    fun flatSegmentWithMicroNoiseDoesNotProduceFalsePeaks() {
+        // 回归测试：30 秒信号只有 2 个 R 波（1s 和 2s），其余 28 秒为平坦微噪声段。
+        // 旧分段阈值 mean+2×std 在平坦段 std 极小 → 阈值 ≈ 噪声峰值 → 大量虚假 R 峰
+        // → 虚假短 RR → HRV 被错误计算（SDNN>0）+ 心率范围虚高。
+        // 修复：分段阈值加中位数×1.5 下限，中位数抗稀疏 R 波污染、稳健估计噪声基底，
+        // 要求 R 波包络至少为噪声基底 1.5 倍（SNR>1.5，Pan-Tompkins 检测下限）。
+        val ecg = syntheticEcg(30f, listOf(1f, 2f), rAmplitudeMv = 1.0f, noiseLevel = 0.02f, seed = 42L)
+        val g = EcgFeatureExtractor.extract(ecg, sampleRate).global
+        // 仅应检出 2 个真实 R 波（允许 0-4，容忍极少边界误检但不应有大量虚假峰）
+        assertTrue(
+            "平坦段不应产生大量虚假 R 峰，实际 ${g.rPeakCount}",
+            g.rPeakCount <= 4,
+        )
+        // HRV 应为 0（RR 间期数 < 3，不足以计算 SDNN）
+        assertEquals("SDNN 应为 0（R 波数不足）", 0f, g.sdnnMs)
+        assertEquals("RMSSD 应为 0（R 波数不足）", 0f, g.rmssdMs)
+    }
+
     // ===== 逐秒分段 =====
 
     @Test
