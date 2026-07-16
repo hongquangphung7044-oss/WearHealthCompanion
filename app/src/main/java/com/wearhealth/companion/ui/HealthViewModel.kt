@@ -300,6 +300,21 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
             if (earlyBeats != null && earlyBeats.length() > 0) {
                 labels.add("PAC")
             }
+            // 异常提示数组：解析形态学诊断关键词，映射到诊断标签并触发 isAbnormal
+            // 避免 DS 节律正常但异常提示含 WPW/BBB/AVB/ST/QT 时 isAbnormal 误判为 false
+            val abnormals = json.optJSONArray("异常提示")
+            if (abnormals != null) {
+                for (i in 0 until abnormals.length()) {
+                    val text = abnormals.optString(i)
+                    when {
+                        text.contains("WPW") || text.contains("预激") -> labels.add("WPW")
+                        text.contains("束支") -> labels.add("BBB")
+                        text.contains("房室阻滞") || text.contains("传导阻滞") -> labels.add("AVB")
+                        text.contains("ST") && (text.contains("压低") || text.contains("抬高") || text.contains("异常")) -> labels.add("ST")
+                        text.contains("QT") && text.contains("延长") -> labels.add("QT")
+                    }
+                }
+            }
             // 不再用本地 RR 变异系数兜底标 ARR：
             // 本地 CV 受呼吸性变异/噪声影响大，不足以诊断心律不齐，
             // 之前 Max 档响应异常时会走 catch 兜底，CV>0.15 误报 ARR。
