@@ -16,7 +16,8 @@ data class EcgAnalysisResult(
     val avgP: Int = 0,             // 平均 P 波宽度 ms
     val prInterval: Int,          // PR 间期 ms
     val avgQt: Int,               // QT 间期 ms
-    val avgQtc: Int,              // 校正 QT 间期 ms
+    val avgQtc: Int,              // 校正 QT 间期 ms（Bazett 公式，60bpm 附近最准）
+    val avgQtcFridericia: Int = 0, // 校正 QT 间期（Fridericia 公式，50-90bpm 全区间误差小，心率波动大时更稳）
     val pacCount: Int,            // 房性早搏次数
     val pvcCount: Int,            // 室性早搏次数
     val rawData: String,          // 原始 API 响应（调试用）
@@ -134,7 +135,13 @@ fun EcgAnalysisResult.toParamInfos(): List<EcgParamInfo> = buildList {
     if (avgQtc > 0) {
         add(EcgParamInfo(
             "QTc", "$avgQtc ms", "男<450 / 女<460",
-            "校正心率后的 QT。过长可能有心律风险"
+            "校正心率后的 QT（Bazett 公式，60bpm 附近最准）。过长可能有心律风险"
+        ))
+    }
+    if (avgQtcFridericia > 0) {
+        add(EcgParamInfo(
+            "QTc(Fridericia)", "$avgQtcFridericia ms", "男<450 / 女<460",
+            "校正心率后的 QT（Fridericia 公式，50-90bpm 全区间误差小，心率波动大时更稳）"
         ))
     }
 }

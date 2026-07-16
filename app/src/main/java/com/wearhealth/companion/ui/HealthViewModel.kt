@@ -248,6 +248,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 prInterval = g.prIntervalMs,
                 avgQt = g.qtIntervalMs,
                 avgQtc = g.qtcMs,
+                avgQtcFridericia = g.qtcFridericiaMs,
                 pacCount = 0,
                 pvcCount = 0,
                 rawData = "",  // DS 模式不保留原始 API 响应

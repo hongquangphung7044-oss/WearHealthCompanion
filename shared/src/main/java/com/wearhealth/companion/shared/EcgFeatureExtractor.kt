@@ -348,8 +348,8 @@ object EcgFeatureExtractor {
      *
      * - RR 变异系数 CV = SDNN/meanRR：
      *   * <0.05 窦性心律（很规律）
-     *   * 0.05~0.15 窦性心律不齐/呼吸性变异（青年人常见）
-     *   * >0.15 高度不规律，提示房颤或心律不齐
+     *   * 0.05~0.15 窦性心律不齐/呼吸性变异（青年人常见，深呼吸时可达 0.20）
+     *   * >0.20 高度不规律，提示房颤或心律不齐（须结合 Poincaré 形态，不可仅凭 CV 判房颤）
      * - Poincaré 散点形态（RRn vs RRn+1）：
      *   * 彗星形(comet)：窄而长，沿对角线 → 窦性心律
      *   * 扇形(fan)：宽而散，远离对角线 → 房颤
@@ -410,12 +410,14 @@ object EcgFeatureExtractor {
 
         // 散点形态分类（需同时考虑 CV、SD1/SD2 比值、短-长配对数）
         // 注意：短-长配对数≥3 才提示早搏（1-2 个可能是正常呼吸性变异）
+        // 房颤阈值用 0.20（与提示词一致），0.15-0.20 仍可能是呼吸性变异
         val pattern = when {
             cv < 0.05 -> "彗星形(规律)"
             cv < 0.15 && ratio < 0.5 -> "彗星形(规律)"
             cv < 0.15 && ratio >= 0.5 -> "鱼雷形(轻度不齐)"
-            cv >= 0.15 && ratio >= 0.7 -> "扇形(高度不规律，疑似房颤)"
-            shortLongPairs >= 3 && cv < 0.15 -> "复杂形(疑似早搏)"
+            cv in 0.15..0.20 && ratio >= 0.7 -> "扇形(不规律，需结合 RR 序列判断)"
+            cv > 0.20 && ratio >= 0.7 -> "扇形(高度不规律，疑似房颤)"
+            shortLongPairs >= 3 && cv < 0.20 -> "复杂形(疑似早搏)"
             else -> "彗星形(规律)"
         }
 
@@ -432,8 +434,8 @@ object EcgFeatureExtractor {
     /**
      * 间期估测（精度有限，约 ±15ms 误差）
      *
-     * QRS: 阈值交叉法——以 R 峰幅度的 25% 为阈值，找上升/下降穿越点作为 Q/S 边界。
-     *      比斜率法更接近真实 QRS 宽度（腕表 R 波上升支斜率峰值偏靠 R 峰，斜率法会偏小）。
+     * QRS: 阈值交叉法——以 R 峰幅度的 10% 为阈值，找上升/下降穿越点作为 Q/S 边界。
+     *      10% 比斜率法/25% 更接近临床 QRS 起止点，偏差 0-10ms（25% 只抓 R 尖峰偏窄 5-15ms）。
      * PR: R 峰前推 250ms 窗口找 P 波候选（小幅正向峰）→ 到 R 峰的间隔
      * QT: R 峰后 100~500ms 窗口，去基线后用平滑导数找 T 波峰，减少基线漂移误判
      */
@@ -572,7 +574,7 @@ object EcgFeatureExtractor {
         )
     }
 
-    /** R 波平均振幅（mV） */
+    /** R 波平均振幅（mV），兼容正向/负向 R 波 */
     private fun computeRAmplitude(ecgData: List<Int>, rPeaks: List<Int>, sampleRateHz: Int): Float {
         if (rPeaks.isEmpty()) return 0f
         val window = sampleRateHz / 20  // ±50ms
@@ -582,8 +584,13 @@ object EcgFeatureExtractor {
             if (hi > lo) {
                 val seg = ecgData.subList(lo, hi)
                 val segMean = seg.average()
-                val peak = seg.maxOrNull() ?: 0
-                (peak - segMean).toFloat() / 1000f  // mV×1000 → mV
+                // 腕表单导联 R 波极性可能向下，取正向峰值与负向峰值中绝对值较大者
+                // （与间期估测的 abs(ecgData[rIdx] - segMedian) 一致）
+                val maxDev = maxOf(
+                    abs((seg.maxOrNull() ?: 0) - segMean),
+                    abs((seg.minOrNull() ?: 0) - segMean),
+                )
+                maxDev.toFloat() / 1000f  // mV×1000 → mV
             } else null
         }
         return if (amps.isNotEmpty()) amps.average().toFloat() else 0f

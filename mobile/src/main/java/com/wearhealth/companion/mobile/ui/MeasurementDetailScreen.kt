@@ -508,9 +508,11 @@ private fun parseAiReport(json: String): ParsedAiReport {
         obj.optString("QRS判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
         obj.optString("QRS置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
         append("\n")
-        obj.opt("QTc_ms")?.let { append("QTc：$it ms") }
+        obj.opt("QTc_ms")?.let { append("QTc(Bazett)：$it ms") }
         obj.optString("QTc判断").takeIf { it.isNotEmpty() }?.let { append("（$it）") }
         obj.optString("QTc置信度").takeIf { it.isNotEmpty() }?.let { append(" [置信度：$it]") }
+        append("\n")
+        obj.opt("QTcFridericia_ms")?.let { append("QTc(Fridericia)：$it ms") }
         append("\n")
         obj.optString("间期数据来源").takeIf { it.isNotEmpty() }?.let { append(it) }
     }.trimEnd().takeIf { it.isNotEmpty() }

@@ -482,15 +482,20 @@ object PdfExporter {
         // 间期评估（扁平字段）
         val hasInterval = obj.opt("PR间期_ms") != null ||
             obj.opt("QRS宽度_ms") != null ||
-            obj.opt("QTc_ms") != null
+            obj.opt("QTc_ms") != null ||
+            obj.opt("QTcFridericia_ms") != null
         if (hasInterval) {
             canvas.drawText("间期评估（本地估测，DS 判断）", marginX, y, sectionPaint); y += 15
             val prLine = buildIntervalLineFlat(obj, "PR间期_ms", "PR判断", "PR置信度", "PR 间期")
             if (prLine.isNotEmpty()) y = drawWrappedText(canvas, prLine, marginX, y, contentWidth, normalPaint)
             val qrsLine = buildIntervalLineFlat(obj, "QRS宽度_ms", "QRS判断", "QRS置信度", "QRS 宽度")
             if (qrsLine.isNotEmpty()) y = drawWrappedText(canvas, qrsLine, marginX, y, contentWidth, normalPaint)
-            val qtcLine = buildIntervalLineFlat(obj, "QTc_ms", "QTc判断", "QTc置信度", "QTc")
+            val qtcLine = buildIntervalLineFlat(obj, "QTc_ms", "QTc判断", "QTc置信度", "QTc(Bazett)")
             if (qtcLine.isNotEmpty()) y = drawWrappedText(canvas, qtcLine, marginX, y, contentWidth, normalPaint)
+            obj.opt("QTcFridericia_ms")?.let {
+                val frLine = "QTc(Fridericia)：$it ms"
+                y = drawWrappedText(canvas, frLine, marginX, y, contentWidth, normalPaint)
+            }
             obj.optString("间期数据来源").takeIf { it.isNotEmpty() }?.let {
                 y = drawWrappedText(canvas, it, marginX, y, contentWidth, smallPaint)
             }
