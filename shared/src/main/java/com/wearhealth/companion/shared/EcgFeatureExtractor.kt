@@ -86,25 +86,38 @@ object EcgFeatureExtractor {
     ): FeatureBundle {
         val durationSec = if (sampleRateHz > 0) ecgData.size.toFloat() / sampleRateHz else 0f
         val rPeaks = detectRPeaks(ecgData, sampleRateHz)
-        val rrIntervals = computeRRIntervals(rPeaks, sampleRateHz)
+
+        // 噪声段掩码剔除：先识别噪声段（rms<0.05 的 1 秒段），剔除落在噪声段内的 R 波。
+        // 这些 R 波多为低振幅噪声偶尔触发的误检，不应进入 HRV/心率/间期/segments 统计。
+        // 跨噪声段的 RR（前段尾→后段头）也会因 R 波剔除而不产生，避免虚假长/短 RR 污染节律判别。
+        // 依据：视图模型建议第 2 条"噪声段强制剔除不参与 HRV/节律运算"；
+        //       Lueken 2023 (Sensors) 证实信号质量差的段显著增加房颤误分类概率
+        val segmentsRaw = extractSegments(ecgData, sampleRateHz, rPeaks, durationSec)
+        val noiseSampleRanges = segmentsRaw.filter { it.rmsMv < 0.05f }
+            .map { (it.startSec * sampleRateHz).toInt() until (it.endSec * sampleRateHz).toInt() }
+        val effectiveRPeaks = if (noiseSampleRanges.isEmpty()) rPeaks
+            else rPeaks.filter { peak -> noiseSampleRanges.none { range -> peak in range } }
+
+        val rrIntervals = computeRRIntervals(effectiveRPeaks, sampleRateHz)
         // RR 双通路：HRV 和心率统计用剔早搏 RR，节律判别保原始 RR
         // 早搏短长 RR 会同时污染 HRV 和心率范围（短 RR→虚高 maxHr，长 RR→虚低 minHr）
         val rrForHrv = filterEctopicBeats(rrIntervals)
         val hr = computeHeartRateStats(rrForHrv, profile.ageYears)
         val hrv = computeHrv(rrForHrv)
         val rhythm = computeRhythmFeatures(rrIntervals)
-        val intervals = estimateIntervals(ecgData, sampleRateHz, rPeaks, hr.avgHr)
-        val rAmp = computeRAmplitude(ecgData, rPeaks, sampleRateHz)
-        val segments = extractSegments(ecgData, sampleRateHz, rPeaks, durationSec)
+        val intervals = estimateIntervals(ecgData, sampleRateHz, effectiveRPeaks, hr.avgHr)
+        val rAmp = computeRAmplitude(ecgData, effectiveRPeaks, sampleRateHz)
+        // 重算 segments 用 effectiveRPeaks，让噪声段 rPeakCount=0
+        val segments = extractSegments(ecgData, sampleRateHz, effectiveRPeaks, durationSec)
         val noiseSegs = segments.filter { it.rmsMv < 0.05f }
             .map { "${"%.1f".format(it.startSec)}-${"%.1f".format(it.endSec)}s(噪声)" }
-        val sigQuality = computeSignalQuality(segments, rPeaks.size, durationSec)
+        val sigQuality = computeSignalQuality(segments, effectiveRPeaks.size, durationSec)
 
         val global = GlobalFeatures(
             sampleRateHz = sampleRateHz,
             durationSec = durationSec,
             totalSamples = ecgData.size,
-            rPeakCount = rPeaks.size,
+            rPeakCount = effectiveRPeaks.size,
             avgHeartRate = hr.avgHr,
             minHeartRate = hr.minHr,
             maxHeartRate = hr.maxHr,

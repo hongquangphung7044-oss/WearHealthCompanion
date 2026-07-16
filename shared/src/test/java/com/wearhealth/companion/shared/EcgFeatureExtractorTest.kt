@@ -234,6 +234,44 @@ class EcgFeatureExtractorTest {
         )
     }
 
+    @Test
+    fun noiseSegmentRPeaksDoNotPolluteStats() {
+        // 场景：0-10s 干净 70bpm + 10-20s 低振幅高斯噪声（被标噪声段）+ 20-30s 干净 70bpm
+        // 噪声段内偶尔的高斯尖峰可能触发 R 波检测（误检），这些虚假 R 波：
+        //   1. 不应出现在 segments 的 rPeakCount 中
+        //   2. 不应产生 RR 进入 rrIntervalsMs（虚假短 RR 会污染 HRV/心率）
+        //   3. 跨噪声段的 RR（前段尾→后段头）也不应进入统计
+        // 依据：视图模型建议第 2 条"噪声段强制剔除不参与 HRV/节律运算"；
+        //       Lueken 2023 证实信号质量差的段会显著增加误分类概率
+        val rTimes = (0 until 12).map { it * 0.857f } + (0 until 12).map { 20f + it * 0.857f }
+        val ecg = syntheticEcg(30f, rTimes, rAmplitudeMv = 1.0f, noiseLevel = 0.02f, seed = 42L).toMutableList()
+        // 10-20s 替换为 0.03mV 标准差高斯噪声（rms~0.03mV < 0.05，被标噪声段，但偶有 3-4σ 尖峰触发误检）
+        val noiseRng = java.util.Random(999L)
+        for (i in sampleRate * 10 until sampleRate * 20) {
+            ecg[i] = (noiseRng.nextGaussian().toFloat() * 30f).toInt()  // 0.03mV 标准差
+        }
+        val bundle = EcgFeatureExtractor.extract(ecg.toList(), sampleRate)
+        val g = bundle.global
+
+        // 噪声段应被识别（rms < 0.05 的段被打噪声标记）
+        assertTrue("应识别噪声段: ${g.noiseSegments}", g.noiseSegments.isNotEmpty())
+
+        // 噪声段 segments 的 R 波数之和应为 0（噪声段 R 波应剔除，不进入下游统计）
+        val noiseSegRPeakSum = bundle.segments.filter { it.rmsMv < 0.05f }.sumOf { it.rPeakCount }
+        assertTrue(
+            "噪声段内 R 波应剔除（不污染统计），实际噪声段 segments R 波数 $noiseSegRPeakSum",
+            noiseSegRPeakSum == 0,
+        )
+
+        // rrIntervalsMs 不应包含涉及噪声段的 RR（跨段或段内）
+        // 有效段 R 波：前段 12 + 后段 12 = 24，但跨噪声段 RR 被剔除，所以 RR 数 ≤ 22
+        // 如果噪声段误检 R 波没剔除，会产生额外虚假 RR 使 RR 数 > 22
+        assertTrue(
+            "rrIntervalsMs 不应含噪声段相关 RR，实际 RR 数 ${g.rrIntervalsMs.size}（前段 11 + 后段 11 = 22 为上限）",
+            g.rrIntervalsMs.size <= 22,
+        )
+    }
+
     // ===== 间期估测 =====
 
     @Test
