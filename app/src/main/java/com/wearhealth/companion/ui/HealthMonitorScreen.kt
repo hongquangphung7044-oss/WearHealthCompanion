@@ -121,17 +121,20 @@ fun HealthMonitorScreen(
             }
             // DeepSeek 配置卡片（紧凑，折叠式）
             item {
-                DeepSeekConfigCard(
-                    configured = uiState.dsApiKeyConfigured,
-                    balanceText = uiState.dsBalanceText,
-                    balanceLoading = uiState.dsBalanceLoading,
-                    balanceError = uiState.dsBalanceError,
-                    onSave = { viewModel.saveDeepSeekApiKey(it) },
-                    onQueryBalance = { viewModel.queryDeepSeekBalance() },
-                    onFetchFromPhone = { viewModel.fetchDsSettingsFromPhone() },
-                    syncing = uiState.syncingToPhone,
-                )
-            }
+        DeepSeekConfigCard(
+            configured = uiState.dsApiKeyConfigured,
+            balanceText = uiState.dsBalanceText,
+            balanceLoading = uiState.dsBalanceLoading,
+            balanceError = uiState.dsBalanceError,
+            onSave = { viewModel.saveDeepSeekApiKey(it) },
+            onQueryBalance = { viewModel.queryDeepSeekBalance() },
+            onFetchFromPhone = { viewModel.fetchDsSettingsFromPhone() },
+            syncing = uiState.syncingToPhone,
+            tavilyConfigured = uiState.tavilyConfigured,
+            onSaveTavily = { viewModel.saveTavilyApiKey(it) },
+            onFetchTavilyFromPhone = { viewModel.fetchTavilySettingsFromPhone() },
+        )
+    }
         }
 
         val state = uiState.ecgState
@@ -844,9 +847,13 @@ private fun DeepSeekConfigCard(
     onQueryBalance: () -> Unit,
     onFetchFromPhone: () -> Unit,
     syncing: Boolean,
+    tavilyConfigured: Boolean,
+    onSaveTavily: (String) -> Unit,
+    onFetchTavilyFromPhone: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var dsKeyInput by remember { mutableStateOf("") }
+    var tavilyKeyInput by remember { mutableStateOf("") }
     Column(
         verticalArrangement = Arrangement.spacedBy(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -945,6 +952,57 @@ private fun DeepSeekConfigCard(
                 color = Color(0xFF78909C),
                 textAlign = TextAlign.Center,
             )
+            // ===== Tavily 搜索 API Key（可选，Max 档联网检索医学文献） =====
+            Text(
+                text = "Tavily 搜索 Key " + if (tavilyConfigured) "✓" else "（未配置，Max 档可选）",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (tavilyConfigured) Color(0xFF9C27B0) else Color(0xFF78909C),
+            )
+            BasicTextField(
+                value = tavilyKeyInput,
+                onValueChange = { tavilyKeyInput = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                textStyle = TextStyle(color = Color.White, fontSize = 12.sp),
+                cursorBrush = SolidColor(Color(0xFF9C27B0)),
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true,
+                decorationBox = { inner ->
+                    if (tavilyKeyInput.isEmpty()) {
+                        Text(
+                            text = "输入 Tavily API Key（可选）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF78909C),
+                        )
+                    }
+                    inner()
+                },
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Button(
+                    onClick = {
+                        onSaveTavily(tavilyKeyInput)
+                        tavilyKeyInput = ""
+                    },
+                    enabled = tavilyKeyInput.isNotBlank(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("保存", style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
+                }
+                Button(
+                    onClick = onFetchTavilyFromPhone,
+                    enabled = !syncing,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2)),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("BLE 获取", style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
+                }
+            }
         }
     }
 }

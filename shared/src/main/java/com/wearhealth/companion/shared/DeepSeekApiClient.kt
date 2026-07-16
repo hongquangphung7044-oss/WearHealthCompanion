@@ -85,12 +85,15 @@ class DeepSeekApiClient(
      * @param featureText EcgFeatureExtractor.toPromptText() 输出的结构化特征文本
      * @param model 选用模型
      * @param thinkingMode 思考强度
+     * @param tavilyApiKey 可选 Tavily Key；非空且 thinkingMode=MAX 时，分析前联网检索
+     *        固定医学文献方向，把摘要注入提示词（搜索预算：3 个固定查询 + 6h 进程内缓存）
      * @return 成功返回 [DeepSeekReport]，失败返回异常
      */
     suspend fun analyzeEcg(
         featureText: String,
         model: Model = Model.FLASH,
         thinkingMode: ThinkingMode = ThinkingMode.BALANCED,
+        tavilyApiKey: String = "",
     ): Result<DeepSeekReport> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext Result.failure(IllegalStateException("未配置 DeepSeek API Key"))
@@ -106,7 +109,17 @@ class DeepSeekApiClient(
         }
 
         try {
-            val systemPrompt = buildSystemPrompt()
+            // 联网检索（仅 Max 档 + Tavily Key 已配置）：固定 3 个医学文献方向，6h 进程内缓存
+            // 均衡/快速不检索，省搜索预算；检索失败不阻断 DS 分析（返回空字符串）
+            val tavilyRefs = if (thinkingMode == ThinkingMode.MAX && tavilyApiKey.isNotBlank()) {
+                runCatching { TavilyApiClient(tavilyApiKey).fetchMedicalReferences() }
+                    .getOrElse {
+                        Log.w(TAG, "Tavily 联网检索失败，DS 分析继续（不附加文献）: ${it.message}")
+                        ""
+                    }
+            } else ""
+
+            val systemPrompt = buildSystemPrompt() + tavilyRefs
             val messages = JSONArray().apply {
                 put(JSONObject().apply {
                     put("role", "system")

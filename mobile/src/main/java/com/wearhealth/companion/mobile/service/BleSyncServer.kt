@@ -23,6 +23,7 @@ import com.wearhealth.companion.mobile.data.AppDatabase
 import com.wearhealth.companion.mobile.data.MeasurementRepository
 import com.wearhealth.companion.mobile.data.MobileApiKeyStore
 import com.wearhealth.companion.mobile.data.MobileDeepSeekSettings
+import com.wearhealth.companion.mobile.data.MobileTavilySettings
 import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.BleMeasurementCodec
 import com.wearhealth.companion.shared.BleSyncProtocol
@@ -127,6 +128,11 @@ class BleSyncServer(private val context: Context) {
             BluetoothGattCharacteristic.PROPERTY_READ,
             BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED,
         )
+        val tavilySettings = BluetoothGattCharacteristic(
+            BleSyncProtocol.TAVILY_SETTINGS_UUID,
+            BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED,
+        )
         val service = BluetoothGattService(
             BleSyncProtocol.SERVICE_UUID,
             BluetoothGattService.SERVICE_TYPE_PRIMARY,
@@ -135,6 +141,7 @@ class BleSyncServer(private val context: Context) {
             addCharacteristic(ack)
             addCharacteristic(apiKey)
             addCharacteristic(dsSettings)
+            addCharacteristic(tavilySettings)
         }
         val bleAdvertiser = adapter.bluetoothLeAdvertiser
         if (bleAdvertiser == null) {
@@ -247,7 +254,7 @@ class BleSyncServer(private val context: Context) {
         ) {
             val bonded = device.bondState == BluetoothDevice.BOND_BONDED &&
                 device.address == activeDevice?.address
-            // 按特征值 UUID 分流：HeartVoice API Key 或 DeepSeek 设置 JSON
+            // 按特征值 UUID 分流：HeartVoice API Key / DeepSeek 设置 JSON / Tavily 设置 JSON
             val bytes = if (bonded) {
                 when (characteristic.uuid) {
                     BleSyncProtocol.API_KEY_UUID ->
@@ -255,6 +262,8 @@ class BleSyncServer(private val context: Context) {
                             .getOrNull()?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
                     BleSyncProtocol.DS_SETTINGS_UUID ->
                         buildDsSettingsJson().toByteArray(Charsets.UTF_8)
+                    BleSyncProtocol.TAVILY_SETTINGS_UUID ->
+                        buildTavilySettingsJson().toByteArray(Charsets.UTF_8)
                     else -> ByteArray(0)
                 }
             } else ByteArray(0)
@@ -516,6 +525,20 @@ class BleSyncServer(private val context: Context) {
             json.put(DataLayerPaths.KEY_DS_USER_IS_MALE, isMale)
         } else {
             json.put(DataLayerPaths.KEY_DS_USER_GENDER_KNOWN, false)
+        }
+        return json.toString()
+    }
+
+    /**
+     * 构造 Tavily 设置 JSON（手表通过 BLE 拉取）。
+     * 字段名与 [com.wearhealth.companion.shared.DataLayerPaths] 的 Tavily key 一致。
+     * 仅一个字段：API Key（走归一化校验，避免脏 Key 发给手表）。
+     */
+    private fun buildTavilySettingsJson(): String {
+        val tv = MobileTavilySettings(context)
+        val json = JSONObject()
+        ApiKeyValidator.normalizeApiKey(tv.getApiKey()).getOrNull()?.let {
+            json.put(DataLayerPaths.KEY_TAVILY_API_KEY, it)
         }
         return json.toString()
     }

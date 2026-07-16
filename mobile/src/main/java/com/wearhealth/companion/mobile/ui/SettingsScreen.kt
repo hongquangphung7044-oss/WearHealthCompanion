@@ -359,6 +359,74 @@ fun SettingsScreen(
                 }
             }
 
+            // ===== Tavily 搜索 Key（可选，DS Max 档联网检索医学文献） =====
+            Spacer(Modifier.height(8.dp))
+            val tavilyConfigured by viewModel.tavilyConfigured.collectAsState()
+            val tavilySendResult by viewModel.tavilySendResult.collectAsState()
+            val tavilySnapshotKey = remember { viewModel.getTavilyApiKey() }
+            var tavilyApiKey by remember { mutableStateOf(tavilySnapshotKey) }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                ),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "Tavily 联网检索（可选）",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "配置后，DS Max 档分析前会联网检索 3 个固定医学文献方向（房颤检测/HRV 参考/QTc 临床），" +
+                            "把摘要注入提示词增强循证依据。均衡/快速档不检索，省搜索预算。" +
+                            "同会话内 6 小时缓存，不重复搜同一查询。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = tavilyApiKey,
+                        onValueChange = { tavilyApiKey = it },
+                        label = { Text("Tavily API Key") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.None,
+                            keyboardType = KeyboardType.Ascii,
+                        ),
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            viewModel.saveAndSendTavilySettings(
+                                apiKey = tavilyApiKey.trim(),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = tavilyApiKey.isNotBlank() || tavilyConfigured,
+                    ) { Text("保存并下发到手表") }
+                    Text(
+                        "状态：" + if (tavilyConfigured) "已配置 ✓" else "未配置",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    tavilySendResult?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+
             // ===== 请求同步 =====
             Spacer(Modifier.height(8.dp))
             OutlinedButton(

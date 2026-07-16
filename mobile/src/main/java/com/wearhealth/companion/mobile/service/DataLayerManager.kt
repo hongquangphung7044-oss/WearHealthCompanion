@@ -88,6 +88,28 @@ class DataLayerManager(private val context: Context) {
     }
 
     /**
+     * 发送 Tavily 搜索 API Key 到手表（供 DS Max 档联网检索医学文献）
+     *
+     * @param apiKey Tavily API Key，空串则不下发该字段（手表保留旧值）
+     * @return true 表示请求已提交
+     */
+    suspend fun sendTavilySettingsToWatch(apiKey: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val putDataReq = PutDataMapRequest.create(DataLayerPaths.PATH_TAVILY_SETTINGS).apply {
+                if (apiKey.isNotBlank()) {
+                    dataMap.putString(DataLayerPaths.KEY_TAVILY_API_KEY, apiKey)
+                }
+            }.asPutDataRequest().setUrgent()
+            awaitTask { dataClient.putDataItem(putDataReq) }
+            Log.i(TAG, "Tavily 设置已发送到手表")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "发送 Tavily 设置失败", e)
+            false
+        }
+    }
+
+    /**
      * 请求手表同步未传送的数据
      *
      * 向所有已连接的手表发送 /sync_request 消息（无 payload）。
