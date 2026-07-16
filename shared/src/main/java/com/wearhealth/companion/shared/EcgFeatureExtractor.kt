@@ -381,8 +381,8 @@ object EcgFeatureExtractor {
         val normalRRs = rrIntervals.filter { it.toDouble() in lowerBound..upperBound }
         val rrForRange = if (normalRRs.size >= 3) normalRRs else rrIntervals
 
-        val minRR = rrForRange.minOrNull() ?: medianRR
-        val maxRR = rrForRange.maxOrNull() ?: medianRR
+        val minRR = (rrForRange.minOrNull() ?: medianRR.toInt()).toDouble()
+        val maxRR = (rrForRange.maxOrNull() ?: medianRR.toInt()).toDouble()
         return HeartRateStats(
             avgHr = medianHR,  // 中位数反算，抗误检
             minHr = (60000.0 / maxRR).toInt(),  // 长 RR = 低心率
