@@ -326,26 +326,38 @@ object EcgFeatureExtractor {
 
     private data class HeartRateStats(val avgHr: Int, val minHr: Int, val maxHr: Int)
 
+    /**
+     * 心率统计（抗 R 波误检设计）
+     *
+     * 已知问题（已修复）：旧实现用 P10-P90 分位数，30 秒短记录仅 ~40 个 RR，
+     * 10% 误检就能把 P90 拉到虚高值（如真实 80bpm 测出 120bpm）。
+     *
+     * 新策略（中位数核心，抗误检）：
+     * 1. avgHr 用中位数 RR 反算（60000/medianRR），中位数对 ≤49% 误检完全免疫
+     * 2. min/max 限制在中位数 ±15% 范围内的 RR（窦性心律不齐正常呼吸性变异 <15%，
+     *    超过 15% 多为早搏/误检，不应计入"心率范围"）
+     * 3. 早搏 RR 不进入心率统计（节律判别另有原始 RR 通路），避免短长 RR 污染心率
+     */
     private fun computeHeartRateStats(rrIntervals: List<Int>): HeartRateStats {
         if (rrIntervals.size < 3) return HeartRateStats(0, 0, 0)
-        val hrs = rrIntervals.map { (60000.0 / it).toInt() }.filter { it in 40..150 }
-        if (hrs.size < 3) return HeartRateStats(0, 0, 0)
-        // 剔除偏离中位数 ±30% 的异常值
-        val sorted = hrs.sorted()
-        val median = sorted[sorted.size / 2]
-        val filtered = hrs.filter { hr ->
-            abs(hr - median).toDouble() / median <= 0.3
-        }
-        if (filtered.isEmpty()) return HeartRateStats(0, 0, 0)
-        // 用 P10-P90 分位数替代 min/max，排除早搏代偿间隙/瞬时噪声导致的极端值
-        // 17岁窦性心律不齐 RR 可变 ±20%，min/max 会把呼吸性低峰当作最低心率
-        val sortedFiltered = filtered.sorted()
-        val p10Idx = (sortedFiltered.size * 0.10).toInt().coerceIn(0, sortedFiltered.lastIndex)
-        val p90Idx = (sortedFiltered.size * 0.90).toInt().coerceIn(0, sortedFiltered.lastIndex)
+        val medianRR = rrIntervals.median()
+        if (medianRR <= 0) return HeartRateStats(0, 0, 0)
+        val medianHR = (60000.0 / medianRR).toInt()
+        if (medianHR !in 40..200) return HeartRateStats(0, 0, 0)
+
+        // 正常窦性 RR 范围：中位数 ±15%（呼吸性窦性心律不齐正常范围）
+        // 早搏短长 RR 和误检 RR 均被排除，不污染心率统计
+        val lowerBound = medianRR * 0.85
+        val upperBound = medianRR * 1.15
+        val normalRRs = rrIntervals.filter { it.toDouble() in lowerBound..upperBound }
+        val rrForRange = if (normalRRs.size >= 3) normalRRs else rrIntervals
+
+        val minRR = rrForRange.minOrNull() ?: medianRR
+        val maxRR = rrForRange.maxOrNull() ?: medianRR
         return HeartRateStats(
-            avgHr = filtered.average().toInt(),
-            minHr = sortedFiltered[p10Idx],
-            maxHr = sortedFiltered[p90Idx],
+            avgHr = medianHR,  // 中位数反算，抗误检
+            minHr = (60000.0 / maxRR).toInt(),  // 长 RR = 低心率
+            maxHr = (60000.0 / minRR).toInt(),  // 短 RR = 高心率
         )
     }
 
