@@ -50,6 +50,8 @@ data class EcgMeasurementTransfer(
     val sampleRate: Int = 500,
     val analysisMethod: String = "heartvoice",
     val aiReport: String = "",
+    val tavilyStatus: String = "",   // Tavily 联网检索状态（仅 DS Max 档有值）
+    val ppgReferenceHr: Int = 0,     // PPG 绿光参考心率（0=未采集/不可用）
 )
 
 /**

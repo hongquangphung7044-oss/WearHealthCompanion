@@ -49,6 +49,8 @@ class EcgHistoryRepository(context: Context) {
             syncedToPhone = false,
             analysisMethod = result.analysisMethod,
             aiReport = result.aiReport,
+            tavilyStatus = result.tavilyStatus,
+            ppgReferenceHr = result.ppgReferenceHr,
         )
         list.add(0, saved)
         // 最多保留 50 条
@@ -118,6 +120,12 @@ class EcgHistoryRepository(context: Context) {
                 if (item.aiReport.isNotEmpty()) {
                     put("aiReport", item.aiReport)
                 }
+                if (item.tavilyStatus.isNotEmpty()) {
+                    put("tavilyStatus", item.tavilyStatus)
+                }
+                if (item.ppgReferenceHr > 0) {
+                    put("ppgHr", item.ppgReferenceHr)
+                }
             })
         }
         return arr.toString()
@@ -163,6 +171,8 @@ class EcgHistoryRepository(context: Context) {
                 syncedToPhone = o.optBoolean("sync", false),
                 analysisMethod = o.optString("analysisMethod", "heartvoice"),
                 aiReport = o.optString("aiReport", ""),
+                tavilyStatus = o.optString("tavilyStatus", ""),
+                ppgReferenceHr = o.optInt("ppgHr", 0),
             ))
         }
         return list
@@ -201,4 +211,6 @@ data class HistoryItem(
     val syncedToPhone: Boolean = false,        // 是否已同步到手机
     val analysisMethod: String = "heartvoice", // 分析方式：heartvoice / ds_*
     val aiReport: String = "",                 // DeepSeek JSON 报告（仅 DS 方式有值）
+    val tavilyStatus: String = "",             // Tavily 联网检索状态（仅 DS Max 档有值）
+    val ppgReferenceHr: Int = 0,               // PPG 绿光参考心率（0=未采集/不可用）
 )

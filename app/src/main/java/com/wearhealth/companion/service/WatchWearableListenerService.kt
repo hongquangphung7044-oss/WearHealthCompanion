@@ -176,6 +176,8 @@ class WatchWearableListenerService : WearableListenerService() {
                     sampleRate = 500,
                     analysisMethod = item.analysisMethod,
                     aiReport = item.aiReport,
+                    tavilyStatus = item.tavilyStatus,
+                    ppgReferenceHr = item.ppgReferenceHr,
                 )
 
                 val putDataMapReq = PutDataMapRequest.create(

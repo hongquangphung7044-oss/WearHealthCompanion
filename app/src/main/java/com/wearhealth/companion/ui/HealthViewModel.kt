@@ -214,12 +214,20 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         ecgData: List<Int>,
         method: String,
     ): Result<EcgAnalysisResult> {
-        // 1. 提取本地特征（含用户年龄性别）
+        // 0. ECG 采集已结束（startEcgCollection 返回前已停 ECG tracker），读 PPG 绿光参考心率
+        // PPG 心率由系统绿光传感器独立测算，绕开本地 R 波检测在真实信号下的漏检/误检
+        // 失败返回 0 不阻断分析；ECG tracker 已停，满足 SDK "on-demand 期间不读 continuous" 前提
+        val ppgReferenceHr = ecgCollector.fetchPpgHeartRate()
+
+        // 1. 提取本地特征（含用户年龄性别 + PPG 参考心率）
         val profile = EcgFeatureExtractor.UserProfile(
             ageYears = dsSettings.getUserAge(),
             isMale = dsSettings.getUserIsMale(),
         )
-        val bundle = EcgFeatureExtractor.extract(ecgData, sampleRateHz = 500, profile = profile)
+        val bundle = EcgFeatureExtractor.extract(
+            ecgData, sampleRateHz = 500, profile = profile,
+            ppgReferenceHr = ppgReferenceHr,
+        )
         val featureText = EcgFeatureExtractor.toPromptText(bundle)
         val g = bundle.global
 
@@ -264,6 +272,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 ecgSamples = waveform,
                 analysisMethod = method,
                 aiReport = report.reportJson,
+                tavilyStatus = report.tavilyStatus,
+                ppgReferenceHr = ppgReferenceHr,
             )
         }
     }
@@ -694,6 +704,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         sampleRate = 500,
         analysisMethod = analysisMethod,
         aiReport = aiReport,
+        tavilyStatus = tavilyStatus,
+        ppgReferenceHr = ppgReferenceHr,
     )
 
     private fun refreshHistoryAfterSync(message: String) {

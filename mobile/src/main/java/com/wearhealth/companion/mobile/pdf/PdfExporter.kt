@@ -208,6 +208,8 @@ object PdfExporter {
         add(Triple("平均心率", "${t.avgHeartRate} bpm", "60-100"))
         add(Triple("最低心率", if (t.minHeartRate > 0) "${t.minHeartRate} bpm" else "暂无可靠估算", "本地趋势"))
         add(Triple("最高心率", if (t.maxHeartRate > 0) "${t.maxHeartRate} bpm" else "暂无可靠估算", "本地趋势"))
+        if (t.ppgReferenceHr > 0) add(Triple("PPG 绿光参考心率", "${t.ppgReferenceHr} bpm", "系统心率传感器独立测算，可信度高于本地 R 波估测"))
+        if (t.tavilyStatus.isNotEmpty()) add(Triple("Tavily 联网检索", t.tavilyStatus, "DS Max 档循证检索"))
         if (t.avgP > 0) add(Triple("平均 P 波宽度", "${t.avgP} ms", "API 输出"))
         if (t.avgQrs > 0) add(Triple("QRS 宽度", "${t.avgQrs} ms", "80-120"))
         if (t.prInterval > 0) add(Triple("PR 间期", "${t.prInterval} ms", "120-200"))

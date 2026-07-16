@@ -707,6 +707,27 @@ private fun HistoryDetailCard(item: HistoryItem) {
             color = Color(0xFF78909C),
             textAlign = TextAlign.Center,
         )
+        // PPG 绿光参考心率（系统心率传感器独立测算，用于校验本地 R 波心率）
+        if (item.ppgReferenceHr > 0) {
+            Text(
+                "PPG 绿光参考心率: ${item.ppgReferenceHr} bpm",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF4CAF50),
+            )
+            Text(
+                "系统心率传感器独立测算，可信度高于本地 R 波估测；偏差大时以 PPG 为准",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF78909C),
+            )
+        }
+        // Tavily 联网检索状态（仅 DS Max 档有值）
+        if (item.tavilyStatus.isNotEmpty()) {
+            Text(
+                "Tavily: ${item.tavilyStatus}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF78909C),
+            )
+        }
         // 间期参数
         if (item.avgQrs > 0) {
             Text("QRS 宽度: ${item.avgQrs} ms（正常 80-120）",
