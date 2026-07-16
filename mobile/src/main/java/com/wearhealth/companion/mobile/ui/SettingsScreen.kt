@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -25,7 +24,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -254,19 +252,13 @@ fun SettingsScreen(
 
             val dsSnapshot = remember { viewModel.getDsSettingsSnapshot() }
             var dsApiKey by remember { mutableStateOf(dsSnapshot.apiKey) }
-            var dsModel by remember { mutableStateOf(dsSnapshot.model) }
-            var dsThinking by remember { mutableStateOf(dsSnapshot.thinking) }
-            var dsAge by remember { mutableStateOf(
-                dsSnapshot.userAge.takeIf { it > 0 }?.toString() ?: ""
-            ) }
-            var dsGender by remember { mutableStateOf(dsSnapshot.userIsMale) }
 
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("DeepSeek 第二套分析", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "配置后可在手表选择「闪速/深度」作为独立第二套分析；本地提取 ECG 特征后由 DS 推理，自评置信度，报告进 Transfer+PDF 专属页。",
+                        "配置后可在手表选择「DS均衡 / DS Max」作为独立第二套分析；本地提取 ECG 特征后由 DS 推理，自评置信度，报告进 Transfer+PDF 专属页。思考强度在手表端选择。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -308,75 +300,11 @@ fun SettingsScreen(
                         )
                     }
 
-                    Spacer(Modifier.height(8.dp))
-                    Text("默认模型", style = MaterialTheme.typography.titleSmall)
-                    DeepSeekApiClient.Model.values().forEach { m ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(
-                                selected = dsModel == m,
-                                onClick = { dsModel = m },
-                            )
-                            Text(m.label, style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-
-                    Spacer(Modifier.height(4.dp))
-                    Text("思考强度", style = MaterialTheme.typography.titleSmall)
-                    DeepSeekApiClient.ThinkingMode.values().forEach { t ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(
-                                selected = dsThinking == t,
-                                onClick = { dsThinking = t },
-                            )
-                            Text(t.label, style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "年龄/性别（影响 QTc/HRV 阈值）",
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = dsAge,
-                            onValueChange = { s -> dsAge = s.filter { it.isDigit() }.take(3) },
-                            label = { Text("年龄") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            RadioButton(
-                                selected = dsGender == true,
-                                onClick = { dsGender = true },
-                            )
-                            Text("男", style = MaterialTheme.typography.bodyMedium)
-                            Spacer(Modifier.width(6.dp))
-                            RadioButton(
-                                selected = dsGender == false,
-                                onClick = { dsGender = false },
-                            )
-                            Text("女", style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-
                     Spacer(Modifier.height(12.dp))
                     Button(
                         onClick = {
                             viewModel.saveAndSendDeepSeekSettings(
                                 apiKey = dsApiKey.trim(),
-                                model = dsModel,
-                                thinking = dsThinking,
-                                userAge = dsAge.toIntOrNull() ?: 0,
-                                userIsMale = dsGender,
                             )
                         },
                         modifier = Modifier.fillMaxWidth(),

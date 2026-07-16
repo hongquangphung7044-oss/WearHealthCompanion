@@ -290,31 +290,27 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     // ========== DeepSeek 设置管理 ==========
 
     /**
-     * 保存 DeepSeek 设置并下发到手表
+     * 保存 DeepSeek API Key 并下发到手表
+     *
+     * 注：模型/思考强度/年龄/性别由手表端选择和输入，手机端只负责下发 API Key。
+     * 下发时仍传完整字段以保持 BLE/Data Layer 协议兼容（手表端会忽略这些字段）。
      */
-    fun saveAndSendDeepSeekSettings(
-        apiKey: String,
-        model: DeepSeekApiClient.Model,
-        thinking: DeepSeekApiClient.ThinkingMode,
-        userAge: Int,
-        userIsMale: Boolean?,
-    ) {
+    fun saveAndSendDeepSeekSettings(apiKey: String) {
         if (apiKey.isNotBlank()) {
             dsSettings.saveApiKey(apiKey)
             deepSeekApi = DeepSeekApiClient(apiKey)
             _dsConfigured.value = true
         }
-        dsSettings.setDefaultModel(model)
-        dsSettings.setDefaultThinking(thinking)
-        dsSettings.setUserAge(userAge)
-        dsSettings.setUserIsMale(userIsMale)
-        _dsDefaultModel.value = model
-        _dsDefaultThinking.value = thinking
 
         _dsSendResult.value = "DeepSeek 设置已保存"
         viewModelScope.launch {
+            // 协议兼容：仍下发完整字段，手表端忽略 model/thinking/age/gender
             val sent = dataLayer.sendDeepSeekSettingsToWatch(
-                dsSettings.getApiKey(), model, thinking, userAge, userIsMale,
+                apiKey = dsSettings.getApiKey(),
+                defaultModel = DeepSeekApiClient.Model.FLASH,
+                defaultThinking = DeepSeekApiClient.ThinkingMode.BALANCED,
+                userAge = 0,
+                userIsMale = null,
             )
             _dsSendResult.value = if (sent) {
                 "DeepSeek 设置已保存，并已下发到手表"

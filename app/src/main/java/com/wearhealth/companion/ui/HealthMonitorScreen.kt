@@ -733,9 +733,9 @@ private fun HistoryDetailCard(item: HistoryItem) {
         if (item.analysisMethod != "heartvoice") {
             Text(
                 text = "分析方式: " + when (item.analysisMethod) {
-                    "ds_flash_fast" -> "DS闪速"
-                    "ds_flash_balanced" -> "DS深度"
-                    "ds_pro_max" -> "DS Pro Max"
+                    "ds_flash_fast" -> "DS快速(旧)"
+                    "ds_flash_balanced" -> "DS均衡"
+                    "ds_pro_max" -> "DS Max"
                     else -> item.analysisMethod
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -975,8 +975,8 @@ private fun AnalysisMethodSelector(
         ) {
             val options = listOf(
                 Triple("heartvoice", "专业API", Color(0xFF4CAF50)),
-                Triple("ds_flash_fast", "DS闪速", Color(0xFF64B5F6)),
-                Triple("ds_flash_balanced", "DS深度", Color(0xFF9C27B0)),
+                Triple("ds_flash_balanced", "DS均衡", Color(0xFF64B5F6)),
+                Triple("ds_pro_max", "DS Max", Color(0xFF9C27B0)),
             )
             options.forEach { (method, label, color) ->
                 val isSelected = selected == method

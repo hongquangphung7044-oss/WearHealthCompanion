@@ -50,7 +50,7 @@ data class EcgUiState(
     val syncingToPhone: Boolean = false,         // 是否正在传送到手机
     val syncMessage: String? = null,             // 传送状态消息
     val autoSyncEnabled: Boolean = true,           // 分析并保存后自动传送
-    // 分析方式选择：heartvoice / ds_flash_fast / ds_flash_balanced（手表端只放 2 档 DS）
+    // 分析方式选择：heartvoice / ds_flash_balanced（均衡）/ ds_pro_max（Max思考）
     val analysisMethod: String = "heartvoice",
     val dsApiKeyConfigured: Boolean = false,      // DeepSeek API Key 是否已配置
     val dsBalanceText: String? = null,           // DS 余额文本（如 "¥8.66"），null=未查询
@@ -218,10 +218,11 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         val g = bundle.global
 
         // 2. 解析 method → DeepSeekApiClient.Model + ThinkingMode
+        // 统一用 FLASH 模型（轻量快），仅区分思考强度：均衡=标准思考，Max=最大思考
         val (model, thinking) = when (method) {
-            "ds_flash_fast" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.FAST
             "ds_flash_balanced" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
-            "ds_pro_max" -> DeepSeekApiClient.Model.PRO to DeepSeekApiClient.ThinkingMode.MAX
+            "ds_pro_max" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.MAX
+            "ds_flash_fast" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.FAST  // 兼容旧历史
             else -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
         }
 
