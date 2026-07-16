@@ -293,14 +293,23 @@ object EcgFeatureExtractor {
         return rPeaks
     }
 
+    /**
+     * RR 间期计算 + 生理学范围过滤
+     *
+     * 范围 300-2500ms（24-200bpm）的生理学依据：
+     * - 下限 300ms = 200bpm：极端心动过速上限，室上速 SVT 可达 150-250bpm（生理学教材）
+     *   早搏联律间期最短约 300ms，再短多为噪声/误检
+     * - 上限 2500ms = 24bpm：极端心动过缓（病理但存在），代偿间隙可至 2000ms+
+     * - 窦性心律正常 600-1000ms（60-100bpm），本宽范围保留早搏短长 RR 用于节律判别
+     *
+     * 注意：HRV/心率统计另有 filterEctopicBeats（±20%, Karey 2019）剔早搏
+     */
     private fun computeRRIntervals(rPeaks: List<Int>, sampleRateHz: Int): List<Int> {
         if (rPeaks.size < 2) return emptyList()
         val rr = mutableListOf<Int>()
         for (i in 1 until rPeaks.size) {
             val rrMs = ((rPeaks[i] - rPeaks[i - 1]) * 1000.0 / sampleRateHz).toInt()
             // 宽区间 300-2500ms（24-200bpm），保留早搏短 RR 和代偿间隙长 RR
-            // 原 400-1500ms 会剔除：早搏联律间期常 300-400ms、代偿间隙常 1500-2000ms
-            // 导致 HRV/节律判别失真、短-长配对断裂。心率统计另有 ±30% 中位数过滤剔异常
             if (rrMs in 300..2500) rr.add(rrMs)
         }
         return rr
@@ -383,6 +392,14 @@ object EcgFeatureExtractor {
 
     private data class HrvStats(val sdnn: Float, val rmssd: Float, val pnn50: Float)
 
+    /**
+     * HRV 时域指标（Task Force 1996 标准，Circulation 93:1043-1065）
+     * - SDNN: 所有 NN 间期标准差，反映总体 HRV（短期记录反映交感+副交感+体液）
+     * - RMSSD: 相邻 NN 差的均方根，反映副交感（迷走）张力，高频
+     * - pNN50: 相邻 NN 差>50ms 占比，与 RMSSD 高度相关，反映副交感
+     * Task Force 1996 明确：NN = 剔除非窦性心拍后的 RR，本实现已用 filterEctopicBeats 剔早搏
+     * 注意：Task Force 推荐 5 分钟/24 小时记录，本设备 30 秒记录 SDNN 仅供参考不可比标准值
+     */
     private fun computeHrv(rrIntervals: List<Int>): HrvStats {
         if (rrIntervals.size < 3) return HrvStats(0f, 0f, 0f)
         val mean = rrIntervals.average()
@@ -535,8 +552,11 @@ object EcgFeatureExtractor {
             // 判断 R 波极性：R 峰值相对基线是正还是负
             val rIsPositive = ecgData[rIdx].toDouble() > segMedian
 
-            // 阈值 = R 峰幅度的 10%（15% 只抓到 R 波尖峰附近，漏掉 Q/S 波导致 QRS 偏窄 5-15ms）
-            // 10% 更接近临床 QRS 起止点（PQ 交界→ST 段起点），偏差缩小到 0-10ms
+            // QRS 估测：阈值交叉法（工程经验实现，非临床金标准）
+            // 临床 QRS delineation 金标准：小波变换（Martinez 2004）或 Pan-Tompkins 包络法
+            // 本设备算力有限用阈值交叉法：以 R 峰幅度 10% 为阈值找 Q/S 边界
+            // 10% 阈值是工程经验值（无文献金标准，临床多用导数零交叉或 wavelet）
+            // 相对专业 API 可能偏宽 0-10ms（10% 阈值比 25% 更接近 PQ 交界→ST 起点）
             // 不用导数零交叉法：腕表单导联噪声大，导数多次过零导致 Q/S 定位不稳定
             val qrsThreshold = rAmpVal * 0.10
 
@@ -561,7 +581,10 @@ object EcgFeatureExtractor {
             val qrsMs = (sPoint - qPoint) * 1000 / sampleRateHz
             if (qrsMs in 40..200) qrsWidths.add(qrsMs)
 
-            // PR 估测：R 峰前推 250ms 找 P 波（小幅同极性峰）
+            // PR 估测：R 峰前推 250ms 找 P 波（工程实现，非临床金标准）
+            // 临床 P 波 delineation 金标准：小波变换（Martinez 2004），本设备算力有限用简化法
+            // PR 正常范围 120-200ms（AHA/ESC 标准），P 波在 QRS 前 80-300ms 窗口内
+            // 腕表单导联 P 波常不可辨，PR 估测误差大，提示词已标注"仅作参考"
             val pSearchStart = maxOf(0, rIdx - sampleRateHz * 250 / 1000)
             if (pSearchStart < qSearchStart) {
                 val pSeg = ecgData.subList(pSearchStart, qSearchStart)
@@ -577,7 +600,13 @@ object EcgFeatureExtractor {
                 }
             }
 
-            // QT 估测：去基线后用平滑导数找 T 波峰，减少基线漂移误判
+            // QT 估测（简化实现，非临床金标准）
+            // 临床金标准 QT = QRS 起点到 T 波"终点"，T 波终点用 Lepeschkin 切线法
+            // （Postema 2014, PMID 24827793；Tzvi-Minker 2023）：T 波下降支最陡处切线与基线交点。
+            // 本设备算力有限，用简化法：在去基线信号上找 T 波"峰"（绝对值最大极值点），
+            // QT ≈ Q点到T波峰。这会系统性偏短（T 峰到 T 终点约 50-100ms），DS 提示词已告知
+            // "QT 偏大 20-50ms" 的旧注释实际方向相反——本地估测偏短，但 DS 判长 QT 时更保守
+            // 仍合理（偏短值若仍 >440ms，真实值更可能 >440ms，敏感度高）
             val tSearchStart = rIdx + sampleRateHz * 100 / 1000
             // 搜索窗口上限：min(rIdx+500ms, 下一R峰前50ms)
             // 高心率(HR≥120bpm, RR≤500ms)时不约束会跨入下一QRS，把下一R波当T波→QT虚高
@@ -601,6 +630,8 @@ object EcgFeatureExtractor {
                     smoothed[i] = sum / (to - from) - tMedian
                 }
                 // 找去基线后绝对值最大的极值点作为 T 波峰（比原始极值法抗基线漂移）
+                // 注意：这是 T 波峰，不是 T 波终点。QT 临床定义为到 T 波终点，
+                // 本简化法测到 T 峰会偏短，已在上方注释说明
                 var tIdx = -1
                 var maxDev = 0.0
                 for (i in smoothed.indices) {
@@ -629,9 +660,10 @@ object EcgFeatureExtractor {
         }
 
         val qtMean = mean(qtIntervals)
-        // QTc 双公式：
-        // - Bazett: QT/sqrt(RR) —— 60bpm 附近最准，HR>100 高估，HR<50 低估
-        // - Fridericia: QT/RR^(1/3) —— 50-90bpm 全区间误差小，心率波动大时更稳
+        // QTc 双公式（均有原始文献）：
+        // - Bazett 1920 (Heart 7:353-370): QT/sqrt(RR)，60bpm 附近最准，HR>100 高估，HR<50 低估
+        // - Fridericia 1920 (Acta Med Scand 53:469-486): QT/RR^(1/3)，50-90bpm 全区间误差小
+        // 临床共识（Postema 2014, PMID 24827793）：Fridericia 心率波动大时比 Bazett 更稳
         val rrSec = if (avgHr > 0) 60.0 / avgHr else 0.0
         val qtc = if (qtMean > 0 && rrSec > 0) {
             (qtMean / sqrt(rrSec)).toInt()
