@@ -29,7 +29,7 @@ WearHealthCompanion 是一个面向 Samsung Galaxy Watch 的 Wear OS 单导联 E
 |---|---|
 | 仓库 | `hongquangphung7044-oss/WearHealthCompanion`（private） |
 | 默认分支 | `main` |
-| 当前功能 | BLE Key 获取入口对“无 Key / 已有 Key”均可见；手表主页始终保留手工输入 API Key 入口；手机设置页可清除缓存（API Key + ECG 历史）并重启 BLE；ECG 波形改用固定时间/电压比例（接近 25 mm/s、10 mm/mV），不再自适应拉伸；Release APK 不再内置 HeartVoice Key。**DeepSeek 双档分析已上线**：手表可选 HeartVoice 专业 API 或 DS 均衡（flash + reasoning_effort=high）/ DS Max（flash + reasoning_effort=max），DS 模式由本地 `EcgFeatureExtractor` 提取特征 + DS 大模型解读，输出扁平 JSON 报告。**DS 设置 BLE 下发**：国行无 GMS，DS 设置经 `DS_SETTINGS_UUID` GATT 特征值从手机拉取（与 HeartVoice Key 同思路）。**Tavily 联网检索集成**：DS Max 档在 Tavily Key 已配置时，自动检索房颤检测方法学 / HRV 正常参考值 / QTc 临床意义三个固定方向，注入 DS 提示词做循证推理（均衡/快速档不检索省预算，进程内 6 小时缓存）。**节律判别增强**：RR 变异系数 + Poincaré 散点形态（彗星/扇形/鱼雷/复杂形）+ 短-长 RR 配对数喂给 DS，可区分窦性/房颤/早搏。**HRV 双通路**：HRV 计算用剔早搏 RR（偏离均值>20%，Karey 2019），节律判别保留原始 RR，避免早搏短长 RR 污染 SDNN/RMSSD 导致 DS 误判房颤。**R 波检测回归 Pan-Tompkins 原版**：MWI 窗口 150ms + 不应期 200ms + 精修后 lastPeakIdx 用 bestIdx，修复双峰误检导致 maxHr 虚高（80→120）。**心率统计抗误检**：avgHr 用中位数 RR 反算（对≤49% 误检免疫），心率范围基于 Hiss 1976 年龄公式（Percent variation = 23.2 - 0.35×age）。**间期算法优化**：QRS 阈值交叉法（兼容负向 R 波）+ T 波去基线平滑导数法 + 中位数基线估计；Fridericia QTc 完整链路（计算→UI→DS 提示词→手机解析→PDF 导出）。**算法循证审查**：所有影响结果的算法均核对文献依据，有依据的补全引用（Task Force 1996 HRV 标准、Brennan 2001 Poincaré、Karey 2019 早搏剔除、Hiss 1976 心率变异、Bazett 1920 / Fridericia 1920 QTc、Pan-Tompkins 1985 R 波检测、Tuboly 2019 / Park 2009 房颤检测），工程经验值如实标注"非临床金标准"。**JsonCleaner**：剥离 Markdown 包裹 + 全角引号/冒号/逗号转半角（DS 输出中文标点不再导致解析失败）。**PDF 波形降采样**：`downsampleKeepPeaks` 保留桶内 max+min，R 波尖峰不丢失。**PPG 干扰检测**：绿灯闪烁时告警提示停止后台心率监测再测心电。 |
+| 当前功能 | BLE Key 获取入口对“无 Key / 已有 Key”均可见；手表主页始终保留手工输入 API Key 入口；手机设置页可清除缓存（API Key + ECG 历史）并重启 BLE；ECG 波形改用固定时间/电压比例（接近 25 mm/s、10 mm/mV），不再自适应拉伸；Release APK 不再内置 HeartVoice Key。**DeepSeek 双档分析已上线**：手表可选 HeartVoice 专业 API 或 DS 均衡（flash + reasoning_effort=high）/ DS Max（flash + reasoning_effort=max），DS 模式由本地 `EcgFeatureExtractor` 提取特征 + DS 大模型解读，输出扁平 JSON 报告。**DS 设置 BLE 下发**：国行无 GMS，DS 设置经 `DS_SETTINGS_UUID` GATT 特征值从手机拉取（与 HeartVoice Key 同思路）。**Tavily 联网检索集成**：DS Max 档在 Tavily Key 已配置时，自动检索房颤检测方法学 / HRV 正常参考值 / QTc 临床意义三个固定方向，注入 DS 提示词做循证推理（均衡/快速档不检索省预算，进程内 6 小时缓存）。**节律判别增强**：RR 变异系数 + Poincaré 散点形态（彗星/扇形/鱼雷/复杂形）+ 短-长 RR 配对数喂给 DS，可区分窦性/房颤/早搏。**HRV 双通路**：HRV 计算用剔早搏 RR（偏离均值>20%，Karey 2019），节律判别保留原始 RR，避免早搏短长 RR 污染 SDNN/RMSSD 导致 DS 误判房颤。**R 波检测 v5（Pan-Tompkins 风格）**：MWI 窗口 150ms + 不应期 200ms + 精修窗口 ±50ms（v5 修复：envelope 峰在 R 峰上升沿提前 ~30-50ms，旧 ±25ms 够不到 R 峰导致 HR range>10）+ mean+1.7×std 分段阈值（v4 修复运动后漏检 60%）+ 回溯补检（RR>1.66×均值时半阈值补检，PT 核心）。算法详情见 [docs/ALGORITHM_OPTIMIZATION.md](docs/ALGORITHM_OPTIMIZATION.md)（含 TL;DR、Bug 历史、验证脚本索引）。**心率统计抗误检**：avgHr 用中位数 RR 反算（对≤49% 误检免疫），心率范围基于 Hiss 1976 年龄公式（Percent variation = 23.2 - 0.35×age）。**间期算法优化**：QRS 阈值交叉法（兼容负向 R 波）+ T 波去基线平滑导数法 + 中位数基线估计；Fridericia QTc 完整链路（计算→UI→DS 提示词→手机解析→PDF 导出）。**算法循证审查**：所有影响结果的算法均核对文献依据，有依据的补全引用（Task Force 1996 HRV 标准、Brennan 2001 Poincaré、Karey 2019 早搏剔除、Hiss 1976 心率变异、Bazett 1920 / Fridericia 1920 QTc、Pan-Tompkins 1985 R 波检测、Tuboly 2019 / Park 2009 房颤检测），工程经验值如实标注"非临床金标准"。**JsonCleaner**：剥离 Markdown 包裹 + 全角引号/冒号/逗号转半角（DS 输出中文标点不再导致解析失败）。**PDF 波形降采样**：`downsampleKeepPeaks` 保留桶内 max+min，R 波尖峰不丢失。**PPG 干扰检测**：绿灯闪烁时告警提示停止后台心率监测再测心电。 |
 | 目标设备 | Samsung Galaxy Watch，尤其是 One UI Watch 8 国行版（无可用 Google Data Layer 的场景） |
 | 当前同步策略 | Google Data Layer 保留；无 GMS 时自动/主动使用直接 BLE GATT |
 | 实机验证状态 | Build #59 已在国行 One UI Watch 8 确认：手机向手表提供 Key 成功，ECG 已能从手表传到手机，Build #58 的 514-byte CHUNK 闪退已解决。用户已能在手机打开记录详情并尝试导出 PDF；但尚无明确证据确认手表最终成功文案、匹配 timestamp 标记和 ACK indication 的完整最终状态，因此仍不得把端到端 ACK 声称为实机通过 |
@@ -38,18 +38,17 @@ WearHealthCompanion 是一个面向 Samsung Galaxy Watch 的 Wear OS 单导联 E
 
 | Build | 结果 | 说明 |
 |---:|---|---|
-| #44 | ✅ 成功 | Data Layer ACK 修复后，手表和手机 Release APK 均产出 |
-| #45 | ❌ 失败 | `BleSyncProtocol.parseAck()` 表达式函数体中使用 `return`，且漏了 `MAX_TRANSFER_BYTES` |
-| #46 | ❌ 失败 | `BleSyncServer.receiveFrame()` 同类 Kotlin 表达式函数体问题 |
-| #47 | ❌ 失败 | Kotlin/Java 编译已通过，失败于手机 `lintVitalRelease` 的 Fragment 版本误报 |
-| #48 | ✅ 成功 | 直接 BLE ECG 回传版本成功产出 Release APK |
-| #49 | ✅ 成功 | 新增“手机保存 Key → 手表无历史也可通过 BLE 获取 Key”代码 |
-| #50 | ⚠️ 构建成功但实机入口隐藏 | 手表 APK 仍有编译时 Key fallback，UI 误判为已有 Key，故不显示仅限缺 Key 页面的按钮 |
-| #53 | ⚠️ 构建成功，实机仍无扫描回调 | 已绕过 128-bit UUID 硬件过滤，但国行 Watch 8 未向第三方 App 交付任何 BLE 广播 |
-| #54 | ⚠️ Key 链路实机成功、ECG 失败 | 手机 Key 已成功传到手表，证明 bonded 直连和加密读取可用；ECG 专用 MTU/ACK/分片阶段仍失败 |
-| #57 | ⚠️ BEGIN 实机成功、CHUNK 入队失败 | BLE 已连接，Service/MTU/ACK 已就绪，手机收到 63,748 字节 BEGIN；手表紧接着提交下一帧时 GATT 队列拒绝 |
-| #58 | ⚠️ 实机传送触发手表闪退 | Key 链路仍成功；点击 ECG 传送后手机未收到数据。Android 14 会将 MTU 提升为 517，旧公式产生 514 字节 CHUNK attribute value，而 Android 13+ 写 API 的上限为 512 字节且会抛出异常 |
+| #131 | ✅ 成功 | 顶部自动区块维护的最新成功构建（Release APK + Artifact + Release 全部成功） |
 | #59 | ⚠️ ECG 已到手机，最终 ACK 待确认 | 完整 CHUNK 帧限制为 512 字节后不再闪退；国行 Watch 8 已确认手机可收到 ECG，匹配 timestamp ACK/手表最终成功状态尚待明确实测 |
+| #58 | ⚠️ 实机传送触发手表闪退 | Key 链路仍成功；点击 ECG 传送后手机未收到数据。Android 14 会将 MTU 提升为 517，旧公式产生 514 字节 CHUNK attribute value，而 Android 13+ 写 API 的上限为 512 字节且会抛出异常 |
+| #57 | ⚠️ BEGIN 实机成功、CHUNK 入队失败 | BLE 已连接，Service/MTU/ACK 已就绪，手机收到 63,748 字节 BEGIN；手表紧接着提交下一帧时 GATT 队列拒绝 |
+| #54 | ⚠️ Key 链路实机成功、ECG 失败 | 手机 Key 已成功传到手表，证明 bonded 直连和加密读取可用；ECG 专用 MTU/ACK/分片阶段仍失败 |
+| #53 | ⚠️ 构建成功，实机仍无扫描回调 | 已绕过 128-bit UUID 硬件过滤，但国行 Watch 8 未向第三方 App 交付任何 BLE 广播 |
+| #50 | ⚠️ 构建成功但实机入口隐藏 | 手表 APK 仍有编译时 Key fallback，UI 误判为已有 Key，故不显示仅限缺 Key 页面的按钮 |
+| #48 | ✅ 成功 | 直接 BLE ECG 回传版本成功产出 Release APK |
+| #44 | ✅ 成功 | Data Layer ACK 修复后，手表和手机 Release APK 均产出 |
+
+> 完整构建历史见 [Actions](https://github.com/hongquangphung7044-oss/WearHealthCompanion/actions)。ECG 算法优化的 Bug 修复历史见 [docs/ALGORITHM_OPTIMIZATION.md](docs/ALGORITHM_OPTIMIZATION.md) 第 5 节。
 
 ### 为什么改成双通道
 
