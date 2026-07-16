@@ -1,12 +1,12 @@
 # WearHealthCompanion
 
-WearHealthCompanion 是一个面向 Samsung Galaxy Watch 的 Wear OS ECG（心电图）采集、AI 分析与手机归档项目。
+WearHealthCompanion 是一个面向 Samsung Galaxy Watch 的 Wear OS 单导联 ECG（心电图）采集、AI 分析与手机归档项目。
 
 项目由两个可安装 APK 和一个共享库组成：
 
-- **手表端**采集 Samsung BioActive Sensor 的 500 Hz 单导联 ECG，调用 HeartVoice API 分析，并保留最近 50 条历史；
-- **手机端**接收完整 ECG、持久化到 Room、显示波形详情并导出 PDF；
-- **共享模块**定义 Google Wearable Data Layer 与无 GMS BLE GATT 两套协议。
+- **手表端**采集 Samsung BioActive Sensor 的 500 Hz 单导联 ECG，本地 `EcgFeatureExtractor` 提取特征（Pan-Tompkins R 波检测 / HRV 双通路 / 间期估测 / Poincaré 节律判别），再由 **DeepSeek V4-Flash 双档**（均衡 `reasoning_effort=high` / Max `reasoning_effort=max`）大模型解读生成中文 JSON 报告；Max 档在 Tavily Key 已配置时自动检索医学文献做循证推理；亦兼容 HeartVoice 专业 API；保留最近 50 条历史；
+- **手机端**接收完整 ECG、持久化到 Room、显示波形详情并导出 PDF（含 Fridericia QTc）；
+- **共享模块**定义 Google Wearable Data Layer 与无 GMS BLE GATT 两套协议，三种 Key（HeartVoice / DS / Tavily）各走独立 GATT 特征值与 DataLayer 路径。
 
 > **这是当前项目的权威 AI / 开发者交接文档。** 接手前先读“当前状态”“首次使用流程”“不可回退约束”和“下一位 AI 的任务清单”。本应用仅供健康参考，不能替代医疗诊断。
 
