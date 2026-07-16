@@ -149,9 +149,8 @@ object EcgFeatureExtractor {
             ppgReferenceHr = ppgReferenceHr,
             rPeakIndices = effectiveRPeaks,
             rPeakPolarity = intervals.rPeakPolarity,
-            tToRAmplitudeRatio = intervals.tToRAmplitudeMv.let { tAmp ->
-                if (intervals.rAmplitudeMv > 0.01f && tAmp > 0f) tAmp / intervals.rAmplitudeMv else 0f
-            },
+            tToRAmplitudeRatio = if (intervals.rAmplitudeMv > 0.01f && intervals.tAmplitudeMv > 0f)
+                intervals.tAmplitudeMv / intervals.rAmplitudeMv else 0f,
             stDeviationMv = intervals.stDeviationMv,
         )
         return FeatureBundle(global, segments, profile)
