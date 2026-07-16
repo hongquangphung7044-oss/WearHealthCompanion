@@ -10,11 +10,13 @@ import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import com.wearhealth.companion.ble.BleApiKeyFetcher
 import com.wearhealth.companion.ble.BleDsSettingsFetcher
+import com.wearhealth.companion.ble.BleTavilySettingsFetcher
 import com.wearhealth.companion.ble.BleEcgUploader
 import com.wearhealth.companion.ble.BleUploadResult
 import com.wearhealth.companion.data.ApiKeyManager
 import com.wearhealth.companion.data.AutoSyncPreferences
 import com.wearhealth.companion.data.DeepSeekSettings
+import com.wearhealth.companion.data.TavilySettings
 import com.wearhealth.companion.data.EcgHistoryRepository
 import com.wearhealth.companion.data.HistoryItem
 import com.wearhealth.companion.model.EcgAnalysisResult
@@ -57,6 +59,7 @@ data class EcgUiState(
     val dsBalanceLoading: Boolean = false,        // 正在查询余额
     val dsBalanceError: String? = null,          // 余额查询错误
     val showPreMeasureDialog: Boolean = false,   // 测量前年龄性别二级界面
+    val tavilyConfigured: Boolean = false,        // Tavily 搜索 Key 是否已配置（Max 档可选联网检索）
 )
 
 class HealthViewModel(app: Application) : AndroidViewModel(app) {
@@ -71,6 +74,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     private val bleDsSettingsFetcher = BleDsSettingsFetcher(app.applicationContext)
     private val dsSettings = DeepSeekSettings(app.applicationContext)
     private var deepSeekApi = DeepSeekApiClient(dsSettings.getApiKey())
+    private val bleTavilySettingsFetcher = BleTavilySettingsFetcher(app.applicationContext)
+    private val tavilySettings = TavilySettings(app.applicationContext)
 
     private val _uiState = MutableStateFlow(EcgUiState())
     val uiState: StateFlow<EcgUiState> = _uiState.asStateFlow()
@@ -81,6 +86,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
             apiKeyConfigured = apiKeyManager.isConfigured(),
             autoSyncEnabled = autoSyncPreferences.isEnabled(),
             dsApiKeyConfigured = dsSettings.isConfigured(),
+            tavilyConfigured = tavilySettings.isConfigured(),
         )
         // 监听 API Key 变更（手机端下发或本地保存后自动刷新）
         viewModelScope.launch {
@@ -226,8 +232,11 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
             else -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
         }
 
-        // 3. 调 DS
-        val dsResult = deepSeekApi.analyzeEcg(featureText, model, thinking)
+        // 3. 调 DS（传入 Tavily Key：仅 Max 档会触发联网检索医学文献）
+        val dsResult = deepSeekApi.analyzeEcg(
+            featureText, model, thinking,
+            tavilyApiKey = tavilySettings.getApiKey(),
+        )
         return dsResult.mapCatching { report ->
             val waveform = downsample(ecgData, 1200)
 
@@ -459,6 +468,54 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(
             dsApiKeyConfigured = dsSettings.isConfigured(),
         )
+    }
+
+    // ========== Tavily 设置管理 ==========
+
+    /** 保存 Tavily API Key（手表本地输入） */
+    fun saveTavilyApiKey(key: String) {
+        tavilySettings.saveApiKey(key)
+        _uiState.value = _uiState.value.copy(
+            tavilyConfigured = tavilySettings.isConfigured(),
+            syncMessage = "Tavily API Key 已保存",
+        )
+    }
+
+    /** 通过 BLE 从手机拉取 Tavily 设置（镜像 fetchDsSettingsFromPhone 的安全模式） */
+    fun fetchTavilySettingsFromPhone() {
+        if (_uiState.value.syncingToPhone) return
+        _uiState.value = _uiState.value.copy(
+            syncingToPhone = true,
+            syncMessage = "正在通过 BLE 查找手机上的 Tavily 设置…",
+        )
+        bleTavilySettingsFetcher.fetch { result ->
+            viewModelScope.launch {
+                result.onSuccess { json ->
+                    try {
+                        val obj = org.json.JSONObject(json)
+                        val apiKey = obj.optString(DataLayerPaths.KEY_TAVILY_API_KEY, "")
+                            .takeIf { it.isNotBlank() }
+                        tavilySettings.applyFromRemote(apiKey)
+                        _uiState.value = _uiState.value.copy(
+                            tavilyConfigured = tavilySettings.isConfigured(),
+                            syncingToPhone = false,
+                            syncMessage = if (tavilySettings.isConfigured())
+                                "已从手机获取 Tavily 设置 ✓" else "手机端尚未配置 Tavily Key",
+                        )
+                    } catch (e: Exception) {
+                        _uiState.value = _uiState.value.copy(
+                            syncingToPhone = false,
+                            syncMessage = "Tavily 设置解析失败：${e.message}",
+                        )
+                    }
+                }.onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        syncingToPhone = false,
+                        syncMessage = "BLE 获取 Tavily 设置失败：${error.message ?: "未知错误"}",
+                    )
+                }
+            }
+        }
     }
 
     /** 设置分析方式选择 */

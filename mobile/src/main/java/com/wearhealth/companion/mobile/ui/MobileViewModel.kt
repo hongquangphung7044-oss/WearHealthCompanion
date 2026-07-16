@@ -18,6 +18,7 @@ import com.wearhealth.companion.mobile.data.EcgMeasurementEntity
 import com.wearhealth.companion.mobile.data.MeasurementRepository
 import com.wearhealth.companion.mobile.data.MobileApiKeyStore
 import com.wearhealth.companion.mobile.data.MobileDeepSeekSettings
+import com.wearhealth.companion.mobile.data.MobileTavilySettings
 import com.wearhealth.companion.mobile.pdf.PdfExportResult
 import com.wearhealth.companion.mobile.pdf.PdfExporter
 import com.wearhealth.companion.mobile.service.BleSyncForegroundService
@@ -59,6 +60,7 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     private val mobileApiKeyStore = MobileApiKeyStore(app)
     private val dsSettings = MobileDeepSeekSettings(app)
     private var deepSeekApi = DeepSeekApiClient(dsSettings.getApiKey())
+    private val tavilySettings = MobileTavilySettings(app)
 
     /** Direct BLE receiver state. This remains useful when Google Data Layer is absent. */
     val bleSyncStatus: StateFlow<String> = BleSyncRuntime.status(app)
@@ -110,6 +112,14 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     /** 当前 DS 默认思考强度 */
     private val _dsDefaultThinking = MutableStateFlow(dsSettings.getDefaultThinking())
     val dsDefaultThinking: StateFlow<DeepSeekApiClient.ThinkingMode> = _dsDefaultThinking.asStateFlow()
+
+    /** Tavily 搜索 Key 是否已配置（Max 档联网检索医学文献，可选） */
+    private val _tavilyConfigured = MutableStateFlow(tavilySettings.isConfigured())
+    val tavilyConfigured: StateFlow<Boolean> = _tavilyConfigured.asStateFlow()
+
+    /** Tavily 下发结果消息 */
+    private val _tavilySendResult = MutableStateFlow<String?>(null)
+    val tavilySendResult: StateFlow<String?> = _tavilySendResult.asStateFlow()
 
     /** PDF export result uses a content URI and a user-visible shared-storage label. */
     private val _pdfExportResult = MutableStateFlow<PdfExportResult?>(null)
@@ -358,6 +368,33 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         val userAge: Int,
         val userIsMale: Boolean?,
     )
+
+    // ========== Tavily 设置管理 ==========
+
+    /**
+     * 保存 Tavily API Key 并下发到手表（供 DS Max 档联网检索医学文献）
+     *
+     * 镜像 [saveAndSendDeepSeekSettings] 的安全模式：保存走 [MobileTavilySettings.saveApiKey]
+     * （含 NUL/控制字符校验），下发用 [DataLayerManager.sendTavilySettingsToWatch]。
+     */
+    fun saveAndSendTavilySettings(apiKey: String) {
+        if (apiKey.isNotBlank()) {
+            tavilySettings.saveApiKey(apiKey)
+            _tavilyConfigured.value = true
+        }
+        _tavilySendResult.value = "Tavily 设置已保存"
+        viewModelScope.launch {
+            val sent = dataLayer.sendTavilySettingsToWatch(tavilySettings.getApiKey())
+            _tavilySendResult.value = if (sent) {
+                "Tavily 设置已保存，并已下发到手表"
+            } else {
+                "Tavily 设置已保存（下发手表失败，可稍后重试）"
+            }
+        }
+    }
+
+    /** 获取当前 Tavily API Key（供 UI 初始化读取） */
+    fun getTavilyApiKey(): String = tavilySettings.getApiKey()
 
     /**
      * 导出 PDF 报告

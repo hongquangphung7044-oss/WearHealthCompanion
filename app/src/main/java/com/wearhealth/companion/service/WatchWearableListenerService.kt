@@ -12,6 +12,7 @@ import com.google.android.gms.wearable.WearableListenerService
 import com.wearhealth.companion.data.ApiKeyManager
 import com.wearhealth.companion.data.DeepSeekSettings
 import com.wearhealth.companion.data.EcgHistoryRepository
+import com.wearhealth.companion.data.TavilySettings
 import com.wearhealth.companion.shared.ApiKeyValidator
 import com.wearhealth.companion.shared.DataLayerPaths
 import com.wearhealth.companion.shared.EcgMeasurementTransfer
@@ -38,6 +39,7 @@ class WatchWearableListenerService : WearableListenerService() {
     private val apiKeyManager by lazy { ApiKeyManager(this) }
     private val historyRepo by lazy { EcgHistoryRepository(this) }
     private val dsSettings by lazy { DeepSeekSettings(this) }
+    private val tavilySettings by lazy { TavilySettings(this) }
 
     override fun onDataChanged(dataEvents: DataEventBuffer) {
         Log.i(TAG, "onDataChanged: ${dataEvents.count} 个事件")
@@ -88,6 +90,20 @@ class WatchWearableListenerService : WearableListenerService() {
                     syncEvents.tryEmit("DeepSeek 设置已从手机同步")
                 } catch (e: Exception) {
                     Log.e(TAG, "解析 DeepSeek 设置数据失败", e)
+                }
+            }
+
+            // Tavily 设置下发（路径 /tavily_settings）
+            if (path.startsWith(DataLayerPaths.PATH_TAVILY_SETTINGS)) {
+                try {
+                    val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
+                    val tvKey = dataMap.getString(DataLayerPaths.KEY_TAVILY_API_KEY, "")
+                        .takeIf { it.isNotBlank() }
+                    Log.i(TAG, "收到手机下发的 Tavily 设置，应用中...")
+                    tavilySettings.applyFromRemote(tvKey)
+                    syncEvents.tryEmit("Tavily 设置已从手机同步")
+                } catch (e: Exception) {
+                    Log.e(TAG, "解析 Tavily 设置数据失败", e)
                 }
             }
         }
