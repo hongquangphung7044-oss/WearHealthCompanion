@@ -70,6 +70,38 @@ object DiagnosticExporter {
         }
         sb.append("\n")
 
+        // ===== 第 1.5 段：HeartVoice API 返回（仅 heartvoice 路径） =====
+        // Bug 修复：旧实现不管 analysisMethod 都重建本地特征，HeartVoice 路径本地算法在真实
+        // wrist ECG 上可能返回 0 个 R 波 → 导出 [全局指标] 全 0，但 HeartVoice API 实际返回
+        // 了有效数据。修复：HeartVoice 路径加专门的 [HeartVoice API 返回] 段，输出 transfer
+        // 已有的统计字段（API 解析后填入的），与本地算法段对照，方便定位差异。
+        // DS 路径不加此段（避免误导，DS 路径无 API 返回）。
+        if (transfer.analysisMethod == "heartvoice") {
+            sb.append("[HeartVoice API 返回]\n")
+            sb.append("# HeartVoice 专业 API 返回的聚合指标（不返回原始波形分析数据）\n")
+            sb.append("# 与下方 [算法提取后的结构化特征] 对照可定位本地算法差异\n")
+            sb.append("平均心率:${transfer.avgHeartRate}\n")
+            sb.append("最低心率:${transfer.minHeartRate}\n")
+            sb.append("最高心率:${transfer.maxHeartRate}\n")
+            sb.append("诊断:${transfer.diagnosis.joinToString(",")}\n")
+            if (transfer.possibleDiagnoses.isNotEmpty()) {
+                sb.append("可能诊断:${transfer.possibleDiagnoses.joinToString(",")}\n")
+            }
+            sb.append("QRS宽度:${transfer.avgQrs}\n")
+            if (transfer.avgP > 0) {
+                sb.append("P波宽度:${transfer.avgP}\n")
+            }
+            sb.append("PR间期:${transfer.prInterval}\n")
+            sb.append("QT间期:${transfer.avgQt}\n")
+            sb.append("QTc:${transfer.avgQtc}\n")
+            sb.append("房性早搏:${transfer.pacCount}\n")
+            sb.append("室性早搏:${transfer.pvcCount}\n")
+            sb.append("信号质量:${transfer.signalQuality}\n")
+            sb.append("导联反接:${transfer.isReverse}\n")
+            sb.append("是否异常:${transfer.isAbnormal}\n")
+            sb.append("\n")
+        }
+
         // ===== 第 2 段：算法提取后的结构化特征 =====
         sb.append("[算法提取后的结构化特征]\n")
         sb.append("# 由 EcgFeatureExtractor.extract() + toPromptText() 在手机端重建\n")
