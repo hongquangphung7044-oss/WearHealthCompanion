@@ -50,6 +50,7 @@ object EcgFeatureExtractor {
         val poincarePattern: String,    // Poincaré 散点形态描述（彗星形/扇形/鱼雷形/复杂形）
         val shortLongPairs: Int,        // 短-长 RR 配对数（早搏代偿间隙特征）
         val ppgReferenceHr: Int = 0,    // PPG 绿光参考心率（测后读系统心率，0=未采集/不可用）
+        val rPeakIndices: List<Int> = emptyList(),  // R 波位置索引（样本索引，噪声段剔除后的有效 R 波）
     )
 
     /** 逐秒分段特征 */
@@ -142,6 +143,7 @@ object EcgFeatureExtractor {
             poincarePattern = rhythm.poincarePattern,
             shortLongPairs = rhythm.shortLongPairs,
             ppgReferenceHr = ppgReferenceHr,
+            rPeakIndices = effectiveRPeaks,
         )
         return FeatureBundle(global, segments, profile)
     }
@@ -848,6 +850,11 @@ object EcgFeatureExtractor {
         if (g.ppgReferenceHr > 0) {
             sb.append("PPG绿光参考心率:${g.ppgReferenceHr}bpm(系统心率传感器独立测算，可信度高于本地R波估测；若与R波心率偏差>15bpm，提示R波检测可能漏检/误检，应以PPG为准)\n")
         }
+        // R 波位置索引（样本索引）：方便助手精确复现 R 波检测，对照 HeartVoice API 差异
+        // 导出诊断包时此字段是定位"本地算法漏检/误检哪几个 R 波"的关键证据
+        if (g.rPeakIndices.isNotEmpty()) {
+            sb.append("R波位置(样本索引):${g.rPeakIndices.joinToString(",")}\n")
+        }
         // RR 序列标注异常值（偏离均值>20% 标*，与 filterEctopicBeats 阈值一致，Karey 2019）
         // 帮助 DS 直观识别早搏（短RR）和代偿间隙（长RR）
         if (g.rrIntervalsMs.isNotEmpty()) {
@@ -904,6 +911,11 @@ object EcgFeatureExtractor {
                 else -> ""
             }
             sb.append("${"%.1f".format(seg.startSec)}-${"%.1f".format(seg.endSec)}  ${seg.rPeakCount}  $range  ${"%.2f".format(seg.peakToPeakMv)}  ${"%.2f".format(seg.maxSlopeMvPerSec)}  ${"%.2f".format(seg.rmsMv)}$note\n")
+        }
+        // 逐秒 RMS 紧凑曲线：一行展示所有段的 RMS，方便快速识别噪声段分布
+        // 与上方分段表对照，<0.10 的段即噪声段（已在 noiseSegments 标注）
+        if (bundle.segments.isNotEmpty()) {
+            sb.append("逐秒RMS:${bundle.segments.joinToString(",") { "%.3f".format(it.rmsMv) }}\n")
         }
 
         return sb.toString()
