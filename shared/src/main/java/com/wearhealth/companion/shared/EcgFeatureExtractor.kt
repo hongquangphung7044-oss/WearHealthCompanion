@@ -40,7 +40,8 @@ object EcgFeatureExtractor {
         val prIntervalMs: Int,          // 本地估测
         val prIntervalStdMs: Int,
         val qtIntervalMs: Int,          // 本地估测
-        val qtcMs: Int,                 // Bazett 校正
+        val qtcMs: Int,                 // Bazett 校正（静止测量 60bpm 附近最准）
+        val qtcFridericiaMs: Int = 0,   // Fridericia 校正（心率波动大时更稳，50-90bpm 全区间误差小）
         val rAmplitudeMv: Float,        // R 波平均振幅
         val signalQuality: Float,       // 0~1
         val noiseSegments: List<String>,// 噪声段时段标记
@@ -550,16 +551,22 @@ object EcgFeatureExtractor {
         }
 
         val qtMean = mean(qtIntervals)
-        // QTc = QT / sqrt(RR/1s)，Bazett 公式
-        val qtc = if (qtMean > 0 && avgHr > 0) {
-            val rrSec = 60.0 / avgHr
+        // QTc 双公式：
+        // - Bazett: QT/sqrt(RR) —— 60bpm 附近最准，HR>100 高估，HR<50 低估
+        // - Fridericia: QT/RR^(1/3) —— 50-90bpm 全区间误差小，心率波动大时更稳
+        val rrSec = if (avgHr > 0) 60.0 / avgHr else 0.0
+        val qtc = if (qtMean > 0 && rrSec > 0) {
             (qtMean / sqrt(rrSec)).toInt()
+        } else 0
+        val qtcFridericia = if (qtMean > 0 && rrSec > 0) {
+            // RR^(1/3) 用立方根近似：Math.cbrt
+            (qtMean / Math.cbrt(rrSec)).toInt()
         } else 0
 
         return IntervalEstimates(
             qrsMean = mean(qrsWidths), qrsStd = std(qrsWidths),
             prMean = mean(prIntervals), prStd = std(prIntervals),
-            qtMean = qtMean, qtc = qtc,
+            qtMean = qtMean, qtc = qtc, qtcFridericiaMs = qtcFridericia,
         )
     }
 
@@ -691,7 +698,7 @@ object EcgFeatureExtractor {
         sb.append("SDNN:${"%.1f".format(g.sdnnMs)}ms RMSSD:${"%.1f".format(g.rmssdMs)}ms pNN50:${"%.1f".format(g.pnn50Pct)}%\n")
         sb.append("QRS宽度(本地估测,ms):${g.qrsWidthMs}±${g.qrsWidthStdMs}\n")
         sb.append("PR间期(本地估测,ms):${g.prIntervalMs}±${g.prIntervalStdMs}\n")
-        sb.append("QT间期(本地估测,ms):${g.qtIntervalMs} QTc:${g.qtcMs}\n")
+        sb.append("QT间期(本地估测,ms):${g.qtIntervalMs} QTc(Bazett):${g.qtcMs}ms QTc(Fridericia):${g.qtcFridericiaMs}ms\n")
         sb.append("R波平均振幅:${"%.2f".format(g.rAmplitudeMv)}mV\n")
         sb.append("信号质量:${"%.2f".format(g.signalQuality)} ${if (g.signalQuality >= 0.7f) "良好" else if (g.signalQuality >= 0.4f) "一般" else "较差"}\n")
         if (g.noiseSegments.isNotEmpty()) {
