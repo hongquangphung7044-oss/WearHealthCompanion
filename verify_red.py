@@ -169,7 +169,7 @@ def detect_mean_std(ecg, env, hp, sr=500, floor=3.0, seg_sec=4):
 
 
 def detect_percentile_morph(ecg, env, hp, sr=500, pct=0.92, floor=3.0, seg_sec=4, flank_ratio=1.1):
-    """新方案：4秒分段 min(百分位0.92, mean+2std) 阈值 + 形态验证（侧翼 flank_ratio 倍）
+    """新方案：4秒分段 min(百分位0.92, mean+2std) 阈值 + 先精修(±50ms)再形态验证
 
     阈值选择 min(百分位0.92, mean+2std) 的依据：
     - 干净信号 envelope 是双峰分布（低噪声 + R 波），百分位0.92 落在 R 波区间下边缘（阈值偏高），
@@ -177,6 +177,13 @@ def detect_percentile_morph(ecg, env, hp, sr=500, pct=0.92, floor=3.0, seg_sec=4
     - 运动后 envelope 右偏长尾（少量肌电突发极高值），mean+2std 被长尾拉高（>百分位0.92），
       min 取百分位0.92 → 不被长尾拉高，R 波多检出
     - Python 验证（debug_threshold.py）：干净信号百分位0.92=27.9 > mean+2std=26.4，min 取 26.4
+
+    形态验证流程（先精修再验证）：
+    - 旧流程"形态验证→精修"误杀干净信号：envelope 峰在 R 峰前 40-50ms 上升沿（梯度最大处），
+      候选点 |hp| 低（上升沿），右侧 50ms 正好在 R 峰 |hp| 高 → 误杀（debug_clean.py: 339 个失败）
+    - 新流程"精修→形态验证"：精修范围 ±50ms 覆盖 envelope 峰到 R 峰距离，先找到 |hp| 最大
+      位置（R 峰），再用 R 峰位置做形态验证，侧翼 |hp| 低 → 通过
+    - 运动后宽缓波：精修找到 |hp| 最大点（宽缓波某点），侧翼 |hp| 差不多（宽缓波）→ 形态过滤仍有效
     """
     seg_len = sr * seg_sec
     thresholds = [0.0] * len(env)
@@ -198,6 +205,7 @@ def detect_percentile_morph(ecg, env, hp, sr=500, pct=0.92, floor=3.0, seg_sec=4
     refractory = sr // 5
     check_range = sr // 50
     flank = sr // 20  # 50ms 侧翼
+    refine_range = sr // 10  # ±50ms 精修范围（覆盖 envelope 峰到 R 峰的 40-50ms 距离）
     r_peaks = []
     last_peak = -refractory * 2
 
@@ -216,25 +224,29 @@ def detect_percentile_morph(ecg, env, hp, sr=500, pct=0.92, floor=3.0, seg_sec=4
             continue
         if (i - last_peak) < refractory:
             continue
-        # 形态验证：候选点 |hp| 必须高于两侧 50ms 处 |hp| 的 flank_ratio 倍
-        left_idx = max(0, i - flank)
-        right_idx = min(len(hp) - 1, i + flank)
-        cand_val = abs(hp[i])
-        left_val = abs(hp[left_idx])
-        right_val = abs(hp[right_idx])
-        if cand_val < left_val * flank_ratio or cand_val < right_val * flank_ratio:
-            continue
-        # 精修
-        r_lo, r_hi = max(0, i - sr // 40), min(len(hp), i + sr // 40)
+
+        # 先精修：在 ±50ms 范围找 |hp| 最大位置（R 峰）
+        r_lo = max(0, i - refine_range)
+        r_hi = min(len(hp), i + refine_range + 1)
         best_idx, best_val = i, 0.0
         for j in range(r_lo, r_hi):
             if abs(hp[j]) > best_val:
                 best_val = abs(hp[j])
                 best_idx = j
+
+        # 形态验证：用精修位置 bestIdx 的 |hp| vs 侧翼 |hp|
+        left_idx = max(0, best_idx - flank)
+        right_idx = min(len(hp) - 1, best_idx + flank)
+        cand_val = abs(hp[best_idx])
+        left_val = abs(hp[left_idx])
+        right_val = abs(hp[right_idx])
+        if cand_val < left_val * flank_ratio or cand_val < right_val * flank_ratio:
+            continue
+
         r_peaks.append(best_idx)
         last_peak = best_idx
 
-    # 回溯补检（带形态验证）
+    # 回溯补检（带精修+形态验证）
     if len(r_peaks) >= 5:
         extra = []
         for k in range(1, len(r_peaks)):
@@ -265,21 +277,24 @@ def detect_percentile_morph(ecg, env, hp, sr=500, pct=0.92, floor=3.0, seg_sec=4
                                 is_m = False
                                 break
                         if is_m:
+                            # 先精修
+                            r_lo = max(0, j - refine_range)
+                            r_hi = min(len(hp), j + refine_range + 1)
+                            b_best, b_bestv = j, 0.0
+                            for m in range(r_lo, r_hi):
+                                if abs(hp[m]) > b_bestv:
+                                    b_bestv = abs(hp[m])
+                                    b_best = m
                             # 形态验证
-                            lf = max(0, j - flank)
-                            rf = min(len(hp) - 1, j + flank)
-                            if abs(hp[j]) < abs(hp[lf]) * flank_ratio or abs(hp[j]) < abs(hp[rf]) * flank_ratio:
+                            lf = max(0, b_best - flank)
+                            rf = min(len(hp) - 1, b_best + flank)
+                            if abs(hp[b_best]) < abs(hp[lf]) * flank_ratio or \
+                               abs(hp[b_best]) < abs(hp[rf]) * flank_ratio:
                                 continue
                             best_bv = env[j]
-                            best_b = j
+                            best_b = b_best
                 if best_b >= 0:
-                    r_lo, r_hi = max(0, best_b - sr // 40), min(len(hp), best_b + sr // 40)
-                    r_idx, r_val = best_b, 0.0
-                    for j in range(r_lo, r_hi):
-                        if abs(hp[j]) > r_val:
-                            r_val = abs(hp[j])
-                            r_idx = j
-                    extra.append(r_idx)
+                    extra.append(best_b)
         r_peaks.extend(extra)
         r_peaks.sort()
     return r_peaks
