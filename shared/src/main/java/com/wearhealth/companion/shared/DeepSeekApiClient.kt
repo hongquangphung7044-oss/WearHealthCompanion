@@ -27,6 +27,12 @@ import java.util.concurrent.TimeUnit
  * - 均衡: flash + thinking=enabled + reasoning_effort=high（标准思考）
  * - Max:  pro   + thinking=enabled + reasoning_effort=max（Pro 模型 + 最大思考深度）
  *
+ * 思考模式 API 约束（DeepSeek 官方文档，2026-07）：
+ * 1. 思考模式不支持 temperature/top_p/presence_penalty/frequency_penalty（设置不会报错但不生效）
+ * 2. 思维链内容通过 reasoning_content 返回，与 content 同级；content 仅含最终答案
+ * 3. reasoning_effort=max 为 Pro 大上下文设计，建议配 Pro 模型
+ * 4. max 模式 TTFT 可达 20-38s，总响应可能 60s+，需足够大的 readTimeout
+ *
  * 间期估测由本地 EcgFeatureExtractor 完成，本客户端只负责把特征文本喂给 DS 做医学推理，
  * 不让 LLM 处理原始数字串（避免幻觉 + token 爆炸）。
  */
@@ -35,8 +41,9 @@ class DeepSeekApiClient(
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        // DS 思考模式响应较慢，Pro+max 可能需要 60s+
-        .readTimeout(90, TimeUnit.SECONDS)
+        // DS 思考模式响应较慢：Pro+max TTFT 可达 20-38s，加上思考与生成可能 90s+
+        // 用 180s 保证 max 档不超时（否则请求失败导致 AI 解读消失）
+        .readTimeout(180, TimeUnit.SECONDS)
         .build()
 
     val isApiKeyConfigured: Boolean get() = apiKey.isNotBlank()
@@ -115,13 +122,15 @@ class DeepSeekApiClient(
             val body = JSONObject().apply {
                 put("model", model.id)
                 put("messages", messages)
-                put("temperature", 0.2)  // 低温度，减少幻觉
                 put("max_tokens", 2000)
                 put("response_format", JSONObject().put("type", "json_object"))
                 // 思考强度参数：根据 ThinkingMode 组合 thinking + reasoning_effort
+                // 注意：思考模式(thinking=enabled)不支持 temperature/top_p 等采样参数
+                // （DeepSeek 官方文档：设置不报错但不生效），故仅在非思考模式传 temperature
                 when (thinkingMode) {
                     ThinkingMode.FAST -> {
                         put("thinking", JSONObject().put("type", "disabled"))
+                        put("temperature", 0.2)  // 低温度，减少幻觉
                     }
                     ThinkingMode.BALANCED -> {
                         put("thinking", JSONObject().put("type", "enabled"))
