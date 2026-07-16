@@ -5,6 +5,26 @@
 
 ---
 
+## 0. TL;DR（接手前必读 30 秒）
+
+| 项目 | 当前值 | 位置 |
+|------|--------|------|
+| **算法版本** | v5（mean+1.7std + ±50ms 精修窗口） | [EcgFeatureExtractor.kt:175-360](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt#L175-L360) |
+| **最新 CI** | Build #29504644243 / commit `94326ea` ✅ BUILD SUCCESSFUL | [Actions](https://github.com/hongquangphung7044-oss/WearHealthCompanion/actions) |
+| **R 波检测核心参数** | k=1.7, MWI=150ms, 不应期=200ms, 精修=±50ms, 回溯触发=1.66×, 回溯阈值=0.5× | [L234-360](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt#L234-L360) |
+| **节律判别策略** | 本地只测量（RR/CV/Poincaré/短长配对），判读归 DS | 见第 7.3 节 |
+| **核心约束** | 不本地构建（只 `git diff --check` + Python 验证）；TDD；阈值要有依据；不回退 Build #59 BLE 修复 | 见第 6 节 |
+| **配套主文档** | [README.md](../README.md)（项目总交接文档，顶部有自动构建状态） | — |
+
+**最近 3 次算法演进**：
+- v5 (commit `94326ea`, 2026-07-16)：精修窗口 ±25ms→±50ms，修复 envelope 峰在 R 峰上升沿导致 HR range>10 → 见第 5 节 Bug 7
+- v4 (commit `a834d69`, 2026-07-16)：mean+2.0std→mean+1.7std，删除形态验证，修复运动后 R 波漏检 60% → 见第 5 节 Bug 6
+- v3 (废弃)：百分位 0.92 + 形态验证，静息过度检出 → 已回退
+
+**接手第一步**：先读第 3 节算法架构，再读第 5 节 Bug 历史（避免重复踩坑），最后读第 7 节待优化方向。
+
+---
+
 ## 1. 背景与目标
 
 ### 项目概述
@@ -385,7 +405,7 @@ HeartVoice 5 份样本的诊断（SN/SNB）正属于此类。
 ## 8. 文件索引
 
 ### 核心算法
-- [shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt) — 本地特征提取（R 波检测/HRV/间期/toPromptText）
+- [shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt) — 本地特征提取（R 波检测/HRV/间期/toPromptText），**算法核心，v5 版本**
 - [app/src/main/java/com/wearhealth/companion/model/EcgAnalysisResult.kt](../app/src/main/java/com/wearhealth/companion/model/EcgAnalysisResult.kt) — 数据模型 + `computeMinMaxHeartRate`（独立本地算法）
 - [app/src/main/java/com/wearhealth/companion/network/HeartVoiceApiClient.kt](../app/src/main/java/com/wearhealth/companion/network/HeartVoiceApiClient.kt) — HeartVoice API 客户端
 
@@ -393,14 +413,31 @@ HeartVoice 5 份样本的诊断（SN/SNB）正属于此类。
 - [shared/src/main/java/com/wearhealth/companion/shared/DiagnosticExporter.kt](../shared/src/main/java/com/wearhealth/companion/shared/DiagnosticExporter.kt) — 诊断包导出（三段对照）
 - [shared/src/main/java/com/wearhealth/companion/shared/EcgMeasurementTransfer.kt](../shared/src/main/java/com/wearhealth/companion/shared/EcgMeasurementTransfer.kt) — 测量数据传输模型
 
-### 测试
-- [shared/src/test/java/com/wearhealth/companion/shared/EcgFeatureExtractorTest.kt](../shared/src/test/java/com/wearhealth/companion/shared/EcgFeatureExtractorTest.kt) — 算法回归测试（含 `syntheticEcg` 辅助函数）
+### 测试（CI 实际运行）
+- [shared/src/test/java/com/wearhealth/companion/shared/EcgFeatureExtractorTest.kt](../shared/src/test/java/com/wearhealth/companion/shared/EcgFeatureExtractorTest.kt) — 算法回归测试（含 `syntheticEcg` 辅助函数，24 个 @Test）
 - [shared/src/test/java/com/wearhealth/companion/shared/DiagnosticExporterTest.kt](../shared/src/test/java/com/wearhealth/companion/shared/DiagnosticExporterTest.kt) — 导出功能测试
 
-### 真实数据样本
-- [samples/ECG_diagnostic_20260716_182620.txt](../samples/ECG_diagnostic_20260716_182620.txt) — 真实 HeartVoice 路径诊断包（15410 点）
-- [samples/ECG_diagnostic_20260716_182859.txt](../samples/ECG_diagnostic_20260716_182859.txt) — 真实诊断包（15320 点）
-- [samples/ECG_diagnostic_20260716_183119.txt](../samples/ECG_diagnostic_20260716_183119.txt) — 真实诊断包（15320 点）
+### 辅助验证脚本（Python，本地沙箱用，不进 CI）
+> **重要**：Python `random.Random` ≠ Java `java.util.Random`，即使 seed 相同也产生不同序列。
+> 对 Kotlin 测试场景的精确预测**必须用 `java_random.py` 的 `JavaRandom` 类**。
+
+- [java_random.py](../java_random.py) — Java `java.util.Random` 的精确 Python 复现（LCG + nextDouble + nextGaussian）
+- [test_kotlin_exact.py](../test_kotlin_exact.py) — 用 JavaRandom 精确复现 Kotlin 测试，验证不同 k 值的 HR range
+- [test_refine_window.py](../test_refine_window.py) — 测试不同精修窗口宽度对 HR range 的影响（Bug 7 修复依据）
+- [test_refine_all.py](../test_refine_all.py) — ±50ms 精修窗口对所有依赖 R 峰的测试场景的影响（回归验证）
+- [verify_k18.py](../verify_k18.py) — k=1.7 全面验证（6 seed 运动 + 5 真实样本，用 Python random，仅参考）
+- [test_backtrack.py](../test_backtrack.py) — k=2.0 + 可调回溯参数测试（证明 k=2.0 无法救场运动后漏检）
+- [debug_rpos.py](../debug_rpos.py) — 诊断 R 峰位置漂移根因（Bug 7 定位工具）
+
+### 真实数据样本（HeartVoice 路径导出诊断包）
+- [samples/运动后.txt](../samples/运动后.txt) — 运动后 wrist ECG（HV 107bpm SNT），**最关键的漏检样本**
+- [samples/静息.txt](../samples/静息.txt) — 静息 wrist ECG（HV 54bpm SNB）
+- [samples/心电api静息换右手.txt](../samples/心电api静息换右手.txt) — 换右手静息（HV 59bpm SNB）
+- [samples/心电api活动后.txt](../samples/心电api活动后.txt) — 活动后（HV 72bpm SN）
+- [samples/心电api静息.txt](../samples/心电api静息.txt) — 静息（HV 59bpm SNB）
+- [samples/ECG_diagnostic_20260716_182620.txt](../samples/ECG_diagnostic_20260716_182620.txt) — 早期真实诊断包（15410 点）
+- [samples/ECG_diagnostic_20260716_182859.txt](../samples/ECG_diagnostic_20260716_182859.txt) — 早期真实诊断包（15320 点）
+- [samples/ECG_diagnostic_20260716_183119.txt](../samples/ECG_diagnostic_20260716_183119.txt) — 早期真实诊断包（15320 点）
 
 ### CI/构建
 - [.github/workflows/build-apk.yml](../.github/workflows/build-apk.yml) — GitHub Actions 构建配置
