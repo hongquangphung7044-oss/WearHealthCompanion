@@ -149,7 +149,7 @@ private fun HistoryItemCard(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         colors = cardColor,
         shape = MaterialTheme.shapes.medium,
-        shadowElevation = 2.dp,
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(
