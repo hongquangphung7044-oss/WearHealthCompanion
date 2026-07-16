@@ -261,14 +261,17 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 从 DS JSON 报告里提取诊断标签
      *
-     * 解析"节律分析.节律判断"字段，映射到项目诊断标签：
+     * 解析"节律判断"字段，映射到项目诊断标签：
      * - 窦性心律 → SN
      * - 窦性心动过速 → SNT
      * - 窦性心动过缓 → SNB
      * - 房颤 → AF
      * - 房扑 → AFL
      * - 早搏 → PAC（本设备无法区分 PAC/PVC，统一标 PAC）
-     * 解析失败时用本地特征兜底（RR 变异系数 > 0.15 标"疑似心律不齐"）
+     *
+     * 注意：不靠本地 RR 变异系数猜测心律不齐。年轻人呼吸性窦性心律不齐 CV 常达 0.05-0.15，
+     * 偶尔超 0.15，本地特征不足以诊断 ARR/房颤。仅在 DS 明确报告"不齐/房颤/早搏"时才标注。
+     * 解析失败时默认 SN（窦性心律），避免 Max 档响应异常时误报 ARR。
      */
     private fun extractDsDiagnosis(
         reportJson: String,
@@ -285,6 +288,8 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 rhythm.contains("房扑") -> labels.add("AFL")
                 rhythm.contains("心动过速") -> labels.add("SNT")
                 rhythm.contains("心动过缓") -> labels.add("SNB")
+                // 仅当 DS 明确报"不齐"且非"窦性心律不齐"时才标 ARR
+                // 窦性心律不齐（呼吸性，青年人常见，良性）不标 ARR
                 rhythm.contains("不齐") && !rhythm.contains("窦性") -> labels.add("ARR")
                 rhythm.contains("窦性") -> labels.add("SN")
                 else -> labels.add("SN")
@@ -294,30 +299,15 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
             if (earlyBeats != null && earlyBeats.length() > 0) {
                 labels.add("PAC")
             }
-            // 兜底：RR 变异系数 > 0.15 且未标 AF → 标疑似心律不齐
-            if (g.rrIntervalsMs.size > 3 && g.avgHeartRate > 0) {
-                val mean = g.rrIntervalsMs.average()
-                val std = kotlin.math.sqrt(
-                    g.rrIntervalsMs.map { (it - mean) * (it - mean) }.average()
-                )
-                val cv = std / mean
-                if (cv > 0.15 && !labels.contains("AF") && !labels.contains("ARR")) {
-                    labels.add("ARR")
-                }
-            }
+            // 不再用本地 RR 变异系数兜底标 ARR：
+            // 本地 CV 受呼吸性变异/噪声影响大，不足以诊断心律不齐，
+            // 之前 Max 档响应异常时会走 catch 兜底，CV>0.15 误报 ARR。
             labels.ifEmpty { listOf("SN") }
         } catch (e: Exception) {
-            Log.w(TAG, "解析 DS 报告诊断失败，用本地特征兜底", e)
-            // 兜底：根据 RR 变异系数判断
-            if (g.rrIntervalsMs.size > 3 && g.avgHeartRate > 0) {
-                val mean = g.rrIntervalsMs.average()
-                val std = kotlin.math.sqrt(
-                    g.rrIntervalsMs.map { (it - mean) * (it - mean) }.average()
-                )
-                if (std / mean > 0.15) listOf("ARR") else listOf("SN")
-            } else {
-                listOf("SN")
-            }
+            Log.w(TAG, "解析 DS 报告诊断失败，默认窦性心律，建议重测", e)
+            // 解析失败时不猜测节律，默认 SN，避免误报 ARR
+            // （Max 档响应异常/超时时会走到这里）
+            listOf("SN")
         }
     }
 

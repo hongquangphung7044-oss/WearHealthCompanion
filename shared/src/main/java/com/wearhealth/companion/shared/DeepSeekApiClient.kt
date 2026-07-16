@@ -19,19 +19,18 @@ import java.util.concurrent.TimeUnit
  * - 余额: GET  /user/balance
  *
  * 模型（2026-07 起 V4 架构，旧名 deepseek-chat/reasoner 于 2026-07-24 废弃）：
- * - deepseek-v4-flash  轻量，284B 总参/13B 激活，适合手表端快速分析
- * - deepseek-v4-pro    强力，1.6T 总参/49B 激活，适合手机端深度分析
+ * - deepseek-v4-flash  轻量，284B 总参/13B 激活，手表端分析使用
+ * - deepseek-v4-pro    强力，1.6T 总参/49B 激活（保留枚举，本项目当前不用）
  *
- * 思考强度三档（UI 选项 → 真实参数）：
+ * 思考强度三档（UI 选项 → 真实参数，统一用 Flash 模型，仅区分思考强度）：
  * - 快速: flash + thinking=disabled（跳过思考，最快，幻觉略高）
  * - 均衡: flash + thinking=enabled + reasoning_effort=high（标准思考）
- * - Max:  pro   + thinking=enabled + reasoning_effort=max（Pro 模型 + 最大思考深度）
+ * - Max:  flash + thinking=enabled + reasoning_effort=max（Flash + 最大思考深度）
  *
  * 思考模式 API 约束（DeepSeek 官方文档，2026-07）：
  * 1. 思考模式不支持 temperature/top_p/presence_penalty/frequency_penalty（设置不会报错但不生效）
  * 2. 思维链内容通过 reasoning_content 返回，与 content 同级；content 仅含最终答案
- * 3. reasoning_effort=max 为 Pro 大上下文设计，建议配 Pro 模型
- * 4. max 模式 TTFT 可达 20-38s，总响应可能 60s+，需足够大的 readTimeout
+ * 3. max 模式 TTFT 可达 20-38s，总响应可能 60-90s+，需足够大的 readTimeout
  *
  * 间期估测由本地 EcgFeatureExtractor 完成，本客户端只负责把特征文本喂给 DS 做医学推理，
  * 不让 LLM 处理原始数字串（避免幻觉 + token 爆炸）。
@@ -41,7 +40,7 @@ class DeepSeekApiClient(
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        // DS 思考模式响应较慢：Pro+max TTFT 可达 20-38s，加上思考与生成可能 90s+
+        // DS 思考模式响应较慢：Flash+max TTFT 可达 20-38s，加上思考与生成可能 60-90s+
         // 用 180s 保证 max 档不超时（否则请求失败导致 AI 解读消失）
         .readTimeout(180, TimeUnit.SECONDS)
         .build()
@@ -165,26 +164,38 @@ class DeepSeekApiClient(
 
             val json = JSONObject(responseBody)
             // OpenAI 兼容格式：choices[0].message.content
+            // 思考模式下还有 reasoning_content（思维链），与 content 同级。
+            // 部分情况下 content 可能为空字符串或仅片段，此时回退用 reasoning_content 提取 JSON，
+            // 否则 Max 档会因 content 为空而"AI 解读消失"。
             val choices = json.optJSONArray("choices")
                 ?: return@withContext Result.failure(RuntimeException("DeepSeek 响应缺少 choices"))
             if (choices.length() == 0) {
                 return@withContext Result.failure(RuntimeException("DeepSeek 响应 choices 为空"))
             }
-            val content = choices.getJSONObject(0)
-                .optJSONObject("message")
-                ?.optString("content")
-                ?: return@withContext Result.failure(RuntimeException("DeepSeek 响应缺少 message.content"))
+            val message = choices.getJSONObject(0).optJSONObject("message")
+                ?: return@withContext Result.failure(RuntimeException("DeepSeek 响应缺少 message"))
+            val content = message.optString("content", "")
+            val reasoningContent = message.optString("reasoning_content", "")
+            // content 优先（最终答案）；为空时回退 reasoning_content（思维链里可能含 JSON 结论）
+            val rawText = when {
+                content.isNotBlank() -> content
+                reasoningContent.isNotBlank() -> reasoningContent
+                else -> return@withContext Result.failure(
+                    RuntimeException("DeepSeek 响应 message.content 和 reasoning_content 均为空")
+                )
+            }
 
             val usage = json.optJSONObject("usage")
             val promptTokens = usage?.optInt("prompt_tokens", 0) ?: 0
             val completionTokens = usage?.optInt("completion_tokens", 0) ?: 0
             val totalTokens = usage?.optInt("total_tokens", 0) ?: 0
 
-            Log.i(TAG, "DeepSeek 分析完成: ${content.length} 字符, " +
+            Log.i(TAG, "DeepSeek 分析完成: content=${content.length}字符 " +
+                    "reasoning=${reasoningContent.length}字符, " +
                     "tokens=$promptTokens+$completionTokens=$totalTokens")
 
             // 剥离大模型可能附加的 Markdown 代码块包裹，存储纯净 JSON
-            val cleanedContent = JsonCleaner.extractJsonObject(content)
+            val cleanedContent = JsonCleaner.extractJsonObject(rawText)
 
             Result.success(DeepSeekReport(
                 reportJson = cleanedContent,
