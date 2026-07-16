@@ -211,12 +211,17 @@ object EcgFeatureExtractor {
         }
 
         // 4. 分段自适应阈值（解决局部噪声污染全局阈值）
-        // 旧实现用全局 envMean+2×envStd，真实信号中某段有大运动伪差时 envStd 被拉高，
-        // 导致干净段的 R 波梯度全部低于阈值 → 漏检 → 心率虚低（如 33bpm）+ 虚假长 RR。
-        // 分段阈值：按 4 秒窗口分段计算各自 mean+2×std，逐点用所属段阈值判定。
-        // 4 秒覆盖约 4-5 个心动周期，统计稳健；窗口太短（如 1 秒）样本不足 std 不稳。
-        // 依据：Pan-Tompkins 原版用自适应阈值但带短时记忆；分段独立阈值是工程改进，
-        // 避免单一噪声段污染整段测量（非临床金标准，针对 wrist-wear 噪声场景）
+        // 演进历史：
+        // - v1 全局 envMean+2×envStd：某段大运动伪差拉高 envStd → 干净段 R 波漏检 → 心率虚低
+        // - v2 分段 mean+2×std（4 秒窗口）：解决跨段污染，但运动后肌电干扰让 envelope 右偏长尾
+        //   （少量极高值），mean+2std 被长尾拉高 → 真实 R 波 envelope 峰仅 0.85~1.11 倍阈值
+        //   → 漏检 60%（samples/运动后.txt：HV 107bpm，本地 54bpm）
+        // - v3 分段百分位 0.92（当前）：百分位数对右偏长尾分布稳健（只取第 92% 位置，不受极高值影响）
+        //   Python 验证（verify_red.py，6 seed）：mean+2std 检出 21-29，百分位 0.92 检出 37-45
+        //   5 份真实样本（verify_real.py）：4/5 准确不回归，运动后改善（21→34 R 波）
+        //
+        // 0.92 选择依据：更低（0.85-0.90）误检短 RR 飙升（test_percentile.py），0.92 + 形态验证平衡
+        // 4 秒窗口覆盖约 4-5 个心动周期，统计稳健；窗口太短（1 秒）样本不足百分位不稳
         //
         // 历史教训：曾尝试加 median×1.5 下限防平坦段误检，但真实 wrist ECG 数据
         // （samples/ECG_diagnostic_*.txt）证实 R 波包络峰仅为噪声中位数 ~1.4 倍，
@@ -229,28 +234,27 @@ object EcgFeatureExtractor {
             val segEnd = minOf(envelope.size, segStart + segLen)
             val segSize = segEnd - segStart
             if (segSize <= 0) continue
-            var sum = 0.0
-            for (i in segStart until segEnd) sum += envelope[i]
-            val segMean = sum / segSize
-            var varSum = 0.0
-            for (i in segStart until segEnd) {
-                val d = envelope[i] - segMean
-                varSum += d * d
-            }
-            val segStd = sqrt(varSum / segSize)
-            val segThreshold = segMean + segStd * 2.0
+            // 百分位阈值（0.92 分位数）：对右偏长尾分布比 mean+2std 稳健
+            val segSorted = DoubleArray(segSize) { envelope[segStart + it] }.also { it.sort() }
+            val pctIdx = minOf(segSize - 1, (segSize * 0.92).toInt())
+            val segThreshold = segSorted[pctIdx]
             for (i in segStart until segEnd) thresholds[i] = segThreshold
         }
         // 全局最低阈值保护：纯静音/全零段阈值可能极低，加 floor 避免噪声误判
         val globalFloor = 3.0
 
-        // 5. R 峰检测：阈值 + 局部最大 + 不应期
+        // 5. R 峰检测：阈值 + 局部最大 + 不应期 + 形态验证
         // 不应期 200ms（Pan-Tompkins 原版 MINPEAKDISTANCE=200ms，生理上 RR 不可能 <200ms）
-        // 旧实现 332ms 偏保守但可接受；真正 bug 在精修后 lastPeakIdx 未更新为 bestIdx
+        // 形态验证：百分位阈值降低后会检出部分肌电噪声宽缓波，用"尖峰特征"过滤——
+        // 候选点 |hp| 必须高于两侧 50ms 处 |hp| 的 1.1 倍（R 波 QRS 80-120ms，50ms 处应已回落）
+        // 侧翼 1.1 倍（非 1.3）：运动后肌电干扰让 50ms 侧翼处也有噪声，真实 R 波 |hp| 可能只比
+        // 侧翼高 1.1-1.2 倍；1.3 倍会把运动后真实 R 波压掉（analyze_motion3.py 验证）
+        // Python 验证（verify_real.py）：1.1 倍在 5 份真实样本上 4/5 准确，运动后检出 34 个 R 波
         val rPeaks = mutableListOf<Int>()
         val refractory = sampleRateHz / 5  // 200ms 不应期（500/5=100样本，最高 300bpm 上限）
         var lastPeakIdx = -refractory * 2
         val checkRange = sampleRateHz / 50  // ±10ms 局部最大检查（500/50=10样本=±10ms）
+        val flank = sampleRateHz / 20  // 50ms 侧翼（R 波 QRS 80-120ms，50ms 处应已回落）
 
         for (i in envelope.indices) {
             val thr = maxOf(thresholds[i], globalFloor)
@@ -266,6 +270,13 @@ object EcgFeatureExtractor {
             }
             if (!isLocalMax) continue
             if ((i - lastPeakIdx) < refractory) continue
+
+            // 形态验证：候选点 |hp| 必须高于两侧 50ms 处 |hp| 的 1.1 倍（尖峰 vs 缓波）
+            val leftIdx = maxOf(0, i - flank)
+            val rightIdx = minOf(highPassed.lastIndex, i + flank)
+            val candVal = abs(highPassed[i])
+            if (candVal < abs(highPassed[leftIdx]) * 1.1 ||
+                candVal < abs(highPassed[rightIdx]) * 1.1) continue
 
             // 6. 精修：在原始去基线信号 ±25ms 邻域找真正的 R 峰（梯度峰可能偏移几ms）
             val refineLo = maxOf(0, i - sampleRateHz / 40)
@@ -322,6 +333,11 @@ object EcgFeatureExtractor {
                                 if (m != j && envelope[m] > envelope[j]) { isMax = false; break }
                             }
                             if (isMax) {
+                                // 形态验证（与主检测一致）：候选点 |hp| 必须高于两侧 50ms 处 |hp| 的 1.1 倍
+                                val bLeftIdx = maxOf(0, j - flank)
+                                val bRightIdx = minOf(highPassed.lastIndex, j + flank)
+                                if (abs(highPassed[j]) < abs(highPassed[bLeftIdx]) * 1.1 ||
+                                    abs(highPassed[j]) < abs(highPassed[bRightIdx]) * 1.1) continue
                                 bestBackVal = envelope[j]
                                 bestBackIdx = j
                             }
