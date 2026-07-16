@@ -295,6 +295,23 @@ object EcgFeatureExtractor {
         return rr
     }
 
+    /**
+     * 剔除早搏 RR（偏离均值>25%），专供 HRV 计算
+     *
+     * 早搏的短 RR（联律间期）和长 RR（代偿间隙）会暴涨 SDNN/RMSSD/pNN50，
+     * 让 DS 误判房颤。HRV 反映自主神经张力，应基于正常窦性心拍。
+     * 节律判别仍用原始 RR（保早搏特征），两条通路各司其职。
+     */
+    private fun filterEctopicBeats(rrIntervals: List<Int>): List<Int> {
+        if (rrIntervals.size < 5) return rrIntervals
+        val mean = rrIntervals.average()
+        if (mean <= 0) return rrIntervals
+        return rrIntervals.filter { rr ->
+            val dev = abs(rr - mean) / mean
+            dev <= 0.25  // 保留偏离均值≤25%的正常心拍
+        }.ifEmpty { rrIntervals }  // 全部偏离则保留原样（异常情况不空手）
+    }
+
     /** 中位数（抗 P/T 波干扰，比均值更适合做局部基线估计） */
     private fun List<Int>.median(): Double {
         if (isEmpty()) return 0.0
