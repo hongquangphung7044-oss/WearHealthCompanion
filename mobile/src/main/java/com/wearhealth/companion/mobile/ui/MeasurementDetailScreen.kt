@@ -76,10 +76,18 @@ fun MeasurementDetailScreen(
     val exporting by viewModel.exporting.collectAsState()
     val pdfResult by viewModel.pdfExportResult.collectAsState()
     val pdfError by viewModel.pdfExportError.collectAsState()
+    val diagnosticPath by viewModel.diagnosticExportPath.collectAsState()
+    val diagnosticError by viewModel.diagnosticExportError.collectAsState()
     val createDocument = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/pdf"),
     ) { uri ->
         if (uri != null) transfer?.let { viewModel.exportPdf(it, uri) }
+    }
+    // API 26-28 用 SAF 选择诊断包保存位置
+    val createDiagnosticDocument = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri != null) transfer?.let { viewModel.exportDiagnostic(it, uri) }
     }
 
     if (showDeleteConfirmation) {
@@ -114,6 +122,15 @@ fun MeasurementDetailScreen(
             viewModel.exportPdf(data)
         } else {
             createDocument.launch(PdfExporter.displayName(data.timestamp))
+        }
+    }
+
+    fun exportDiagnostic() {
+        val data = transfer ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            viewModel.exportDiagnostic(data)
+        } else {
+            createDiagnosticDocument.launch(com.wearhealth.companion.shared.DiagnosticExporter.displayName(data.timestamp))
         }
     }
 
@@ -167,8 +184,11 @@ fun MeasurementDetailScreen(
                 exporting = exporting,
                 pdfLocation = pdfResult?.locationLabel,
                 pdfError = pdfError ?: openError,
+                diagnosticPath = diagnosticPath,
+                diagnosticError = diagnosticError,
                 onExport = ::export,
                 onOpenPdf = ::openPdf,
+                onExportDiagnostic = ::exportDiagnostic,
                 onDelete = { showDeleteConfirmation = true },
             )
         }
@@ -182,8 +202,11 @@ private fun DetailContent(
     exporting: Boolean,
     pdfLocation: String?,
     pdfError: String?,
+    diagnosticPath: String?,
+    diagnosticError: String?,
     onExport: () -> Unit,
     onOpenPdf: () -> Unit,
+    onExportDiagnostic: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val duration = if (data.sampleRate > 0) data.rawEcgData.size.toDouble() / data.sampleRate else 0.0
@@ -341,6 +364,26 @@ private fun DetailContent(
             OutlinedButton(onClick = onOpenPdf, modifier = Modifier.fillMaxWidth()) { Text("打开 PDF") }
         }
         pdfError?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+
+        // 导出算法诊断包（纯文本）：原始 ECG + 算法特征 + AI 解读三段对照
+        // 用途：用户复制贴给助手，助手据此精确定位原始数据/本地算法/AI 哪一步出错
+        OutlinedButton(
+            onClick = onExportDiagnostic,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !exporting,
+        ) {
+            Text(if (exporting) "导出中..." else "导出算法诊断包（纯文本）")
+        }
+        diagnosticPath?.let { path ->
+            Text(
+                "已保存到：$path\n用文件管理器打开 .txt，复制全部内容贴给助手即可",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        diagnosticError?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
 

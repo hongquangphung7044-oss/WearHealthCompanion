@@ -19,6 +19,7 @@ import com.wearhealth.companion.mobile.data.MeasurementRepository
 import com.wearhealth.companion.mobile.data.MobileApiKeyStore
 import com.wearhealth.companion.mobile.data.MobileDeepSeekSettings
 import com.wearhealth.companion.mobile.data.MobileTavilySettings
+import com.wearhealth.companion.mobile.pdf.DiagnosticExporterAndroid
 import com.wearhealth.companion.mobile.pdf.PdfExportResult
 import com.wearhealth.companion.mobile.pdf.PdfExporter
 import com.wearhealth.companion.mobile.service.BleSyncForegroundService
@@ -131,6 +132,13 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
     /** 导出进行中标志 */
     private val _exporting = MutableStateFlow(false)
     val exporting: StateFlow<Boolean> = _exporting.asStateFlow()
+
+    /** 诊断包导出结果（保存路径标签，供 UI 显示） */
+    private val _diagnosticExportPath = MutableStateFlow<String?>(null)
+    val diagnosticExportPath: StateFlow<String?> = _diagnosticExportPath.asStateFlow()
+
+    private val _diagnosticExportError = MutableStateFlow<String?>(null)
+    val diagnosticExportError: StateFlow<String?> = _diagnosticExportError.asStateFlow()
 
     // 监听手表数据到达广播（Room Flow 本身会推送，这里额外刷新手表连接状态）
     private val updateReceiver = object : BroadcastReceiver() {
@@ -424,12 +432,48 @@ class MobileViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 导出算法诊断包（纯文本 .txt）：原始 ECG 数据 + 算法特征 + AI 解读三段对照。
+     *
+     * 用途：用户复制贴给助手，助手据此精确定位原始数据/本地算法/AI 哪一步出错。
+     * 文件写入 Download/WearHealthCompanion/ECG_diagnostic_*.txt（API 29+），
+     * 或 SAF 选择位置（API 26-28）。
+     *
+     * @param transfer 已加载的完整测量数据
+     * @param destination SAF 选择的 URI（仅 API 26-28 需要）
+     */
+    fun exportDiagnostic(transfer: EcgMeasurementTransfer, destination: Uri? = null) {
+        val context = getApplication<Application>()
+        viewModelScope.launch {
+            _exporting.value = true
+            _diagnosticExportPath.value = null
+            _diagnosticExportError.value = null
+            try {
+                _diagnosticExportPath.value = withContext(Dispatchers.IO) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        DiagnosticExporterAndroid.exportToDownloads(context, transfer)
+                    } else {
+                        requireNotNull(destination) { "请先选择诊断包保存位置" }
+                        DiagnosticExporterAndroid.exportToUri(context, transfer, destination)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "导出诊断包失败", e)
+                _diagnosticExportError.value = "导出失败：${e.message ?: "无法写入所选位置"}"
+            } finally {
+                _exporting.value = false
+            }
+        }
+    }
+
     /** 清除一次性结果消息 */
     fun clearMessages() {
         _apiKeySendResult.value = null
         _syncResult.value = null
         _pdfExportResult.value = null
         _pdfExportError.value = null
+        _diagnosticExportPath.value = null
+        _diagnosticExportError.value = null
         _dsSendResult.value = null
         _dsBalanceError.value = null
     }
