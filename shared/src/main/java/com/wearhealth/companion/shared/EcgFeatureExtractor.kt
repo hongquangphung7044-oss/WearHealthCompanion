@@ -136,8 +136,8 @@ object EcgFeatureExtractor {
      *
      * 检测（借鉴 Pan-Tompkins）：
      * 4. 自适应阈值 = 均值 + 2×标准差
-     * 5. 局部最大 + 300ms 不应期
-     * 6. 原始信号 ±25ms 精修 R 峰位置
+     * 5. 局部最大 + 332ms 不应期（最高 180bpm）
+     * 6. 原始信号 ±24ms 精修 R 峰位置
      * 7. 回溯补检：RR > 1.66×近期均值时半阈值补检（PT 核心，灵敏度 95%→99%）
      */
     private fun detectRPeaks(ecgData: List<Int>, sampleRateHz: Int): List<Int> {
@@ -183,9 +183,9 @@ object EcgFeatureExtractor {
 
         // 5. R 峰检测：阈值 + 局部最大 + 不应期
         val rPeaks = mutableListOf<Int>()
-        val refractory = sampleRateHz / 3  // 300ms 不应期（最高 200bpm）
+        val refractory = sampleRateHz / 3  // 332ms 不应期（500/3≈166样本，最高 180bpm）
         var lastPeakIdx = -refractory * 2
-        val checkRange = sampleRateHz / 50  // ±10ms 局部最大检查
+        val checkRange = sampleRateHz / 50  // ±10ms 局部最大检查（500/50=10样本=±10ms）
 
         for (i in envelope.indices) {
             if (envelope[i] < threshold) continue
@@ -218,11 +218,13 @@ object EcgFeatureExtractor {
             val extraPeaks = mutableListOf<Int>()
             for (k in 1 until rPeaks.size) {
                 val rr = rPeaks[k] - rPeaks[k - 1]
-                // 计算近期 RR 均值（前后各 4 个）
+                // 计算近期 RR 均值（前后各 4 个），排除当前 k 索引的 RR
+                // 标准 Pan-Tompkins 用排除当前间期的邻居均值，避免长 RR 自身污染均值
                 val recentStart = maxOf(0, k - 4)
                 val recentEnd = minOf(rPeaks.size, k + 4)
                 val recentRRs = mutableListOf<Int>()
                 for (m in recentStart + 1 until recentEnd) {
+                    if (m == k) continue  // 排除当前待判定的长 RR
                     recentRRs.add(rPeaks[m] - rPeaks[m - 1])
                 }
                 if (recentRRs.size < 3) continue
@@ -282,7 +284,10 @@ object EcgFeatureExtractor {
         val rr = mutableListOf<Int>()
         for (i in 1 until rPeaks.size) {
             val rrMs = ((rPeaks[i] - rPeaks[i - 1]) * 1000.0 / sampleRateHz).toInt()
-            if (rrMs in 400..1500) rr.add(rrMs)
+            // 宽区间 300-2500ms（24-200bpm），保留早搏短 RR 和代偿间隙长 RR
+            // 原 400-1500ms 会剔除：早搏联律间期常 300-400ms、代偿间隙常 1500-2000ms
+            // 导致 HRV/节律判别失真、短-长配对断裂。心率统计另有 ±30% 中位数过滤剔异常
+            if (rrMs in 300..2500) rr.add(rrMs)
         }
         return rr
     }
@@ -437,7 +442,7 @@ object EcgFeatureExtractor {
      * QRS: 阈值交叉法——以 R 峰幅度的 10% 为阈值，找上升/下降穿越点作为 Q/S 边界。
      *      10% 比斜率法/25% 更接近临床 QRS 起止点，偏差 0-10ms（25% 只抓 R 尖峰偏窄 5-15ms）。
      * PR: R 峰前推 250ms 窗口找 P 波候选（小幅正向峰）→ 到 R 峰的间隔
-     * QT: R 峰后 100~500ms 窗口，去基线后用平滑导数找 T 波峰，减少基线漂移误判
+     * QT: R 峰后 100~500ms 窗口（但不超过下一 R 峰前 50ms），去基线后用平滑导数找 T 波峰
      */
     private fun estimateIntervals(
         ecgData: List<Int>,
@@ -451,7 +456,8 @@ object EcgFeatureExtractor {
         val prIntervals = mutableListOf<Int>()
         val qtIntervals = mutableListOf<Int>()
 
-        for (rIdx in rPeaks) {
+        for (idx in rPeaks.indices) {
+            val rIdx = rPeaks[idx]
             // QRS 估测：阈值交叉法（兼容正向/负向 R 波）
             val qSearchStart = maxOf(0, rIdx - sampleRateHz * 80 / 1000)
             val sSearchEnd = minOf(ecgData.size, rIdx + sampleRateHz * 80 / 1000)
@@ -510,7 +516,12 @@ object EcgFeatureExtractor {
 
             // QT 估测：去基线后用平滑导数找 T 波峰，减少基线漂移误判
             val tSearchStart = rIdx + sampleRateHz * 100 / 1000
-            val tSearchEnd = minOf(ecgData.size, rIdx + sampleRateHz * 500 / 1000)
+            // 搜索窗口上限：min(rIdx+500ms, 下一R峰前50ms)
+            // 高心率(HR≥120bpm, RR≤500ms)时不约束会跨入下一QRS，把下一R波当T波→QT虚高
+            val tSearchHardEnd = rIdx + sampleRateHz * 500 / 1000
+            val nextRPeakLimit = if (idx + 1 < rPeaks.size) rPeaks[idx + 1] - sampleRateHz * 50 / 1000
+                                 else ecgData.size
+            val tSearchEnd = minOf(ecgData.size, tSearchHardEnd, nextRPeakLimit)
             if (tSearchEnd > tSearchStart + 10) {
                 val tSeg = ecgData.subList(tSearchStart, tSearchEnd)
                 // 用窗口中位数去基线（比均值抗基线漂移）
