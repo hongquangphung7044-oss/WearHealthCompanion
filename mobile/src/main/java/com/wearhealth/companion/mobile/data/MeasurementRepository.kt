@@ -39,6 +39,8 @@ class MeasurementRepository(private val dao: EcgMeasurementDao) {
             downsampledEcgBytes = EcgBinaryCodec.encode(transfer.downsampledEcg),
             analysisMethod = transfer.analysisMethod,
             aiReport = transfer.aiReport,
+            tavilyStatus = transfer.tavilyStatus,
+            ppgReferenceHr = transfer.ppgReferenceHr,
         )
         return dao.insert(entity)
     }

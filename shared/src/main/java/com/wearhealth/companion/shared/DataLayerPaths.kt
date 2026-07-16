@@ -60,6 +60,8 @@ object DataLayerPaths {
     const val KEY_DOWNSAMPLED_ECG = "downsampledEcg"  // 降采样波形（用于列表缩略图）
     const val KEY_ANALYSIS_METHOD = "analysisMethod"   // 分析方式：heartvoice / ds_*
     const val KEY_AI_REPORT = "aiReport"               // DeepSeek JSON 报告
+    const val KEY_TAVILY_STATUS = "tavilyStatus"       // Tavily 联网检索状态（仅 DS Max 档）
+    const val KEY_PPG_HR = "ppgHr"                     // PPG 绿光参考心率
 
     // API Key 字段
     const val KEY_API_KEY = "apiKey"

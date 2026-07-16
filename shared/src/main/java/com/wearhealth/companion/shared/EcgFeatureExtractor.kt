@@ -49,6 +49,7 @@ object EcgFeatureExtractor {
         val rrVariabilityCoef: Float,   // RR 变异系数 = SDNN/meanRR，>0.15 提示心律不齐/房颤
         val poincarePattern: String,    // Poincaré 散点形态描述（彗星形/扇形/鱼雷形/复杂形）
         val shortLongPairs: Int,        // 短-长 RR 配对数（早搏代偿间隙特征）
+        val ppgReferenceHr: Int = 0,    // PPG 绿光参考心率（测后读系统心率，0=未采集/不可用）
     )
 
     /** 逐秒分段特征 */
@@ -81,6 +82,7 @@ object EcgFeatureExtractor {
         ecgData: List<Int>,
         sampleRateHz: Int = 500,
         profile: UserProfile = UserProfile(),
+        ppgReferenceHr: Int = 0,
     ): FeatureBundle {
         val durationSec = if (sampleRateHz > 0) ecgData.size.toFloat() / sampleRateHz else 0f
         val rPeaks = detectRPeaks(ecgData, sampleRateHz)
@@ -123,6 +125,7 @@ object EcgFeatureExtractor {
             rrVariabilityCoef = rhythm.variabilityCoef,
             poincarePattern = rhythm.poincarePattern,
             shortLongPairs = rhythm.shortLongPairs,
+            ppgReferenceHr = ppgReferenceHr,
         )
         return FeatureBundle(global, segments, profile)
     }
@@ -794,6 +797,11 @@ object EcgFeatureExtractor {
         sb.append("[全局指标]\n")
         sb.append("采样率:${g.sampleRateHz}Hz 时长:${"%.1f".format(g.durationSec)}s 总点数:${g.totalSamples}\n")
         sb.append("R波检测:${g.rPeakCount}个 平均心率:${g.avgHeartRate}bpm 范围:${g.minHeartRate}-${g.maxHeartRate}bpm\n")
+        // PPG 绿光参考心率：测后读系统心率传感器，绕开本地 R 波检测可能的不准
+        // DS 应以此为"金标准参考"校验本地 R 波心率：两者偏差大时本地 R 波检测可能漏检/误检
+        if (g.ppgReferenceHr > 0) {
+            sb.append("PPG绿光参考心率:${g.ppgReferenceHr}bpm(系统心率传感器独立测算，可信度高于本地R波估测；若与R波心率偏差>15bpm，提示R波检测可能漏检/误检，应以PPG为准)\n")
+        }
         // RR 序列标注异常值（偏离均值>20% 标*，与 filterEctopicBeats 阈值一致，Karey 2019）
         // 帮助 DS 直观识别早搏（短RR）和代偿间隙（长RR）
         if (g.rrIntervalsMs.isNotEmpty()) {

@@ -24,6 +24,8 @@ data class EcgAnalysisResult(
     val ecgSamples: List<Int> = emptyList(),  // ECG 波形数据（降采样后，用于结果显示）
     val analysisMethod: String = "heartvoice", // 分析方式：heartvoice / ds_*
     val aiReport: String = "",                 // DeepSeek JSON 报告（仅 DS 方式有值）
+    val tavilyStatus: String = "",             // Tavily 联网检索状态（仅 DS Max 档有值），供 UI 展示
+    val ppgReferenceHr: Int = 0,               // PPG 绿光参考心率（测后读系统心率，0=未采集/不可用）
 )
 
 /**

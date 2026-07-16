@@ -68,6 +68,7 @@ class DeepSeekApiClient(
         val promptTokens: Int,       // 输入 token 数
         val completionTokens: Int,   // 输出 token 数
         val totalTokens: Int,
+        val tavilyStatus: String = "",  // Tavily 联网检索状态（未触发/已检索/检索失败/未配置），供 UI 展示
     )
 
     /** 余额信息 */
@@ -111,13 +112,28 @@ class DeepSeekApiClient(
         try {
             // 联网检索（仅 Max 档 + Tavily Key 已配置）：固定 3 个医学文献方向，6h 进程内缓存
             // 均衡/快速不检索，省搜索预算；检索失败不阻断 DS 分析（返回空字符串）
-            val tavilyRefs = if (thinkingMode == ThinkingMode.MAX && tavilyApiKey.isNotBlank()) {
-                runCatching { TavilyApiClient(tavilyApiKey).fetchMedicalReferences() }
-                    .getOrElse {
+            // 状态记录供 UI 展示（用户能看见是否联网成功）
+            var tavilyStatus = ""
+            val tavilyRefs = if (thinkingMode == ThinkingMode.MAX) {
+                if (tavilyApiKey.isBlank()) {
+                    tavilyStatus = "未配置 Tavily Key（Max 档可选联网，本次未检索）"
+                    ""
+                } else {
+                    val result = runCatching { TavilyApiClient(tavilyApiKey).fetchMedicalReferences() }
+                    val refs = result.getOrElse {
                         Log.w(TAG, "Tavily 联网检索失败，DS 分析继续（不附加文献）: ${it.message}")
+                        tavilyStatus = "检索失败：${it.message ?: "未知错误"}（未附加文献，不阻断分析）"
                         ""
                     }
-            } else ""
+                    if (refs.isNotBlank()) {
+                        tavilyStatus = "已检索医学文献并注入提示词（房颤检测方法学/HRV参考值/QTc临床意义）"
+                    }
+                    refs
+                }
+            } else {
+                tavilyStatus = "未触发（仅 Max 档联网检索）"
+                ""
+            }
 
             val systemPrompt = buildSystemPrompt() + tavilyRefs
             val messages = JSONArray().apply {
@@ -218,6 +234,7 @@ class DeepSeekApiClient(
                 promptTokens = promptTokens,
                 completionTokens = completionTokens,
                 totalTokens = totalTokens,
+                tavilyStatus = tavilyStatus,
             ))
         } catch (e: Exception) {
             Log.e(TAG, "DeepSeek 调用异常", e)
@@ -367,6 +384,10 @@ class DeepSeekApiClient(
 6. 这是腕表单导联数据，精度远低于 12 导联心电图，所有结论仅供健康参考，不作为医疗诊断依据。
 7. 禁止给出药物剂量、具体治疗方案，仅可建议"建议就医复查心电图"。
 8. HRV 指标（SDNN/RMSSD/pNN50）已由本地算法剔除早搏 RR（偏离均值>20% 的间期，阈值依据 Karey 2019 Front Physiol），反映自主神经张力，不反映心律失常。严禁用 HRV 数值高低反推节律——节律判断以 RR 序列的 [*] 标记、变异系数、Poincaré 形态为准。"早搏 + 正常 HRV"是常见组合，不矛盾。
+9. 【PPG 绿光参考心率】若输入中给出"PPG绿光参考心率"，这是测量后由系统心率传感器（绿光 PPG）独立测算的瞬时心率，可信度高于本地 R 波估测的心率。判断规则：
+   - 若 PPG 与本地 R 波平均心率偏差 >15bpm，提示本地 R 波检测可能漏检/误检，心率分析应以 PPG 为准，并在报告中注明"本地 R 波心率与 PPG 参考偏差大，已采用 PPG 参考心率"
+   - PPG 只是一个瞬时参考值，不能反映 30 秒内的 min/max 范围；min/max 仍以 R 波间期为主，但若 R 波心率明显异常（如 33-172bpm 跨度）应优先采信 PPG 的合理性
+   - PPG 不可用时（未给出），按原逻辑用 R 波心率
 
 【RR 间期序列分析指南 - 你必须主动分析 RR 序列】
 你收到的 RR 间期序列是本地 R 波检测的真实输出，你必须主动分析它来判断节律：

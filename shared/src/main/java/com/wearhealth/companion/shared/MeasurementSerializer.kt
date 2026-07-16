@@ -41,6 +41,12 @@ object MeasurementSerializer {
         if (data.aiReport.isNotEmpty()) {
             putString(DataLayerPaths.KEY_AI_REPORT, data.aiReport)
         }
+        if (data.tavilyStatus.isNotEmpty()) {
+            putString(DataLayerPaths.KEY_TAVILY_STATUS, data.tavilyStatus)
+        }
+        if (data.ppgReferenceHr > 0) {
+            putInt(DataLayerPaths.KEY_PPG_HR, data.ppgReferenceHr)
+        }
         // A retry with the same timestamp and ECG bytes must still generate TYPE_CHANGED so the
         // phone can persist idempotently and resend an ACK that may have been lost previously.
         putString(DataLayerPaths.KEY_TRANSFER_NONCE, java.util.UUID.randomUUID().toString())
@@ -91,6 +97,8 @@ object MeasurementSerializer {
             sampleRate = dataMap.getInt(DataLayerPaths.KEY_SAMPLE_RATE, 500),
             analysisMethod = dataMap.getString(DataLayerPaths.KEY_ANALYSIS_METHOD, "heartvoice"),
             aiReport = dataMap.getString(DataLayerPaths.KEY_AI_REPORT, ""),
+            tavilyStatus = dataMap.getString(DataLayerPaths.KEY_TAVILY_STATUS, ""),
+            ppgReferenceHr = dataMap.getInt(DataLayerPaths.KEY_PPG_HR, 0),
         )
     }
 
@@ -126,6 +134,12 @@ object MeasurementSerializer {
             put("analysisMethod", data.analysisMethod)
             if (data.aiReport.isNotEmpty()) {
                 put("aiReport", data.aiReport)
+            }
+            if (data.tavilyStatus.isNotEmpty()) {
+                put("tavilyStatus", data.tavilyStatus)
+            }
+            if (data.ppgReferenceHr > 0) {
+                put("ppgHr", data.ppgReferenceHr)
             }
         }.toString()
     }
@@ -163,6 +177,8 @@ object MeasurementSerializer {
             sampleRate = o.optInt("sampleRate", 500),
             analysisMethod = o.optString("analysisMethod", "heartvoice"),
             aiReport = o.optString("aiReport", ""),
+            tavilyStatus = o.optString("tavilyStatus", ""),
+            ppgReferenceHr = o.optInt("ppgHr", 0),
         )
     }
 }

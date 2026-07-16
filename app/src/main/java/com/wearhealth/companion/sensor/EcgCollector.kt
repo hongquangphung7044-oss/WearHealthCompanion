@@ -10,8 +10,10 @@ import com.samsung.android.service.health.tracking.data.DataPoint
 import com.samsung.android.service.health.tracking.data.HealthTrackerType
 import com.samsung.android.service.health.tracking.data.ValueKey
 import com.wearhealth.companion.model.EcgCollectionState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -359,6 +361,90 @@ class EcgCollector(private val context: Context) {
 
         tracker.setEventListener(listener)
         Log.i(TAG, "ECG 追踪器已启动，等待数据...")
+    }
+
+    /**
+     * ECG 采集结束后短暂读取 PPG 绿光心率作为参考
+     *
+     * 用途：本地 R 波检测在真实信号下可能漏检/误检导致心率不准（如 33-172bpm），
+     * PPG 心率由系统绿光传感器独立测算，作为参考传给 DS 综合判断。
+     *
+     * 依据（Samsung Health Tracking SDK v1.4.1 官方文档）：
+     * - HealthTrackerType.HEART_RATE_CONTINUOUS：1Hz 连续心率，无 on-demand 模式
+     * - ValueKey.HeartRateSet.HEART_RATE：Int BPM
+     * - ValueKey.HeartRateSet.HEART_RATE_STATUS：0=有效，其他=无效
+     * - ECG_ON_DEMAND 测量期间 HEART_RATE 值无效，必须先停 ECG tracker 再读 HR
+     *   （startEcgCollection 返回前已调 stopEcgTracker，此处满足前提）
+     *
+     * 复用现有 healthTrackingService 连接（ECG 采集后保持），避免双连接竞争。
+     * 取首个 status==0 的 BPM 即停止（约 1 秒），超时返回 0（不阻断分析）。
+     *
+     * @param timeoutMs 超时毫秒，默认 6 秒（HR tracker 1Hz，留足余量）
+     * @return PPG 心率 bpm，0=未采集/不可用/超时
+     */
+    suspend fun fetchPpgHeartRate(timeoutMs: Long = 6000L): Int = withContext(Dispatchers.IO) {
+        val service = healthTrackingService
+        if (service == null || !isConnected) {
+            Log.w(TAG, "PPG 心率采集失败：HealthTrackingService 未连接")
+            return@withContext 0
+        }
+        // 确认 ECG tracker 已停止（避免 on-demand + continuous 冲突，SDK 文档明确警告）
+        try { healthTracker?.unsetEventListener() } catch (_: Exception) {}
+
+        val hrTracker = try {
+            service.getHealthTracker(HealthTrackerType.HEART_RATE_CONTINUOUS)
+        } catch (e: Exception) {
+            Log.w(TAG, "获取 HEART_RATE tracker 失败: ${e.message}")
+            return@withContext 0
+        }
+        if (hrTracker == null) {
+            Log.w(TAG, "设备不支持 HEART_RATE_CONTINUOUS")
+            return@withContext 0
+        }
+
+        var resultHr = 0
+        var collected = false
+        val listener = object : HealthTracker.TrackerEventListener {
+            override fun onDataReceived(dataPoints: List<DataPoint>) {
+                for (dp in dataPoints) {
+                    try {
+                        val hr = dp.getValue(ValueKey.HeartRateSet.HEART_RATE)
+                        val status = dp.getValue(ValueKey.HeartRateSet.HEART_RATE_STATUS)
+                        // status==0 表示有效读数（Samsung HR Tracker 示例）
+                        if (hr != null && status != null && status == 0 && hr in 30..220) {
+                            resultHr = hr
+                            collected = true
+                            Log.i(TAG, "PPG 参考心率采集成功: ${hr}bpm")
+                            return
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "PPG 心率读数异常: ${e.message}")
+                    }
+                }
+            }
+            override fun onFlushCompleted() {}
+            override fun onError(e: HealthTracker.TrackerError) {
+                Log.w(TAG, "PPG tracker 错误: ${e}")
+            }
+        }
+
+        try {
+            hrTracker.setEventListener(listener)
+        } catch (e: Exception) {
+            Log.w(TAG, "启动 HEART_RATE listener 失败: ${e.message}")
+            return@withContext 0
+        }
+
+        // 等待首个有效读数或超时
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!collected && System.currentTimeMillis() < deadline) {
+            delay(200)
+        }
+        try { hrTracker.unsetEventListener() } catch (_: Exception) {}
+        if (!collected) {
+            Log.w(TAG, "PPG 心率采集超时（${timeoutMs}ms 无有效读数）")
+        }
+        resultHr
     }
 
     private fun stopEcgTracker() {

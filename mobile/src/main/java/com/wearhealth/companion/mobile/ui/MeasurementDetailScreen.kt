@@ -284,6 +284,16 @@ private fun DetailContent(
                     if (data.maxHeartRate > 0) "${data.maxHeartRate} bpm" else "暂无可靠估算",
                     "本地趋势参考",
                 )
+                if (data.ppgReferenceHr > 0) {
+                    ParamRow(
+                        "PPG 绿光参考心率",
+                        "${data.ppgReferenceHr} bpm",
+                        "系统心率传感器独立测算，可信度高于本地 R 波估测",
+                    )
+                }
+                if (data.tavilyStatus.isNotEmpty()) {
+                    ParamRow("Tavily 联网检索", data.tavilyStatus, "DS Max 档循证检索状态")
+                }
                 if (data.avgP > 0) ParamRow("平均 P 波宽度", "${data.avgP} ms", "API 输出")
                 if (data.avgQrs > 0) ParamRow("QRS 宽度", "${data.avgQrs} ms", "80-120")
                 if (data.prInterval > 0) ParamRow("PR 间期", "${data.prInterval} ms", "120-200")
