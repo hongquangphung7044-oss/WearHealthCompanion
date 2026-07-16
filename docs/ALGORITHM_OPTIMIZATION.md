@@ -92,8 +92,10 @@ WearHealthCompanion 是基于三星手表的 ECG 测量+分析应用。手表采
     │      → 不应期 200ms（Pan-Tompkins 原版，生理上 RR 不可能 <200ms）
     │      → 用 >= 防 plateau 双峰
     │
-    ├─ 6. 精修：原始去基线信号 ±25ms 邻域找真正 R 峰
-    │      → 梯度峰可能偏移几 ms
+    ├─ 6. 精修：原始去基线信号 ±50ms 邻域找真正 R 峰
+    │      → envelope 峰在 R 波上升沿最陡处，比真正 R 峰提前 ~30-50ms
+    │      → ±25ms 够不到 R 峰，找到上升沿噪声局部最大值 → RR 漂移 ±12ms → HR range>10 失败
+    │      → ±50ms 稳定命中 R 峰（Pan-Tompkins 原版标准窗口）
     │      → 关键：lastPeakIdx 必须用精修后的 bestIdx，否则不应期偏差累积
     │
     └─ 7. 回溯补检（Pan-Tompkins 核心）：RR > 1.66×近期均值时半阈值补检
@@ -239,6 +241,47 @@ HeartVoice API（`https://api.heartvoice.com.cn/api/v1/basic/ecg/1-lead/analyze`
 
 **k=1.7 是经验调参值（非临床金标准）**，依据是 5 份真实 wrist ECG + 6 seed 合成信号
 
+### Bug 7：精修窗口 ±25ms 够不到 R 峰 → k<2.0 时 HR range>10（Build #29502533615 修复）
+
+**现象**：commit a834d69（k=1.7）推送后 CI 失败，`detectsRegularRPeaksAndHeartRate` 在 line 93
+失败（`maxHr - minHr <= 10` 断言）。
+
+**根因（用 JavaRandom 精确复现 Kotlin 测试，test_kotlin_exact.py）**：
+- k=2.0：HR range=9 PASS；k=1.9/1.8/1.7：HR range=11 FAIL
+- 所有 k 值都检测到 35 个 R 波（数量正确），但 k<2.0 时 R 峰位置漂移导致 RR 范围扩大
+
+**深入定位（debug_rpos.py）**：
+- envelope（|梯度| 150ms 平滑）的峰位于 R 波上升沿最陡处，比真正的 R 峰**提前 ~30-50ms**
+  （合成 Gaussian σ=10ms 信号实测：envelope 峰在 R 峰前 29 samples=58ms）
+- 旧实现精修窗口 ±25ms (`sampleRateHz/40`) **够不到真正的 R 峰**
+- ±25ms 找到的是上升沿上的噪声局部最大值 → R 峰位置漂移 ±6 samples (12ms)
+  → RR 范围从 110ms 扩大到 126ms → HR range 从 9 变为 11 > 10
+- k=2.0 时阈值高，候选点位置稳定，恰好命中"上升沿+1样本"位置，HR range=9；
+  k<2.0 时阈值低，候选点位置变化，精修落在不同上升沿噪声点，HR range=11
+
+**修复（v5 ±50ms 精修窗口）**：
+- 精修窗口 ±25ms → ±50ms（`sampleRateHz/40` → `sampleRateHz/20`）
+- 主检测和回溯补检两处精修都改
+- 依据：Pan-Tompkins 1985 原版用 ±50ms 精修窗口；150ms MWI 让 envelope 峰前移是已知特性
+
+**验证（test_refine_window.py + test_refine_all.py，JavaRandom 精确复现）**：
+- detectsRegularRPeaksAndHeartRate：R=35, HR range=2（从 11 降到 2）✅
+- detectsRPeaksInMotionArtifactSignal：6 seed 全部 >=34，min=34 ✅
+- 其他依赖 R 峰的测试（clean+noise / moderate noise / noise mask / segment / flat segment）均无回归
+- 测试3 flatSegmentWithMicroNoiseDoesNotProduceFalsePeaks：Python 模拟 ±25ms 和 ±50ms 都给 32
+  （Python random 与 Java random 差异），但 Kotlin/CI 中此测试本来就通过——
+  CI 失败报告只显示 detectsRegularRPeaksAndHeartRate 失败，证明 flatSegment 在 Kotlin 中已通过
+
+**未破坏的测试**（test_refine_all.py 验证）：
+| 测试 | ±25ms | ±50ms |
+|------|-------|-------|
+| detectsRegularRPeaksAndHeartRate | ❌ range=11 | ✅ range=2 |
+| detectsRPeaksInMotionArtifactSignal | ✅ min=34 | ✅ min=34 |
+| detectsRPeaksInCleanSegmentDespiteNoise | ✅ R=32 | ✅ R=34 |
+| detectsRPeaksInModerateNoiseRealisticSignal | ✅ R=35 | ✅ R=35 |
+| noiseSegmentRPeaksDoNotPolluteStats | ✅ RR=22 | ✅ RR=22 |
+| segmentRPeakCountMatchesInput | ✅ ones=30 | ✅ ones=30 |
+
 ---
 
 ## 6. 关键约束与规范（继承约束，必须遵守）
@@ -278,10 +321,10 @@ HeartVoice API（`https://api.heartvoice.com.cn/api/v1/basic/ecg/1-lead/analyze`
 ## 7. 待优化方向
 
 ### 7.1 本地 R 波检测在真实数据上的稳定性
-- **状态**：合成 ECG 测试通过；median×1.5 bug 已修；运动后漏检 60% 已修（v4 mean+1.7std）
+- **状态**：合成 ECG 测试通过；median×1.5 bug 已修；运动后漏检 60% 已修（v4 mean+1.7std）；精修窗口 ±25ms→±50ms 修复 R 峰位置漂移（v5，Bug 7）
 - **方法**：收集 3-4 次真实 HeartVoice 路径导出文件，对照 avgHr 差异
 - **风险**：真实 wrist ECG 噪声更复杂（基线漂移+运动伪差+电极接触不良），可能有未发现的退化模式
-- **当前验证**：5 份真实样本（静息/活动后/运动后）HR 偏差均 <15bpm 或改善（见 Bug 6）
+- **当前验证**：5 份真实样本（静息/活动后/运动后）HR 偏差均 <15bpm 或改善（见 Bug 6）；±50ms 精修窗口让 R 峰位置更准，预期真实数据 HRV/间期估测也会改善
 
 ### 7.2 间期估测（QRS/PR/QT）准确性
 - **状态**：本地估测，未与 HeartVoice 系统对照

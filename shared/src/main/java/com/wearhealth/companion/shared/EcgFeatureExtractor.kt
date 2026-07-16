@@ -169,7 +169,7 @@ object EcgFeatureExtractor {
      * 检测（借鉴 Pan-Tompkins）：
      * 4. 分段自适应阈值 = 均值 + 1.7×标准差（4 秒窗口，k=1.7 平衡运动后检出与静息不回归）
      * 5. 局部最大 + 200ms 不应期（最高 300bpm）
-     * 6. 原始信号 ±25ms 精修 R 峰位置
+     * 6. 原始信号 ±50ms 精修 R 峰位置（envelope 峰在 R 峰上升沿，提前 ~30-50ms，±25ms 够不到 R 峰）
      * 7. 回溯补检：RR > 1.66×近期均值时半阈值补检（PT 核心，灵敏度 95%→99%）
      */
     private fun detectRPeaks(ecgData: List<Int>, sampleRateHz: Int): List<Int> {
@@ -278,9 +278,15 @@ object EcgFeatureExtractor {
             if (!isLocalMax) continue
             if ((i - lastPeakIdx) < refractory) continue
 
-            // 6. 精修：在原始去基线信号 ±25ms 邻域找真正的 R 峰（梯度峰可能偏移几ms）
-            val refineLo = maxOf(0, i - sampleRateHz / 40)
-            val refineHi = minOf(highPassed.size, i + sampleRateHz / 40)
+            // 6. 精修：在原始去基线信号 ±50ms 邻域找真正的 R 峰
+            // 根因：envelope(|梯度| 150ms 平滑)的峰位于 R 波上升沿最陡处，比真正的 R 峰
+            // 提前 ~30-50ms（合成 Gaussian σ=10ms 信号实测：envelope 峰在 R 峰前 29 samples=58ms）。
+            // 旧实现 ±25ms (sampleRateHz/40) 够不到真正的 R 峰，找到的是上升沿上的噪声
+            // 局部最大值 → R 峰位置漂移 ±6 samples (12ms) → RR 范围扩大 → HR range=11>10 失败。
+            // ±50ms (sampleRateHz/20) 能稳定命中真正的 R 峰（实测 RR range=2，HR range=2）。
+            // 依据：Pan-Tompkins 原版用 ±50ms 精修窗口；150ms MWI 让 envelope 峰前移是已知特性
+            val refineLo = maxOf(0, i - sampleRateHz / 20)
+            val refineHi = minOf(highPassed.size, i + sampleRateHz / 20)
             var bestIdx = i
             var bestVal = 0.0
             for (j in refineLo until refineHi) {
@@ -339,9 +345,9 @@ object EcgFeatureExtractor {
                         }
                     }
                     if (bestBackIdx >= 0) {
-                        // 精修
-                        val rLo = maxOf(0, bestBackIdx - sampleRateHz / 40)
-                        val rHi = minOf(highPassed.size, bestBackIdx + sampleRateHz / 40)
+                        // 精修（与主检测一致用 ±50ms，理由见主检测注释）
+                        val rLo = maxOf(0, bestBackIdx - sampleRateHz / 20)
+                        val rHi = minOf(highPassed.size, bestBackIdx + sampleRateHz / 20)
                         var rIdx = bestBackIdx
                         var rVal = 0.0
                         for (j in rLo until rHi) {
