@@ -86,7 +86,10 @@ object EcgFeatureExtractor {
         val rPeaks = detectRPeaks(ecgData, sampleRateHz)
         val rrIntervals = computeRRIntervals(rPeaks, sampleRateHz)
         val hr = computeHeartRateStats(rrIntervals)
-        val hrv = computeHrv(rrIntervals)
+        // HRV 用剔早搏的 RR（偏离均值>25% 的剔除），避免早搏短长 RR 污染 SDNN/RMSSD
+        // 节律判别保留原始 RR（保早搏特征），两条通路各司其职
+        val rrForHrv = filterEctopicBeats(rrIntervals)
+        val hrv = computeHrv(rrForHrv)
         val rhythm = computeRhythmFeatures(rrIntervals)
         val intervals = estimateIntervals(ecgData, sampleRateHz, rPeaks, hr.avgHr)
         val rAmp = computeRAmplitude(ecgData, rPeaks, sampleRateHz)
