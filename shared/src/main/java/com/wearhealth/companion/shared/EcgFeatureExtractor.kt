@@ -191,23 +191,39 @@ object EcgFeatureExtractor {
         // 4 秒覆盖约 4-5 个心动周期，统计稳健；窗口太短（如 1 秒）样本不足 std 不稳。
         // 依据：Pan-Tompkins 原版用自适应阈值但带短时记忆；分段独立阈值是工程改进，
         // 避免单一噪声段污染整段测量（非临床金标准，针对 wrist-wear 噪声场景）
+        //
+        // 双约束（修复平坦段回归 bug）：
+        // 纯 mean+2×std 在平坦段（无 R 波）std 极小 → 阈值 ≈ 噪声峰值 → 大量虚假 R 峰
+        // → 虚假短 RR → HRV 被错误计算 + 心率范围虚高（如 172bpm）。
+        // 加中位数×1.5 下限：中位数抗稀疏 R 波峰值污染（R 波仅占 ~7% 样本），稳健估计
+        // 噪声基底；1.5× 噪声基底要求 R 波包络至少为噪声 1.5 倍（SNR>1.5）。
+        // 依据：Pan-Tompkins 检测要求信号峰 / 噪声峰 > 1.5（PT 原版 THRESHOLD1 = NOISE_LEVEL
+        // + 0.25×(SIGNAL_LEVEL - NOISE_LEVEL)，当 SIGNAL/NOISE < 1.5 时不触发检测）。
+        // mean+2×std 在有 R 波段（双峰分布高 std）仍为主导约束，中位数下限不影响检出。
         val segLen = sampleRateHz * 4  // 4 秒一段
         val thresholds = DoubleArray(envelope.size)
         for (segStart in 0 until envelope.size step segLen) {
             val segEnd = minOf(envelope.size, segStart + segLen)
+            val segSize = segEnd - segStart
+            if (segSize <= 0) continue
             var sum = 0.0
             for (i in segStart until segEnd) sum += envelope[i]
-            val segMean = if (segEnd > segStart) sum / (segEnd - segStart) else 0.0
+            val segMean = sum / segSize
             var varSum = 0.0
             for (i in segStart until segEnd) {
                 val d = envelope[i] - segMean
                 varSum += d * d
             }
-            val segStd = if (segEnd > segStart) sqrt(varSum / (segEnd - segStart)) else 0.0
-            val segThreshold = segMean + segStd * 2.0
+            val segStd = sqrt(varSum / segSize)
+            // 段中位数：排序后取中间值。中位数不受稀疏 R 波峰影响（R 波仅占 ~7% 样本），
+            // 是噪声基底的稳健估计。copyOfRange + sort 复杂度 O(n log n)，每段 2000 点可接受。
+            val segSorted = envelope.copyOfRange(segStart, segEnd).also { it.sort() }
+            val segMedian = segSorted[segSize / 2]
+            // 双约束：mean+2std 检出 R 波（双峰分布高 std），median×1.5 防平坦段噪声误检
+            val segThreshold = maxOf(segMean + segStd * 2.0, segMedian * 1.5)
             for (i in segStart until segEnd) thresholds[i] = segThreshold
         }
-        // 全局最低阈值保护：纯静音段阈值可能极低，加 floor 避免噪声误判
+        // 全局最低阈值保护：纯静音/全零段中位数=0，加 floor 避免噪声误判
         val globalFloor = 3.0
 
         // 5. R 峰检测：阈值 + 局部最大 + 不应期
