@@ -21,13 +21,17 @@ class EcgFeatureExtractorTest {
     private val sampleRate = 500
 
     /**
-     * 合成 ECG 波形：在指定时间点放置高斯形态的 R 波峰
+     * 合成 ECG 波形：在指定时间点放置高斯形态的 R 波峰，可选加 T 波
      *
      * @param durationSec 时长（秒）
      * @param rPeakTimes R 波峰出现的时间点（秒）
-     * @param rAmplitudeMv R 波振幅（mV），默认 1.0
+     * @param rAmplitudeMv R 波振幅（mV），默认 1.0；负值=负向 R 波（导联反接/位置异常）
      * @param noiseLevel 噪声幅度（mV），默认 0.02
-     * @return ECG 数据（mV×1000 整数）
+     * @param seed 随机种子
+     * @param tAmplitudeMv T 波振幅（mV），默认 0=不加 T 波；正值=与 R 波同极性，负值=反极性
+     * @param tOffsetSec T 波相对 R 波的偏移（秒），默认 0.3s（正常 200-400ms）
+     * @param rSigmaSec R 波高斯宽度标准差（秒），默认 0.01=10ms（窄峰，旧测试兼容）；
+     *                  形态测试用 0.04=40ms（接近真实 QRS 宽度 80-120ms 的半宽）
      */
     private fun syntheticEcg(
         durationSec: Float,
@@ -35,11 +39,16 @@ class EcgFeatureExtractorTest {
         rAmplitudeMv: Float = 1.0f,
         noiseLevel: Float = 0.02f,
         seed: Long = 42L,
+        tAmplitudeMv: Float = 0f,
+        tOffsetSec: Float = 0.3f,
+        rSigmaSec: Float = 0.01f,
     ): List<Int> {
         val totalSamples = (durationSec * sampleRate).toInt()
         val data = IntArray(totalSamples)
-        val sigma = 0.01f  // R 波宽度 10ms 标准差
+        val sigma = rSigmaSec
         val sigmaSq2 = 2 * sigma * sigma
+        val tSigma = 0.04f  // T 波宽度 40ms（比 R 波宽，符合生理学）
+        val tSigmaSq2 = 2 * tSigma * tSigma
         // 固定种子：消除测试随机性导致的 flaky 失败。
         // 旧实现用 Math.random() 无种子，R 波检测改动（MWI 150ms）后对噪声更敏感，
         // 偶尔产生额外/偏移峰导致心率范围断言间歇性失败（同代码 #113 通过、#114 失败）。
@@ -50,6 +59,13 @@ class EcgFeatureExtractorTest {
             for (rT in rPeakTimes) {
                 val dt = t - rT
                 v += rAmplitudeMv * kotlin.math.exp(-(dt * dt) / sigmaSq2).toFloat()
+                // T 波：与 R 波同极性（振幅符号跟随 rAmplitudeMv），偏移 tOffsetSec
+                if (tAmplitudeMv != 0f) {
+                    val tDt = t - rT - tOffsetSec
+                    // T 波振幅符号跟随 R 波：rAmp>0 则 T 波向上，rAmp<0 则 T 波向下
+                    val tSign = if (rAmplitudeMv > 0) tAmplitudeMv else -tAmplitudeMv
+                    v += tSign * kotlin.math.exp(-(tDt * tDt) / tSigmaSq2).toFloat()
+                }
             }
             // 加微小噪声
             v += (rng.nextDouble() - 0.5).toFloat() * 2 * noiseLevel
@@ -370,5 +386,111 @@ class EcgFeatureExtractorTest {
         val bundle = EcgFeatureExtractor.extract(ecg, sampleRate)
         val text = EcgFeatureExtractor.toPromptText(bundle)
         assertTrue("应标注噪声段", text.contains("噪声"))
+    }
+
+    // ===== 形态客观参数（R 波极性 / T-R 振幅比 / ST 段偏移） =====
+    // 目的：给 DS 提供客观可测的形态参数（非主观诊断），让 DS 据此判读。
+    // 设计原则：测量归本地（输出客观值），判读归 DS（医学诊断）。
+    // 不让本地算法做主观形态诊断（如"T 波倒置"），只输出客观测量值。
+
+    /**
+     * RED-1: R 波极性检测
+     *
+     * 场景：合成正向 R 波（rAmplitudeMv=+1.0）和负向 R 波（rAmplitudeMv=-1.0），
+     * 本地算法应正确识别极性。
+     *
+     * 依据：单导联 wrist ECG 的 R 波极性取决于电极位置/导联方向，
+     * isReverse 也可能误报。极性是客观可测量（R 峰值相对基线的符号），
+     * DS 据此可判读导联反接/位置异常。estimateIntervals 已算 rIsPositive
+     * 但未输出到 toPromptText，此测试要求输出。
+     *
+     * 阈值：正向 R 波应输出"正向"，负向 R 波应输出"负向"。
+     * 允许少数 R 波极性异常（噪声干扰），用多数投票判定整体极性。
+     */
+    @Test
+    fun detectsRPeakPolarity() {
+        // 正向 R 波
+        val rTimes = (0 until 35).map { it * 0.857f }
+        val ecgPos = syntheticEcg(30f, rTimes, rAmplitudeMv = 1.0f, noiseLevel = 0.02f)
+        val gPos = EcgFeatureExtractor.extract(ecgPos, sampleRate).global
+        assertEquals("正向 R 波应识别为正向极性", "正向", gPos.rPeakPolarity)
+
+        // 负向 R 波
+        val ecgNeg = syntheticEcg(30f, rTimes, rAmplitudeMv = -1.0f, noiseLevel = 0.02f)
+        val gNeg = EcgFeatureExtractor.extract(ecgNeg, sampleRate).global
+        assertEquals("负向 R 波应识别为负向极性", "负向", gNeg.rPeakPolarity)
+    }
+
+    /**
+     * RED-2: T/R 振幅比检测
+     *
+     * 场景：合成 R 波(1.0mV) + T 波(0.3mV，同极性)，T/R 比 ≈ 0.30。
+     * 正常 T/R 比范围 0.1~0.5（生理学教材），<0.1 提示 T 波低平，>0.5 可能 T 波高尖。
+     *
+     * 依据：T 波振幅相对 R 波的比值是客观可测量，DS 据此判读 T 波异常
+     * （低平/高尖/倒置）。本地算法已有 T 峰定位（estimateIntervals），
+     * 只需加 T 峰振幅测量。
+     *
+     * 阈值：T/R 比应在 0.20~0.40 范围（合成 0.3 ± 容差）。
+     * 不要求精确到 0.30，因 T 峰定位有 ±10ms 误差 → 振幅有 ±20% 误差。
+     */
+    @Test
+    fun detectsTRAmplitudeRatio() {
+        val rTimes = (0 until 35).map { it * 0.857f }
+        // R 波 1.0mV + T 波 0.3mV（同极性，正向）
+        // rSigmaSec=0.02：宽 R 波（20ms 标准差，QRS 宽度约 120ms = ±3sigma，接近真实），
+        // 避免窄高斯峰（默认 10ms）被 150ms MWI 摊平导致精修位置偏移
+        val ecg = syntheticEcg(30f, rTimes, rAmplitudeMv = 1.0f, noiseLevel = 0.02f,
+            tAmplitudeMv = 0.3f, tOffsetSec = 0.3f, rSigmaSec = 0.02f)
+        val g = EcgFeatureExtractor.extract(ecg, sampleRate).global
+        assertTrue(
+            "T/R 振幅比 ${g.tToRAmplitudeRatio} 应在 0.20~0.40（合成 0.3 ± 容差）",
+            g.tToRAmplitudeRatio in 0.20f..0.40f,
+        )
+    }
+
+    /**
+     * RED-3: ST 段偏移检测
+     *
+     * 场景：合成 R 波 + T 波信号，ST 段（QRS 终点到 T 波起点）应接近基线（0mV）。
+     * 为验证 ST 偏移检测能力，合成一个带 ST 抬高的信号：在 R 波后 80-200ms 窗口
+     * 加 +0.2mV 偏移（模拟 ST 段抬高）。
+     *
+     * 依据：ST 段偏移是客观可测量（QRS 终点到 T 波起点的高度差相对基线），
+     * DS 据此判读 ST 抬高/压低（缺血/梗死指征）。临床定义 ST 抬高 ≥0.1mV。
+     *
+     * 阈值：正常 ST 段偏移 |stDeviationMv| < 0.05mV；
+     *       ST 抬高信号 stDeviationMv > 0.10mV（合成 0.2mV ± 容差）。
+     */
+    @Test
+    fun detectsStElevation() {
+        val rTimes = (0 until 35).map { it * 0.857f }
+        // 基线信号：R 波 + T 波，ST 段接近基线
+        // rSigmaSec=0.02：宽 R 波（20ms 标准差，QRS 约 120ms），避免窄峰被 MWI 摊平
+        val ecgBaseline = syntheticEcg(30f, rTimes, rAmplitudeMv = 1.0f, noiseLevel = 0.02f,
+            tAmplitudeMv = 0.3f, tOffsetSec = 0.3f, rSigmaSec = 0.02f)
+        val gBaseline = EcgFeatureExtractor.extract(ecgBaseline, sampleRate).global
+        // 基线 ST 偏移应接近 0（容差 ±0.05mV）
+        assertTrue(
+            "基线 ST 段偏移 ${gBaseline.stDeviationMv}mV 应在 ±0.05mV",
+            kotlin.math.abs(gBaseline.stDeviationMv) < 0.05f,
+        )
+
+        // ST 抬高信号：在 R 波后 50-200ms 加 +0.2mV 平台偏移
+        // 窗口起点 50ms：覆盖 J 点(S 点约 R 后 30-40ms) + 20ms 测量点（约 R 后 50-60ms）
+        // 旧窗口 80ms 起点会错过 J+20ms 测量点，导致检测不到抬高
+        val ecgElevated = ecgBaseline.toMutableList()
+        for (rT in rTimes) {
+            val stStart = ((rT + 0.05f) * sampleRate).toInt()
+            val stEnd = ((rT + 0.20f) * sampleRate).toInt()
+            for (i in stStart..stEnd) {
+                if (i in ecgElevated.indices) ecgElevated[i] += 200  // +0.2mV
+            }
+        }
+        val gElevated = EcgFeatureExtractor.extract(ecgElevated.toList(), sampleRate).global
+        assertTrue(
+            "ST 抬高信号 stDeviationMv ${gElevated.stDeviationMv}mV 应 > 0.10mV（合成 0.2mV）",
+            gElevated.stDeviationMv > 0.10f,
+        )
     }
 }

@@ -51,6 +51,10 @@ object EcgFeatureExtractor {
         val shortLongPairs: Int,        // 短-长 RR 配对数（早搏代偿间隙特征）
         val ppgReferenceHr: Int = 0,    // PPG 绿光参考心率（测后读系统心率，0=未采集/不可用）
         val rPeakIndices: List<Int> = emptyList(),  // R 波位置索引（样本索引，噪声段剔除后的有效 R 波）
+        // 形态客观参数（测量归本地，判读归 DS）
+        val rPeakPolarity: String = "未知",  // R 波极性："正向"/"负向"/"未知"（多数投票，R 峰值相对基线的符号）
+        val tToRAmplitudeRatio: Float = 0f,  // T/R 振幅比（T 峰振幅 / R 峰振幅，正常 0.1~0.5）
+        val stDeviationMv: Float = 0f,       // ST 段偏移 mV（QRS 终点到 T 波起点的高度差相对基线，正常 ±0.05mV）
     )
 
     /** 逐秒分段特征 */
@@ -144,6 +148,11 @@ object EcgFeatureExtractor {
             shortLongPairs = rhythm.shortLongPairs,
             ppgReferenceHr = ppgReferenceHr,
             rPeakIndices = effectiveRPeaks,
+            rPeakPolarity = intervals.rPeakPolarity,
+            tToRAmplitudeRatio = intervals.tToRAmplitudeMv.let { tAmp ->
+                if (intervals.rAmplitudeMv > 0.01f && tAmp > 0f) tAmp / intervals.rAmplitudeMv else 0f
+            },
+            stDeviationMv = intervals.stDeviationMv,
         )
         return FeatureBundle(global, segments, profile)
     }
@@ -565,6 +574,11 @@ object EcgFeatureExtractor {
         val prMean: Int, val prStd: Int,
         val qtMean: Int, val qtc: Int,
         val qtcFridericiaMs: Int,
+        // 形态客观参数（与间期估测同源，复用 Q/S/T 定位）
+        val tAmplitudeMv: Float,   // T 波平均振幅（mV，相对基线，带符号）
+        val rAmplitudeMv: Float,   // R 波平均振幅（mV，相对基线，带符号）
+        val stDeviationMv: Float,  // ST 段平均偏移（mV，QRS 终点后 20ms 处相对基线）
+        val rPeakPolarity: String, // R 波极性："正向"/"负向"/"未知"（多数投票）
     )
 
     /**
@@ -581,11 +595,17 @@ object EcgFeatureExtractor {
         rPeaks: List<Int>,
         avgHr: Int,
     ): IntervalEstimates {
-        if (rPeaks.size < 3) return IntervalEstimates(0, 0, 0, 0, 0, 0, 0)
+        if (rPeaks.size < 3) return IntervalEstimates(0, 0, 0, 0, 0, 0, 0, 0f, 0f, 0f, "未知")
 
         val qrsWidths = mutableListOf<Int>()
         val prIntervals = mutableListOf<Int>()
         val qtIntervals = mutableListOf<Int>()
+        // 形态客观参数收集（与间期估测同源，复用 Q/S/T 定位）
+        val tAmplitudes = mutableListOf<Float>()  // T 波振幅（mV，相对基线，带符号）
+        val rAmplitudes = mutableListOf<Float>()  // R 波振幅（mV，相对基线，带符号）
+        val stDeviations = mutableListOf<Float>() // ST 段偏移（mV）
+        var positiveCount = 0  // R 波极性投票
+        var negativeCount = 0
 
         for (idx in rPeaks.indices) {
             val rIdx = rPeaks[idx]
@@ -597,11 +617,24 @@ object EcgFeatureExtractor {
             // 中位数去基线（抗 P/T 波干扰，比均值更适合局部基线估计，减小间期偏差）
             val segMedian = ecgData.subList(qSearchStart, sSearchEnd).median()
             // R 波幅度用绝对值，兼容负向 R 波（腕表单导联 R 波极性可能向下）
-            val rAmpVal = abs(ecgData[rIdx].toDouble() - segMedian)
+            // 在 rIdx ± 10ms 邻域找真正极值，避免精修位置偏差几 ms 导致振幅测量不准
+            // 依据：精修逻辑用 abs(highPassed) 找峰，可能偏移几 ms；R 峰是 QRS 内最大值，
+            //       在 ±10ms 邻域重新搜索能保证振幅/极性测量准确
+            val refineRange = sampleRateHz / 50  // ±10ms
+            var rPeakVal = ecgData[rIdx]
+            for (j in maxOf(qSearchStart, rIdx - refineRange)..minOf(sSearchEnd - 1, rIdx + refineRange)) {
+                if (abs(ecgData[j] - segMedian) > abs(rPeakVal - segMedian)) {
+                    rPeakVal = ecgData[j]
+                }
+            }
+            val rAmpVal = abs(rPeakVal.toDouble() - segMedian)
             if (rAmpVal < 30.0) continue  // R 波太小（<0.03mV），不可靠
 
             // 判断 R 波极性：R 峰值相对基线是正还是负
-            val rIsPositive = ecgData[rIdx].toDouble() > segMedian
+            val rIsPositive = rPeakVal.toDouble() > segMedian
+            if (rIsPositive) positiveCount++ else negativeCount++
+            // R 波振幅（带符号，mV）—— 用于 T/R 比计算
+            rAmplitudes.add(((rPeakVal - segMedian) / 1000.0).toFloat())
 
             // QRS 估测：阈值交叉法（工程经验实现，非临床金标准）
             // 临床 QRS delineation 金标准：小波变换（Martinez 2004）或 Pan-Tompkins 包络法
@@ -631,6 +664,26 @@ object EcgFeatureExtractor {
             }
             val qrsMs = (sPoint - qPoint) * 1000 / sampleRateHz
             if (qrsMs in 40..200) qrsWidths.add(qrsMs)
+
+            // ST 段偏移测量（J 点 + 20ms 处相对基线）
+            // 临床定义：ST 段 = QRS 终点(J 点, ≈S 点)到 T 波起点。
+            // ST 偏移 = J 点后 20ms 处振幅相对基线的高度差。
+            // 测量点选 J 点后 20ms 而非 J 点本身：J 点处可能有QRS余振，+20ms 更稳。
+            // 依据：AHA/ESC 定义 ST 抬高 ≥0.1mV（J 点后 20ms 处测量）；
+            //       工程实现非临床金标准，但测量点选择遵循临床规范。
+            // 基线用 QRS 前 50ms 中位数（PQ 段基线，比 QRS 窗口中位数更接近真基线）
+            val stMeasureIdx = sPoint + sampleRateHz * 20 / 1000  // J 点(S) + 20ms
+            if (stMeasureIdx < ecgData.size) {
+                val baselineStart = maxOf(0, qPoint - sampleRateHz * 50 / 1000)
+                val baselineEnd = qPoint  // PQ 段（QRS 前 50ms）
+                if (baselineEnd > baselineStart + 5) {
+                    val baselineSeg = ecgData.subList(baselineStart, baselineEnd).sorted()
+                    val pqBaseline = baselineSeg[baselineSeg.size / 2].toDouble()
+                    val stDevMv = ((ecgData[stMeasureIdx] - pqBaseline) / 1000.0).toFloat()
+                    // 合理性过滤：ST 偏移在 ±1.0mV 内（超出多为噪声/基线漂移伪影）
+                    if (stDevMv in -1.0f..1.0f) stDeviations.add(stDevMv)
+                }
+            }
 
             // PR 估测：R 峰前推 250ms 找 P 波（工程实现，非临床金标准）
             // 临床 P 波 delineation 金标准：小波变换（Martinez 2004），本设备算力有限用简化法
@@ -699,6 +752,17 @@ object EcgFeatureExtractor {
                     val tPeakGlobal = tSearchStart + tIdx
                     val qtMs = (tPeakGlobal - qPoint) * 1000 / sampleRateHz
                     if (qtMs in 250..600) qtIntervals.add(qtMs)
+                    // T 波振幅（带符号，mV，相对 PQ 基线）
+                    // 用 PQ 基线而非 tMedian：tMedian 是 T 窗口中位数，会受 T 波本身影响
+                    // PQ 基线（QRS 前 50ms）才是真正的等电位线
+                    val baselineStart2 = maxOf(0, qPoint - sampleRateHz * 50 / 1000)
+                    if (qPoint > baselineStart2 + 5) {
+                        val blSeg = ecgData.subList(baselineStart2, qPoint).sorted()
+                        val pqBase = blSeg[blSeg.size / 2].toDouble()
+                        val tAmpMv = ((ecgData[tPeakGlobal] - pqBase) / 1000.0).toFloat()
+                        // T 波振幅合理性：±2.0mV 内（超出多为噪声）
+                        if (tAmpMv in -2.0f..2.0f) tAmplitudes.add(tAmpMv)
+                    }
                 }
             }
         }
@@ -724,10 +788,34 @@ object EcgFeatureExtractor {
             (qtMean / Math.cbrt(rrSec)).toInt()
         } else 0
 
+        // 形态客观参数汇总
+        // T/R 振幅比：用 |T 均值| / |R 均值|（绝对值比，不受极性影响）
+        // 正常 T/R 比 0.1~0.5（生理学教材），<0.1 T 波低平，>0.5 T 波高尖
+        val tAmpMean = if (tAmplitudes.isNotEmpty()) tAmplitudes.map { abs(it) }.average().toFloat() else 0f
+        val rAmpMean = if (rAmplitudes.isNotEmpty()) rAmplitudes.map { abs(it) }.average().toFloat() else 0f
+        val tToRRatio = if (rAmpMean > 0.01f) (tAmpMean / rAmpMean) else 0f
+
+        // ST 段偏移：取中位数（抗噪声，比均值稳健）
+        val stDev = if (stDeviations.isNotEmpty()) {
+            val sorted = stDeviations.sorted()
+            sorted[sorted.size / 2]
+        } else 0f
+
+        // R 波极性：多数投票
+        val polarity = when {
+            positiveCount > negativeCount -> "正向"
+            negativeCount > positiveCount -> "负向"
+            else -> "未知"
+        }
+
         return IntervalEstimates(
             qrsMean = mean(qrsWidths), qrsStd = std(qrsWidths),
             prMean = mean(prIntervals), prStd = std(prIntervals),
             qtMean = qtMean, qtc = qtc, qtcFridericiaMs = qtcFridericia,
+            tAmplitudeMv = tAmpMean,
+            rAmplitudeMv = rAmpMean,
+            stDeviationMv = stDev,
+            rPeakPolarity = polarity,
         )
     }
 
@@ -877,6 +965,15 @@ object EcgFeatureExtractor {
         sb.append("PR间期(本地估测,ms):${g.prIntervalMs}±${g.prIntervalStdMs}\n")
         sb.append("QT间期(本地估测,ms):${g.qtIntervalMs} QTc(Bazett):${g.qtcMs}ms QTc(Fridericia):${g.qtcFridericiaMs}ms\n")
         sb.append("R波平均振幅:${"%.2f".format(g.rAmplitudeMv)}mV\n")
+        // 形态客观参数：测量归本地（输出客观值），判读归 DS（医学诊断）
+        // 不做主观形态诊断（如"T 波倒置"），只输出客观测量值让 DS 判读
+        sb.append("R波极性:${g.rPeakPolarity}(负向提示导联反接/位置异常)\n")
+        if (g.tToRAmplitudeRatio > 0f) {
+            // T/R 振幅比：正常 0.1~0.5（生理学教材），<0.1 T 波低平，>0.5 T 波高尖
+            sb.append("T/R振幅比:${"%.2f".format(g.tToRAmplitudeRatio)}(正常0.1-0.5，<0.1低平，>0.5高尖)\n")
+        }
+        // ST 段偏移：正常 ±0.05mV，>0.1mV 提示 ST 抬高，<-0.1mV 提示 ST 压低
+        sb.append("ST段偏移(本地估测,mV):${"%.3f".format(g.stDeviationMv)}(正常±0.05，>0.1抬高，<-0.1压低)\n")
         sb.append("信号质量:${"%.2f".format(g.signalQuality)} ${if (g.signalQuality >= 0.7f) "良好" else if (g.signalQuality >= 0.4f) "一般" else "较差"}\n")
         if (g.noiseSegments.isNotEmpty()) {
             sb.append("噪声段:${g.noiseSegments.joinToString("; ")}\n")
