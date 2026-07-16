@@ -166,8 +166,12 @@ object EcgFeatureExtractor {
             gradient[i] = abs(next - prev) / 2.0
         }
 
-        // 3. 50ms boxcar 平滑（形成 QRS 包络，减少噪声过零）
-        val smoothWin = (sampleRateHz * 0.05).toInt().coerceAtLeast(3)  // 50ms
+        // 3. 150ms boxcar 平滑（MWI 移动窗口积分，Pan-Tompkins 原版标准）
+        // 窗口宽度必须覆盖整个 QRS 复合波（正常 100ms，病理可达 150ms），让一个 QRS
+        // 在包络上只产生一个峰。旧实现用 50ms 太窄，一个 QRS 的 R 波+R'切迹会产生双峰，
+        // 导致双 R 峰检测 → 虚假短 RR → 心率虚高 + 误判早搏/房颤
+        // 依据：Pan-Tompkins 1985 原版；Pan-Tompkins++ (Imtiaz 2022) 同样用 150ms
+        val smoothWin = (sampleRateHz * 0.150).toInt().coerceAtLeast(3)  // 150ms
         val envelope = DoubleArray(gradient.size)
         for (i in gradient.indices) {
             val from = maxOf(0, i - smoothWin / 2)
@@ -185,8 +189,10 @@ object EcgFeatureExtractor {
         if (threshold < 3.0) return emptyList()  // 梯度信号阈值较低
 
         // 5. R 峰检测：阈值 + 局部最大 + 不应期
+        // 不应期 200ms（Pan-Tompkins 原版 MINPEAKDISTANCE=200ms，生理上 RR 不可能 <200ms）
+        // 旧实现 332ms 偏保守但可接受；真正 bug 在精修后 lastPeakIdx 未更新为 bestIdx
         val rPeaks = mutableListOf<Int>()
-        val refractory = sampleRateHz / 3  // 332ms 不应期（500/3≈166样本，最高 180bpm）
+        val refractory = sampleRateHz / 5  // 200ms 不应期（500/5=100样本，最高 300bpm 上限）
         var lastPeakIdx = -refractory * 2
         val checkRange = sampleRateHz / 50  // ±10ms 局部最大检查（500/50=10样本=±10ms）
 
@@ -196,7 +202,10 @@ object EcgFeatureExtractor {
             val hi = minOf(envelope.size, i + checkRange + 1)
             var isLocalMax = true
             for (j in lo until hi) {
-                if (j != i && envelope[j] > envelope[i]) { isLocalMax = false; break }
+                // 用 >= 防 plateau 双峰：两相邻点包络值相等时，只认第一个，避免双峰
+                if (j != i && envelope[j] >= envelope[i]) {
+                    if (j < i) { isLocalMax = false; break }  // 前面有等值或更高峰，当前不是第一个
+                }
             }
             if (!isLocalMax) continue
             if ((i - lastPeakIdx) < refractory) continue
@@ -213,7 +222,9 @@ object EcgFeatureExtractor {
                 }
             }
             rPeaks.add(bestIdx)
-            lastPeakIdx = i
+            // 关键修复：lastPeakIdx 必须用精修后的 bestIdx，否则不应期基于包络峰位置计算，
+            // 与实际 R 峰位置偏差累积，可能让相邻 QRS 的精修位置进入同一不应期窗口
+            lastPeakIdx = bestIdx
         }
 
         // 7. 回溯补检（Pan-Tompkins 核心）：RR > 1.66×近期均值时可能有漏检
