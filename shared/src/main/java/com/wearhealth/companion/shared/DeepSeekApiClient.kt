@@ -165,8 +165,8 @@ class DeepSeekApiClient(
             val json = JSONObject(responseBody)
             // OpenAI 兼容格式：choices[0].message.content
             // 思考模式下还有 reasoning_content（思维链），与 content 同级。
-            // 部分情况下 content 可能为空字符串或仅片段，此时回退用 reasoning_content 提取 JSON，
-            // 否则 Max 档会因 content 为空而"AI 解读消失"。
+            // Max 档实测问题：content 有时混入思维过程文字（"我们被要求分析..."）+ 残缺 JSON，
+            // 导致 JsonCleaner 提取到错误片段。需用健壮提取：逐个验证候选 JSON 是否可解析。
             val choices = json.optJSONArray("choices")
                 ?: return@withContext Result.failure(RuntimeException("DeepSeek 响应缺少 choices"))
             if (choices.length() == 0) {
@@ -176,14 +176,6 @@ class DeepSeekApiClient(
                 ?: return@withContext Result.failure(RuntimeException("DeepSeek 响应缺少 message"))
             val content = message.optString("content", "")
             val reasoningContent = message.optString("reasoning_content", "")
-            // content 优先（最终答案）；为空时回退 reasoning_content（思维链里可能含 JSON 结论）
-            val rawText = when {
-                content.isNotBlank() -> content
-                reasoningContent.isNotBlank() -> reasoningContent
-                else -> return@withContext Result.failure(
-                    RuntimeException("DeepSeek 响应 message.content 和 reasoning_content 均为空")
-                )
-            }
 
             val usage = json.optJSONObject("usage")
             val promptTokens = usage?.optInt("prompt_tokens", 0) ?: 0
@@ -194,8 +186,17 @@ class DeepSeekApiClient(
                     "reasoning=${reasoningContent.length}字符, " +
                     "tokens=$promptTokens+$completionTokens=$totalTokens")
 
-            // 剥离大模型可能附加的 Markdown 代码块包裹，存储纯净 JSON
-            val cleanedContent = JsonCleaner.extractJsonObject(rawText)
+            // 健壮 JSON 提取（修复 Max 档思维过程泄漏导致 JSON 解析失败）：
+            // 1. 先尝试 content 整体作为 JSON 解析（理想情况：content 就是纯 JSON）
+            // 2. 失败则从 content 用 JsonCleaner 提取 {...} 片段
+            // 3. 仍失败则从 reasoning_content 提取最后一个 {...}（思维链结尾常含结论 JSON）
+            // 4. 都失败才报错（不再让思维过程文字污染报告）
+            val cleanedContent = extractValidJson(content, reasoningContent)
+                ?: return@withContext Result.failure(
+                    RuntimeException(
+                        "DeepSeek 响应无法提取有效 JSON。content前200字: ${content.take(200)}"
+                    )
+                )
 
             Result.success(DeepSeekReport(
                 reportJson = cleanedContent,
@@ -264,9 +265,70 @@ class DeepSeekApiClient(
     }
 
     /**
+     * 健壮 JSON 提取（修复 Max 思考模式 content 混入思维过程文字的问题）
+     *
+     * DeepSeek V4 思考模式下：
+     * - content 应为最终 JSON 答案，但 Max 档有时混入思维过程文字 + 残缺 JSON
+     * - reasoning_content 是完整思维链，结尾常含结论 JSON
+     *
+     * 提取策略（逐个验证，确保返回可解析的 JSON 对象）：
+     * 1. content 整体作为 JSON 解析（理想情况）
+     * 2. content 用 JsonCleaner 提取 {...} 后解析
+     * 3. reasoning_content 用 JsonCleaner 提取 {...} 后解析（取最后一个完整对象）
+     * 4. 都失败返回 null（调用方报错，不再让思维文字污染报告）
+     */
+    private fun extractValidJson(content: String, reasoningContent: String): String? {
+        // 1. content 整体
+        if (content.isNotBlank()) {
+            runCatching { JSONObject(JsonCleaner.extractJsonObject(content)) }
+                .onSuccess { return JsonCleaner.extractJsonObject(content) }
+        }
+        // 2. content 提取片段（extractJsonObject 已在 1 里调用，这里跳过避免重复）
+        // 3. reasoning_content 提取最后一个 {...}
+        //    思维链可能有多个 {...} 片段，最后一个通常是最终结论
+        if (reasoningContent.isNotBlank()) {
+            val cleaned = JsonCleaner.extractJsonObject(reasoningContent)
+            runCatching { JSONObject(cleaned) }
+                .onSuccess { return cleaned }
+            // 思维链中可能有多个 JSON 片段，尝试找最后一个能解析的
+            val candidates = findAllJsonObjects(reasoningContent)
+            for (candidate in candidates.reversed()) {
+                runCatching { JSONObject(candidate) }
+                    .onSuccess { return candidate }
+            }
+        }
+        return null
+    }
+
+    /** 从文本中提取所有 {...} 片段（按出现顺序） */
+    private fun findAllJsonObjects(text: String): List<String> {
+        val results = mutableListOf<String>()
+        var depth = 0
+        var start = -1
+        for (i in text.indices) {
+            when (text[i]) {
+                '{' -> {
+                    if (depth == 0) start = i
+                    depth++
+                }
+                '}' -> {
+                    if (depth > 0) {
+                        depth--
+                        if (depth == 0 && start >= 0) {
+                            results.add(text.substring(start, i + 1))
+                            start = -1
+                        }
+                    }
+                }
+            }
+        }
+        return results
+    }
+
+    /**
      * 系统提示词：定义 DS 的角色、约束、输出格式
      *
-     * 包含专业术语（HRV 时域分析、AHA/ESC 指南、Brugada/WPW 筛查等）激活医学知识，
+     * 包含专业术语（HRV 时域分析、AHA/ESC 指南、Brugada/WPW 综合征筛查等）激活医学知识，
      * 严格反幻觉约束（禁止编造未提取的形态学特征），要求 JSON 输出。
      */
     private fun buildSystemPrompt(): String {
@@ -294,16 +356,26 @@ class DeepSeekApiClient(
    - 检查差值序列是否有大幅正负交替（>100ms 的正负切换）
    - 结合 Poincaré 散点形态和短-长配对数综合判断
 4. 正常窦性心律：RR 序列规律（变异系数<0.05），无明显 [*] 标记，差值序列波动小
-5. 窦性心律不齐：RR 序列有轻度波动（变异系数 0.05~0.15），[*] 标记少（≤2个），青年人常见，良性
+5. 窦性心律不齐：RR 序列有轻度波动（变异系数 0.05~0.15，年轻人深呼吸时可达 0.20），
+   [*] 标记少（≤2个），青年人常见，良性
 6. 早搏：RR 序列有≥3个 [*] 标记，差值序列有大幅正负交替，短-长配对数≥3
-7. 房颤：RR 序列极度不规律（变异系数>0.15），大量 [*] 标记，差值序列持续大幅波动，无规律可循
+7. 房颤：RR 序列极度不规律（变异系数>0.20），大量 [*] 标记，差值序列持续大幅波动，
+   无任何连续 3 个 RR 接近，无周期性。须严格判断，不可仅凭 CV 略高就报房颤
 
 【分析要点】
 - 心率: 平均是否在 60-100bpm；波动幅度是否过大（>20bpm 提示不稳）
 - 节律（基于 RR 变异系数 + Poincaré 散点形态 + 短-长配对 + RR 序列模式，这是节律判断的主要依据）:
   * RR 变异系数<0.05 且 Poincaré 彗星形 → 窦性心律（规律）
   * RR 变异系数 0.05~0.15 且 Poincaré 鱼雷形/彗星形 → 窦性心律不齐（青年人常见，呼吸性，良性）
-  * RR 变异系数>0.15 且 Poincaré 扇形 → 高度提示心房颤动（RR 极不规律、无规律可循），建议复查 12 导联确诊
+  * RR 变异系数 0.15~0.25 且无明显短-长配对 → 仍倾向窦性心律不齐（呼吸性变异可能较大），
+    年轻人深呼吸时 CV 可达 0.20，不可仅凭 CV 超阈值就判房颤
+  * 房颤判定须同时满足（严格条件，避免误报）：
+    (1) RR 变异系数>0.20
+    (2) Poincaré 扇形
+    (3) RR 序列完全无规律（相邻 RR 差值持续大幅波动，无任何连续 3 个 RR 接近）
+    (4) 排除呼吸性变异（呼吸性变异有周期性，房颤无周期性）
+    四条全满足才报"高度提示心房颤动"，否则降级为"窦性心律不齐"或"心律不齐待查"
+  * 单导联腕表数据不足以确诊房颤，所有房颤结论必须加"建议复查 12 导联确诊"
   * 短-长 RR 配对数≥3 且 Poincaré 复杂形 → 提示早搏（PAC/PVC 需形态判断，本设备无法区分，统一报告为"早搏可能"）
   * 短-长 RR 配对数 1-2 个 → 可能是正常呼吸性变异，不报告为早搏
   * SDNN>50ms 且无规律 → 心律不齐，结合散点形态进一步分类
