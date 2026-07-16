@@ -17,11 +17,11 @@ WearHealthCompanion 是一个面向 Samsung Galaxy Watch 的 Wear OS 单导联 E
 <!-- AUTO_BUILD_STATUS:START -->
 | 自动发布项目 | 最新成功状态 |
 |---|---|
-| CI 构建 | **Build #124** / tag `build-124` / source commit `c335465` |
-| Actions | `https://github.com/hongquangphung7044-oss/WearHealthCompanion/actions/runs/29491383427`（协议测试、双 Release APK、Artifact、Release 全部成功） |
-| Release | `https://github.com/hongquangphung7044-oss/WearHealthCompanion/releases/tag/build-124` |
-| APK | `WearHealthCompanion-mobile-v1.0.124-code124.apk`；`WearHealthCompanion-watch-v1.0.124-code124-ecg.apk` |
-| 更新时间 | 2026-07-16T10:50:38Z |
+| CI 构建 | **Build #125** / tag `build-125` / source commit `98aa05b` |
+| Actions | `https://github.com/hongquangphung7044-oss/WearHealthCompanion/actions/runs/29492089690`（协议测试、双 Release APK、Artifact、Release 全部成功） |
+| Release | `https://github.com/hongquangphung7044-oss/WearHealthCompanion/releases/tag/build-125` |
+| APK | `WearHealthCompanion-mobile-v1.0.125-code125.apk`；`WearHealthCompanion-watch-v1.0.125-code125-ecg.apk` |
+| 更新时间 | 2026-07-16T10:58:57Z |
 | 状态边界 | 仅证明 CI / Artifact / Release 成功；国行 One UI Watch 8 实机结论以“实机验证状态”和任务清单为准 |
 <!-- AUTO_BUILD_STATUS:END -->
 
