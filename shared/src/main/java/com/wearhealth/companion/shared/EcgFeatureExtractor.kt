@@ -113,6 +113,7 @@ object EcgFeatureExtractor {
             prIntervalStdMs = intervals.prStd,
             qtIntervalMs = intervals.qtMean,
             qtcMs = intervals.qtc,
+            qtcFridericiaMs = intervals.qtcFridericiaMs,
             rAmplitudeMv = rAmp,
             signalQuality = sigQuality,
             noiseSegments = noiseSegs,
@@ -425,6 +426,7 @@ object EcgFeatureExtractor {
         val qrsMean: Int, val qrsStd: Int,
         val prMean: Int, val prStd: Int,
         val qtMean: Int, val qtc: Int,
+        val qtcFridericiaMs: Int,
     )
 
     /**
@@ -441,7 +443,7 @@ object EcgFeatureExtractor {
         rPeaks: List<Int>,
         avgHr: Int,
     ): IntervalEstimates {
-        if (rPeaks.size < 3) return IntervalEstimates(0, 0, 0, 0, 0, 0)
+        if (rPeaks.size < 3) return IntervalEstimates(0, 0, 0, 0, 0, 0, 0)
 
         val qrsWidths = mutableListOf<Int>()
         val prIntervals = mutableListOf<Int>()
@@ -690,7 +692,7 @@ object EcgFeatureExtractor {
             // RR 差值序列：正值=RR变长，负值=RR变短；大幅正负交替=短-长配对=早搏特征
             if (g.rrIntervalsMs.size >= 2) {
                 val rrDiffs = (1 until g.rrIntervalsMs.size).joinToString(",") {
-                    (g.rrIntervalsMs[it] - g.rrIntervalsMs[it - 1])
+                    (g.rrIntervalsMs[it] - g.rrIntervalsMs[it - 1]).toString()
                 }
                 sb.append("RR差值序列(ms):$rrDiffs\n")
             }
