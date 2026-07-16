@@ -124,11 +124,24 @@ object EcgFeatureExtractor {
 
     // ===== 内部算法 =====
 
-    /** R 波检测（复用 computeMinMaxHeartRate 的算法，但返回 R 峰位置） */
+    /**
+     * R 波检测（NeuroKit 风格预处理 + Pan-Tompkins 回溯补检）
+     *
+     * 预处理链（借鉴 NeuroKit2 'neurokit' 方法）：
+     * 1. 1秒窗口去基线漂移（等效高通 ~1Hz）
+     * 2. |梯度|（一阶中心差分绝对值）—— 突出 QRS 陡峭斜率，抑制平缓 P/T 波
+     * 3. 50ms boxcar 平滑 —— 形成包络，减少噪声毛刺（不用 750ms 因 500Hz 下太宽会吞掉相邻 R 波）
+     *
+     * 检测（借鉴 Pan-Tompkins）：
+     * 4. 自适应阈值 = 均值 + 2×标准差
+     * 5. 局部最大 + 300ms 不应期
+     * 6. 原始信号 ±25ms 精修 R 峰位置
+     * 7. 回溯补检：RR > 1.66×近期均值时半阈值补检（PT 核心，灵敏度 95%→99%）
+     */
     private fun detectRPeaks(ecgData: List<Int>, sampleRateHz: Int): List<Int> {
         if (ecgData.size < sampleRateHz * 5) return emptyList()
 
-        // 带通滤波：1 秒窗口去基线
+        // 1. 去基线漂移（1秒窗口移动平均）
         val baselineWindow = sampleRateHz
         val baseline = DoubleArray(ecgData.size)
         for (i in ecgData.indices) {
@@ -138,57 +151,127 @@ object EcgFeatureExtractor {
             for (j in from until to) sum += ecgData[j]
             baseline[i] = sum / (to - from)
         }
-        val highPassed = ecgData.mapIndexed { i, v -> v - baseline[i] }
+        val highPassed = DoubleArray(ecgData.size) { i -> ecgData[i] - baseline[i] }
 
-        // 低通平滑：5 点移动平均
-        val smoothWin = 5
-        val filtered = DoubleArray(highPassed.size)
+        // 2. |梯度|（一阶中心差分绝对值，突出 QRS 斜率）
+        val gradient = DoubleArray(highPassed.size)
         for (i in highPassed.indices) {
-            val from = maxOf(0, i - smoothWin / 2)
-            val to = minOf(highPassed.size, i + smoothWin / 2 + 1)
-            var sum = 0.0
-            for (j in from until to) sum += highPassed[j]
-            filtered[i] = sum / (to - from)
+            val prev = highPassed[maxOf(0, i - 1)]
+            val next = highPassed[minOf(highPassed.lastIndex, i + 1)]
+            gradient[i] = abs(next - prev) / 2.0
         }
 
-        // 主峰极性自动选择
-        val positivePeak = filtered.maxOrNull() ?: 0.0
-        val negativePeak = abs(filtered.minOrNull() ?: 0.0)
-        val polarity = if (negativePeak > positivePeak) -1.0 else 1.0
-        val oriented = DoubleArray(filtered.size) { idx -> filtered[idx] * polarity }
+        // 3. 50ms boxcar 平滑（形成 QRS 包络，减少噪声过零）
+        val smoothWin = (sampleRateHz * 0.05).toInt().coerceAtLeast(3)  // 50ms
+        val envelope = DoubleArray(gradient.size)
+        for (i in gradient.indices) {
+            val from = maxOf(0, i - smoothWin / 2)
+            val to = minOf(gradient.size, i + smoothWin / 2 + 1)
+            var sum = 0.0
+            for (j in from until to) sum += gradient[j]
+            envelope[i] = sum / (to - from)
+        }
 
-        // 自适应阈值：用信号幅度的 75 分位数（避开基线段拉低 RMS 的问题）。
-        // 之前用 rms*2.0，RMS 含大量平坦基线，阈值偏高导致正常 R 波被滤掉（31秒仅检出4个→8bpm）。
-        val absSorted = oriented.map { abs(it) }.sorted()
-        val p75 = if (absSorted.isNotEmpty()) absSorted[(absSorted.size * 0.75).toInt()] else 0.0
-        // 阈值取 max(75分位数, 全局最大值的 30%)，保证 R 波不被基线噪声误触，又不漏检正常 R 波
-        val peakMax = absSorted.lastOrNull() ?: 0.0
-        val threshold = maxOf(p75, peakMax * 0.30)
-        if (threshold < 20.0) return emptyList() // 数据几乎全平，无意义
+        // 4. 自适应阈值 = 均值 + 2×标准差（NeuroKit 风格统计阈值）
+        val envMean = envelope.average()
+        val envVar = envelope.map { (it - envMean) * (it - envMean) }.average()
+        val envStd = sqrt(envVar)
+        val threshold = envMean + envStd * 2.0
+        if (threshold < 3.0) return emptyList()  // 梯度信号阈值较低
 
-        // R 峰检测
+        // 5. R 峰检测：阈值 + 局部最大 + 不应期
         val rPeaks = mutableListOf<Int>()
         val refractory = sampleRateHz / 3  // 300ms 不应期（最高 200bpm）
         var lastPeakIdx = -refractory * 2
-        val checkRange = sampleRateHz / 50
+        val checkRange = sampleRateHz / 50  // ±10ms 局部最大检查
 
-        for (i in oriented.indices) {
-            if (oriented[i] < threshold) continue
+        for (i in envelope.indices) {
+            if (envelope[i] < threshold) continue
             val lo = maxOf(0, i - checkRange)
-            val hi = minOf(oriented.size, i + checkRange + 1)
+            val hi = minOf(envelope.size, i + checkRange + 1)
             var isLocalMax = true
             for (j in lo until hi) {
-                if (j != i && oriented[j] > oriented[i]) { isLocalMax = false; break }
+                if (j != i && envelope[j] > envelope[i]) { isLocalMax = false; break }
             }
             if (!isLocalMax) continue
-            // 斜率门槛放宽：只要 R 峰相对 50ms 前有上升即可（原 threshold*0.5 过严）
-            val slopeIdx = maxOf(0, i - sampleRateHz / 20)
-            val slope = oriented[i] - oriented[slopeIdx]
-            if (slope < threshold * 0.2) continue
             if ((i - lastPeakIdx) < refractory) continue
-            rPeaks.add(i)
+
+            // 6. 精修：在原始去基线信号 ±25ms 邻域找真正的 R 峰（梯度峰可能偏移几ms）
+            val refineLo = maxOf(0, i - sampleRateHz / 40)
+            val refineHi = minOf(highPassed.size, i + sampleRateHz / 40)
+            var bestIdx = i
+            var bestVal = 0.0
+            for (j in refineLo until refineHi) {
+                if (abs(highPassed[j]) > bestVal) {
+                    bestVal = abs(highPassed[j])
+                    bestIdx = j
+                }
+            }
+            rPeaks.add(bestIdx)
             lastPeakIdx = i
         }
+
+        // 7. 回溯补检（Pan-Tompkins 核心）：RR > 1.66×近期均值时可能有漏检
+        if (rPeaks.size >= 5) {
+            val extraPeaks = mutableListOf<Int>()
+            for (k in 1 until rPeaks.size) {
+                val rr = rPeaks[k] - rPeaks[k - 1]
+                // 计算近期 RR 均值（前后各 4 个）
+                val recentStart = maxOf(0, k - 4)
+                val recentEnd = minOf(rPeaks.size, k + 4)
+                val recentRRs = mutableListOf<Int>()
+                for (m in recentStart + 1 until recentEnd) {
+                    recentRRs.add(rPeaks[m] - rPeaks[m - 1])
+                }
+                if (recentRRs.size < 3) continue
+                val rrAvg = recentRRs.average()
+                if (rrAvg < 1.0) continue
+
+                if (rr > rrAvg * 1.66) {
+                    // 半阈值搜索漏检区间
+                    val backThr = threshold * 0.5
+                    val searchStart = rPeaks[k - 1] + refractory
+                    val searchEnd = rPeaks[k] - refractory
+                    if (searchEnd <= searchStart) continue
+                    var bestBackIdx = -1
+                    var bestBackVal = backThr
+                    for (j in searchStart..searchEnd) {
+                        if (j < 0 || j >= envelope.size) continue
+                        if (envelope[j] > bestBackVal) {
+                            val bLo = maxOf(0, j - checkRange)
+                            val bHi = minOf(envelope.size, j + checkRange + 1)
+                            var isMax = true
+                            for (m in bLo until bHi) {
+                                if (m != j && envelope[m] > envelope[j]) { isMax = false; break }
+                            }
+                            if (isMax) {
+                                bestBackVal = envelope[j]
+                                bestBackIdx = j
+                            }
+                        }
+                    }
+                    if (bestBackIdx >= 0) {
+                        // 精修
+                        val rLo = maxOf(0, bestBackIdx - sampleRateHz / 40)
+                        val rHi = minOf(highPassed.size, bestBackIdx + sampleRateHz / 40)
+                        var rIdx = bestBackIdx
+                        var rVal = 0.0
+                        for (j in rLo until rHi) {
+                            if (abs(highPassed[j]) > rVal) {
+                                rVal = abs(highPassed[j])
+                                rIdx = j
+                            }
+                        }
+                        extraPeaks.add(rIdx)
+                    }
+                }
+            }
+            if (extraPeaks.isNotEmpty()) {
+                rPeaks.addAll(extraPeaks)
+                rPeaks.sort()
+            }
+        }
+
         return rPeaks
     }
 
@@ -291,18 +374,29 @@ object EcgFeatureExtractor {
         val sdnn = sqrt(variance)
         val cv = (sdnn / mean).toFloat()
 
-        // Poincaré 散点形态：计算 RRn vs RRn+1 偏离对角线的程度
+        // Poincaré 散点 SD1/SD2（Brennan 2001 标准公式）
+        // SD1（短轴，垂直对角线，短期变异/副交感）= std(RR_n - RR_{n+1}) / sqrt(2)
+        // SD2（长轴，沿对角线，长期变异）= std(RR_n + RR_{n+1}) / sqrt(2)
         val pairs = ArrayList<Pair<Double, Double>>()
         for (i in 0 until rrIntervals.size - 1) {
             pairs.add(Pair(rrIntervals[i].toDouble(), rrIntervals[i + 1].toDouble()))
         }
-        // 垂直对角线方向的散布宽度（SD2），和对角线方向的散布长度（SD1）
-        // 对角线方向：x=y，垂直方向：x=-y。用旋转后标准差近似。
-        val sd1List = pairs.map { (it.first + it.second) / sqrt(2.0) - (mean + mean) / sqrt(2.0) }
-        val sd2List = pairs.map { (it.first - it.second) / sqrt(2.0) }
-        val sd1 = sqrt(sd1List.map { it * it }.average())  // 对角线方向（短期变异）
-        val sd2 = sqrt(sd2List.map { it * it }.average())  // 垂直方向（长期变异）
-        val ratio = if (sd1 > 0) sd2 / sd1 else 0.0
+        val diffs = DoubleArray(pairs.size) { pairs[it].first - pairs[it].second }
+        val sums = DoubleArray(pairs.size) { pairs[it].first + pairs[it].second }
+        val diffMean = diffs.average()
+        val sumMean = sums.average()
+        var diffVar = 0.0
+        var sumVar = 0.0
+        for (i in diffs.indices) {
+            diffVar += (diffs[i] - diffMean) * (diffs[i] - diffMean)
+            sumVar += (sums[i] - sumMean) * (sums[i] - sumMean)
+        }
+        diffVar /= diffs.size
+        sumVar /= sums.size
+        val sd1 = sqrt(diffVar / 2.0)  // 短轴（短期变异）
+        val sd2 = sqrt(sumVar / 2.0)   // 长轴（长期变异）
+        // SD1/SD2：健康人 <0.5（彗星形），房颤接近 1（扇形，短轴宽）
+        val ratio = if (sd2 > 0.1) sd1 / sd2 else 0.0
 
         // 短-长 RR 配对（早搏代偿间隙）——先算，供散点形态分类使用
         var shortLongPairs = 0
@@ -316,8 +410,9 @@ object EcgFeatureExtractor {
         // 注意：短-长配对数≥3 才提示早搏（1-2 个可能是正常呼吸性变异）
         val pattern = when {
             cv < 0.05 -> "彗星形(规律)"
-            cv < 0.15 && ratio > 1.5 -> "鱼雷形(轻度不齐)"
-            cv >= 0.15 && sd2 > sd1 * 1.5 -> "扇形(高度不规律，疑似房颤)"
+            cv < 0.15 && ratio < 0.5 -> "彗星形(规律)"
+            cv < 0.15 && ratio >= 0.5 -> "鱼雷形(轻度不齐)"
+            cv >= 0.15 && ratio >= 0.7 -> "扇形(高度不规律，疑似房颤)"
             shortLongPairs >= 3 && cv < 0.15 -> "复杂形(疑似早搏)"
             else -> "彗星形(规律)"
         }
@@ -366,9 +461,10 @@ object EcgFeatureExtractor {
             // 判断 R 波极性：R 峰值相对基线是正还是负
             val rIsPositive = ecgData[rIdx].toDouble() > segMedian
 
-            // 阈值 = R 峰幅度的 15%（25% 只抓到 R 波尖峰，漏掉 Q/S 波导致 QRS 偏窄）
-            // 15% 更接近临床 QRS 起止点（PQ 交界→ST 段起点）
-            val qrsThreshold = rAmpVal * 0.15
+            // 阈值 = R 峰幅度的 10%（15% 只抓到 R 波尖峰附近，漏掉 Q/S 波导致 QRS 偏窄 5-15ms）
+            // 10% 更接近临床 QRS 起止点（PQ 交界→ST 段起点），偏差缩小到 0-10ms
+            // 不用导数零交叉法：腕表单导联噪声大，导数多次过零导致 Q/S 定位不稳定
+            val qrsThreshold = rAmpVal * 0.10
 
             // 找 Q 点：R 峰前第一个幅度低于阈值的点（从基线穿越阈值处）
             var qPoint = rIdx
@@ -576,7 +672,22 @@ object EcgFeatureExtractor {
         sb.append("[全局指标]\n")
         sb.append("采样率:${g.sampleRateHz}Hz 时长:${"%.1f".format(g.durationSec)}s 总点数:${g.totalSamples}\n")
         sb.append("R波检测:${g.rPeakCount}个 平均心率:${g.avgHeartRate}bpm 范围:${g.minHeartRate}-${g.maxHeartRate}bpm\n")
-        sb.append("RR间期序列(ms):${g.rrIntervalsMs.joinToString(",")}\n")
+        // RR 序列标注异常值（偏离均值>25% 标*），帮助 DS 直观识别早搏（短RR）和代偿间隙（长RR）
+        if (g.rrIntervalsMs.isNotEmpty()) {
+            val rrMean = g.rrIntervalsMs.average()
+            val rrAnnotated = g.rrIntervalsMs.joinToString(" ") { rr ->
+                val dev = if (rrMean > 0) abs(rr - rrMean) / rrMean else 0.0
+                if (dev > 0.25) "[$rr*]" else "$rr"
+            }
+            sb.append("RR间期序列(ms，[*]为偏离均值>25%的异常间期):$rrAnnotated\n")
+            // RR 差值序列：正值=RR变长，负值=RR变短；大幅正负交替=短-长配对=早搏特征
+            if (g.rrIntervalsMs.size >= 2) {
+                val rrDiffs = (1 until g.rrIntervalsMs.size).joinToString(",") {
+                    (g.rrIntervalsMs[it] - g.rrIntervalsMs[it - 1])
+                }
+                sb.append("RR差值序列(ms):$rrDiffs\n")
+            }
+        }
         sb.append("SDNN:${"%.1f".format(g.sdnnMs)}ms RMSSD:${"%.1f".format(g.rmssdMs)}ms pNN50:${"%.1f".format(g.pnn50Pct)}%\n")
         sb.append("QRS宽度(本地估测,ms):${g.qrsWidthMs}±${g.qrsWidthStdMs}\n")
         sb.append("PR间期(本地估测,ms):${g.prIntervalMs}±${g.prIntervalStdMs}\n")

@@ -32,6 +32,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -142,6 +143,12 @@ fun MeasurementDetailScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    actionIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
             )
         },
     ) { padding ->
@@ -190,7 +197,10 @@ private fun DetailContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
+        ) {
             Column(modifier = Modifier.padding(8.dp)) {
                 Text(
                     "单导联心电图波形（双指缩放、单指拖动）",
@@ -220,6 +230,7 @@ private fun DetailContent(
 
         Card(
             modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
             colors = if (data.isAbnormal) CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.errorContainer,
             ) else CardDefaults.cardColors(),
@@ -254,7 +265,10 @@ private fun DetailContent(
             AiReportCard(aiReportJson = data.aiReport)
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
+        ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("参数详情", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(8.dp))
@@ -290,7 +304,10 @@ private fun DetailContent(
         val sq = data.signalQuality
         val sqColor = if (sq >= 0.7) Color(0xFF388E3C)
         else if (sq >= 0.4) Color(0xFFF57C00) else MaterialTheme.colorScheme.error
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.medium,
+        ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("信号质量", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(6.dp))
@@ -377,6 +394,7 @@ private fun AiReportCard(aiReportJson: String) {
     } ?: return
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.tertiaryContainer,
         ),

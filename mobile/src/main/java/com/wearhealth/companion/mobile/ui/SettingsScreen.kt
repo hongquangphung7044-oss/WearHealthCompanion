@@ -29,6 +29,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -79,6 +80,12 @@ fun SettingsScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    actionIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
             )
         },
     ) { padding ->
@@ -91,7 +98,13 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // ===== 手表连接信息 =====
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -106,6 +119,7 @@ fun SettingsScreen(
                         Text(
                             text = if (watchName != null) "Google 同步通道已连接" else "Google 同步通道未发现手表",
                             style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
                             text = watchName ?: "国行设备可直接使用下方 BLE 同步器；此处不代表 Galaxy Wearable 蓝牙配对状态。",
@@ -118,6 +132,7 @@ fun SettingsScreen(
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -178,7 +193,13 @@ fun SettingsScreen(
                 }
             }
 
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+            ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -186,7 +207,11 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("后台 BLE 同步", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "后台 BLE 同步",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                             Text(
                                 "开启后手机会显示常驻通知，App 退到后台时仍等待手表主动连接。",
                                 style = MaterialTheme.typography.bodySmall,
@@ -253,14 +278,24 @@ fun SettingsScreen(
             val dsSnapshot = remember { viewModel.getDsSettingsSnapshot() }
             var dsApiKey by remember { mutableStateOf(dsSnapshot.apiKey) }
 
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                ),
+            ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("DeepSeek 第二套分析", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "DeepSeek 第二套分析",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "配置后可在手表选择「DS均衡 / DS Max」作为独立第二套分析；本地提取 ECG 特征后由 DS 推理，自评置信度，报告进 Transfer+PDF 专属页。思考强度在手表端选择。",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
                     Spacer(Modifier.height(12.dp))
 
@@ -286,7 +321,11 @@ fun SettingsScreen(
                             if (it.isAvailable) "余额：${it.totalBalance} ${it.currency}"
                             else "账户暂不可用"
                         } ?: "未查询"
-                        Text(balanceText, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            balanceText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
                         OutlinedButton(
                             onClick = { viewModel.queryDeepSeekBalance() },
                             enabled = dsApiKey.isNotBlank() && !dsBalanceLoading,
@@ -339,6 +378,7 @@ fun SettingsScreen(
             // ===== API Key 说明 =====
             Card(
                 modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 ),
