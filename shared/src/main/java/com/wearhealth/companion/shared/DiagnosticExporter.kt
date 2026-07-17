@@ -106,23 +106,44 @@ object DiagnosticExporter {
             sb.append("\n")
         }
 
-        // ===== 第 2 段：算法提取后的结构化特征 =====
-        sb.append("[算法提取后的结构化特征]\n")
-        sb.append("# 由 EcgFeatureExtractor.extract() + toPromptText() 在手机端重建\n")
-        sb.append("# 与手表端发给 DeepSeek 的提示词文本一致（DS 实际收到的数据）\n")
-        sb.append("# 注意: 用户 profile（年龄性别）未存入测量记录，手机端重建时为'未知'\n")
-        sb.append("#       助手如需年龄性别做医学判断，需用户单独提供\n")
-        sb.append("\n")
-        // 用默认 profile 重建特征（年龄0/性别null=未知）
-        // ppgReferenceHr 从 transfer 读取，保证 PPG 参考心率字段与测量时一致
-        val bundle = EcgFeatureExtractor.extract(
-            transfer.rawEcgData,
-            sampleRateHz = transfer.sampleRate,
-            profile = EcgFeatureExtractor.UserProfile(ageYears = 0, isMale = null),
-            ppgReferenceHr = transfer.ppgReferenceHr,
-        )
-        sb.append(EcgFeatureExtractor.toPromptText(bundle))
-        sb.append("\n")
+        // ===== 第 2 段：发给 DS 的提示词特征 =====
+        // raw 模式（ds_raw / ds_flash_balanced_raw / ds_pro_max_raw）：跳过本地算法，
+        //   用 toRawEcgPromptText 重建（与手表端发给 DS 的内容一致：去趋势原始波形）
+        // 非 raw 模式（heartvoice / ds_flash_balanced / ds_pro_max）：用 extract + toPromptText 重建本地特征
+        val isRawMode = transfer.analysisMethod.endsWith("_raw") ||
+            transfer.analysisMethod == "ds_raw"
+        if (isRawMode) {
+            sb.append("[发给 DS 的原始波形提示词]\n")
+            sb.append("# raw 模式：本地算法未运行，直接把去 DC+去趋势后的原始波形发给 DS\n")
+            sb.append("# 与手表端 toRawEcgPromptText() 输出一致（DS 实际收到的数据）\n")
+            sb.append("# DS 自行从波形识别 R/P/T 波、测量间期、计算 HRV、判读节律\n")
+            sb.append("# 注意: 用户 profile（年龄性别）未存入测量记录，重建时为'未知'\n")
+            sb.append("\n")
+            sb.append(EcgFeatureExtractor.toRawEcgPromptText(
+                transfer.rawEcgData,
+                sampleRateHz = transfer.sampleRate,
+                ppgReferenceHr = transfer.ppgReferenceHr,
+                profile = EcgFeatureExtractor.UserProfile(ageYears = 0, isMale = null),
+            ))
+            sb.append("\n")
+        } else {
+            sb.append("[算法提取后的结构化特征]\n")
+            sb.append("# 由 EcgFeatureExtractor.extract() + toPromptText() 在手机端重建\n")
+            sb.append("# 与手表端发给 DeepSeek 的提示词文本一致（DS 实际收到的数据）\n")
+            sb.append("# 注意: 用户 profile（年龄性别）未存入测量记录，手机端重建时为'未知'\n")
+            sb.append("#       助手如需年龄性别做医学判断，需用户单独提供\n")
+            sb.append("\n")
+            // 用默认 profile 重建特征（年龄0/性别null=未知）
+            // ppgReferenceHr 从 transfer 读取，保证 PPG 参考心率字段与测量时一致
+            val bundle = EcgFeatureExtractor.extract(
+                transfer.rawEcgData,
+                sampleRateHz = transfer.sampleRate,
+                profile = EcgFeatureExtractor.UserProfile(ageYears = 0, isMale = null),
+                ppgReferenceHr = transfer.ppgReferenceHr,
+            )
+            sb.append(EcgFeatureExtractor.toPromptText(bundle))
+            sb.append("\n")
+        }
 
         // ===== 第 3 段：AI 给出的解读 =====
         sb.append("[AI 解读]\n")
