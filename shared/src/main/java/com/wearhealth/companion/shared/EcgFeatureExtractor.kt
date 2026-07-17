@@ -55,6 +55,40 @@ object EcgFeatureExtractor {
         val rPeakPolarity: String = "未知",  // R 波极性："正向"/"负向"/"未知"（多数投票，R 峰值相对基线的符号）
         val tToRAmplitudeRatio: Float = 0f,  // T/R 振幅比（T 峰振幅 / R 峰振幅，正常 0.1~0.5）
         val stDeviationMv: Float = 0f,       // ST 段偏移 mV（QRS 终点到 T 波起点的高度差相对基线，正常 ±0.05mV）
+        // R 峰可靠性评估（独立于 signalQuality，专门评估 R 波定位本身的稳定性）
+        // 核心原则：波形可见 ≠ R 峰可信；R 峰不可信 ≠ 可以推断房颤
+        // 当 rPeakReliability.reliable=false 时，rrVariabilityCoef/poincarePattern/shortLongPairs
+        // 不应被当作节律证据，DS 不应输出"高度提示房颤/高置信早搏"等强标签
+        val rPeakReliability: RPeakReliability = RPeakReliability(),
+    )
+
+    /**
+     * R 峰可靠性评估（独立于 signalQuality）
+     *
+     * 设计动机：signalQuality 反映"波形整体可读性"（RMS、噪声段比例、R 波数合理性），
+     * 但不直接评估"R 峰定位是否稳定"。223211 案例证明：波形 RMS 正常、signalQuality 也正常，
+     * 但导联反接 + 基线漂移让 R 波振幅仅 0.2-0.9mV，包络峰偏弱、误检簇多 → 原始 RR 的
+     * CV 被拉到 0.35-0.55 → 误判房颤。signalQuality 通过但 R 峰并不可信。
+     *
+     * 因此新增独立维度，从 RR 序列本身的"生理合理性"反推 R 峰定位稳定性：
+     * - 极端 RR 占比：RR<300ms 或 >2500ms 的比例（生理不可能，多为误检/漏检）
+     * - 有效 RR 占比：通过 300-2500ms 区间的 RR / 全部相邻 R 峰对
+     * - 相邻 RR 跳变比例：相邻 RR 差 >20% mean 的占比（误检特征：短长 RR 配对）
+     * - R 峰-时长一致性：实际 R 峰数 vs 期望 R 峰数（durationSec×avgHr/60）的偏差
+     * - 异常段占比：R 波数为 0 的段或 rms<0.1 的段占比
+     *
+     * 阈值依据：经验值（无文献金标准），基于 5 份真实 wrist ECG 样本校准。
+     * 当 reliable=false 时下游 toPromptText 会降级输出，不让 DS 把检测噪声当房颤。
+     */
+    data class RPeakReliability(
+        val extremeRrRatio: Float = 0f,       // 极端 RR（<300ms 或 >2500ms）占比，>0.10 提示误检/漏检
+        val validRrRatio: Float = 1f,         // 有效 RR（300-2500ms）占比，<0.85 提示 R 峰定位不稳
+        val rrJumpRatio: Float = 0f,          // 相邻 RR 跳变 >20% mean 的占比，>0.30 提示短长配对过多
+        val rateConsistency: Float = 1f,      // R 峰数 vs 期望数（duration×avgHr/60）比值，<0.7 或 >1.3 提示不一致
+        val abnormalSegmentRatio: Float = 0f, // 异常段（0 R 波或 rms<0.1）占比，>0.40 提示大段不可用
+        val reliable: Boolean = true,         // 综合判定：true=可信用 RR 推节律，false=降级输出
+        val level: String = "可信",            // "可信"/"边缘"/"不可信"
+        val reason: String = "",              // 不可信/边缘的原因（用于 toPromptText 提示）
     )
 
     /** 逐秒分段特征 */
@@ -121,6 +155,19 @@ object EcgFeatureExtractor {
             .map { "${"%.1f".format(it.startSec)}-${"%.1f".format(it.endSec)}s(噪声)" }
         val sigQuality = computeSignalQuality(segments, effectiveRPeaks.size, durationSec)
 
+        // R 峰可靠性评估（独立于 signalQuality，专门评估 R 波定位稳定性）
+        // 用原始 rPeaks（未剔噪声段）算极端/有效 RR 占比，用 effectiveRPeaks 算一致性
+        // avgHr 来自剔早搏 RR，比用原始 RR 估的"R 峰-时长一致性"更稳
+        val reliability = computeRPeakReliability(
+            rawRPeaks = rPeaks,
+            effectiveRPeaks = effectiveRPeaks,
+            rrIntervals = rrIntervals,
+            avgHr = hr.avgHr,
+            durationSec = durationSec,
+            segments = segments,
+            sampleRateHz = sampleRateHz,
+        )
+
         val global = GlobalFeatures(
             sampleRateHz = sampleRateHz,
             durationSec = durationSec,
@@ -152,6 +199,7 @@ object EcgFeatureExtractor {
             tToRAmplitudeRatio = if (intervals.rAmplitudeMv > 0.01f && intervals.tAmplitudeMv > 0f)
                 intervals.tAmplitudeMv / intervals.rAmplitudeMv else 0f,
             stDeviationMv = intervals.stDeviationMv,
+            rPeakReliability = reliability,
         )
         return FeatureBundle(global, segments, profile)
     }
@@ -164,13 +212,13 @@ object EcgFeatureExtractor {
      * 预处理链（借鉴 NeuroKit2 'neurokit' 方法）：
      * 1. 1秒窗口去基线漂移（等效高通 ~1Hz）
      * 2. |梯度|（一阶中心差分绝对值）—— 突出 QRS 陡峭斜率，抑制平缓 P/T 波
-     * 3. 50ms boxcar 平滑 —— 形成包络，减少噪声毛刺（不用 750ms 因 500Hz 下太宽会吞掉相邻 R 波）
+     * 3. 150ms boxcar 平滑（MWI 移动窗口积分）—— 形成包络，让一个 QRS 只产生一个峰
      *
      * 检测（借鉴 Pan-Tompkins）：
      * 4. 分段自适应阈值 = 均值 + 1.7×标准差（4 秒窗口，k=1.7 平衡运动后检出与静息不回归）
      * 5. 局部最大 + 200ms 不应期（最高 300bpm）
-     * 6. 原始信号 ±50ms 精修 R 峰位置（envelope 峰在 R 峰上升沿，提前 ~30-50ms，±25ms 够不到 R 峰）
-     * 7. 回溯补检：RR > 1.66×近期均值时半阈值补检（PT 核心，灵敏度 95%→99%）
+     * 6. 原始信号 ±50ms 精修 R 峰位置（envelope 峰在 R 峰上升沿前 ~30-50ms，需 ±50ms 才能命中真峰）
+     * 7. 回溯补检：RR > 1.66×近期均值时半阈值补检（PT 核心，提升漏检召回）
      */
     private fun detectRPeaks(ecgData: List<Int>, sampleRateHz: Int): List<Int> {
         if (ecgData.size < sampleRateHz * 5) return emptyList()
@@ -552,8 +600,8 @@ object EcgFeatureExtractor {
         // SD1（短轴，垂直对角线，短期变异/副交感）= std(RR_n - RR_{n+1}) / sqrt(2)
         // SD2（长轴，沿对角线，长期变异）= std(RR_n + RR_{n+1}) / sqrt(2)
         val pairs = ArrayList<Pair<Double, Double>>()
-        for (i in 0 until rrIntervals.size - 1) {
-            pairs.add(Pair(rrIntervals[i].toDouble(), rrIntervals[i + 1].toDouble()))
+        for (i in 0 until rrForStats.size - 1) {
+            pairs.add(Pair(rrForStats[i].toDouble(), rrForStats[i + 1].toDouble()))
         }
         val diffs = DoubleArray(pairs.size) { pairs[it].first - pairs[it].second }
         val sums = DoubleArray(pairs.size) { pairs[it].first + pairs[it].second }
@@ -575,13 +623,15 @@ object EcgFeatureExtractor {
         // 无统一的 SD1/SD2 比值金标准切点，此处用比值升高方向辅助 CV 判断，不作单一阈值诊断
         val ratio = if (sd2 > 0.1) sd1 / sd2 else 0.0
 
-        // 短-长 RR 配对（早搏代偿间隙）
+        // 短-长 RR 配对（早搏代偿间隙，用原始 RR 保早搏特征）
         // 生理学依据：早搏=短联律间期(早搏前RR短)+代偿间隙(早搏后RR长)，室早完全代偿/房早不完全代偿
         // 0.8/1.2 倍均值为经验切点（方向依据生理学，倍数无文献金标准）
+        // 用原始 RR 的均值：早搏短长 RR 偏离清洗后均值更远，用原始均值做阈值更易检出早搏
+        val meanRaw = rrIntervals.average()
         var shortLongPairs = 0
         for (i in 0 until rrIntervals.size - 1) {
-            val isShort = rrIntervals[i] < mean * 0.8
-            val isLong = rrIntervals[i + 1] > mean * 1.2
+            val isShort = rrIntervals[i] < meanRaw * 0.8
+            val isLong = rrIntervals[i + 1] > meanRaw * 1.2
             if (isShort && isLong) shortLongPairs++
         }
 
@@ -600,6 +650,145 @@ object EcgFeatureExtractor {
         }
 
         return RhythmFeatures(cv, pattern, shortLongPairs)
+    }
+
+    /**
+     * R 峰可靠性评估：从 RR 序列与分段特征反推 R 波定位本身的稳定性
+     *
+     * 输入说明：
+     * - rawRPeaks：未做噪声段剔除的原始 R 峰位置（用于算"全部相邻 R 峰对"分母）
+     * - effectiveRPeaks：噪声段剔除后的有效 R 峰（用于算有效 RR）
+     * - rrIntervals：由 effectiveRPeaks 算出的 RR（已过 300-2500ms 区间过滤）
+     * - avgHr：用于"R 峰-时长一致性"的期望心率（来自剔早搏 RR，比原始 RR 稳）
+     * - durationSec：用于算期望 R 峰数 = durationSec × avgHr / 60
+     * - segments：逐秒分段，用于算异常段占比
+     *
+     * 判定逻辑（任一命中即降级）：
+     * - 不可信：极端 RR>18% 或 有效 RR<80% 或 跳变>20% 或 一致性<0.6 或 >1.5 或 异常段>50%
+     * - 边缘：极端 RR>8% 或 有效 RR<90% 或 跳变>10% 或 一致性<0.75 或 >1.35 或 异常段>30%
+     * - 可信：以上均不触发
+     *
+     * 跳变比例用 filterEctopicBeats 清洗后的 RR（非原始 RR）：
+     * - 原始 RR 含误检/早搏导致跳变普遍偏高（30-60%），5 份真实样本无区分度
+     * - 清洗后 RR 的跳变反映 filterEctopicBeats 救不了的残余剧烈跳变，更能区分"真不稳定"
+     *
+     * 阈值依据：5 份真实 wrist ECG 样本校准（test_reliability.py 验证）：
+     * - 223211（导联反接+漂移，曾误判房颤）：极端 RR=21% → 不可信 ✓
+     * - 223747（DS 路径）：极端 RR=31% → 不可信 ✓
+     * - 运动后（SNT 107bpm）：极端 RR=3% → 可信 ✓
+     * - 静息/活动后/静息旧（SN/SNB）：极端 RR=12-14% → 边缘 ✓
+     */
+    private fun computeRPeakReliability(
+        rawRPeaks: List<Int>,
+        effectiveRPeaks: List<Int>,
+        rrIntervals: List<Int>,
+        avgHr: Int,
+        durationSec: Float,
+        segments: List<SegmentFeature>,
+        sampleRateHz: Int,
+    ): RPeakReliability {
+        // 数据不足时直接判不可信（无法评估）
+        if (rawRPeaks.size < 4 || durationSec < 5f) {
+            return RPeakReliability(
+                reliable = false, level = "不可信",
+                reason = "R 波数不足(${rawRPeaks.size})或时长过短(${durationSec}s)，无法评估节律",
+            )
+        }
+
+        // 1. 极端 RR 占比 / 2. 有效 RR 占比
+        // 全部相邻 R 峰对（含未通过 300-2500ms 的）= rawRPeaks.size - 1
+        // 但 rrIntervals 已是 effectiveRPeaks 过滤后的结果，无法反推被剔除的 RR 数
+        // 改用 rawRPeaks 算原始 RR，统计极端 RR 占比（更接近"误检/漏检"的真实比例）
+        val totalPairs = rawRPeaks.size - 1
+        var extremeCount = 0
+        var validCount = 0
+        for (i in 1 until rawRPeaks.size) {
+            val rrMs = ((rawRPeaks[i] - rawRPeaks[i - 1]) * 1000.0 / sampleRateHz).toInt()
+            if (rrMs in 300..2500) {
+                validCount++
+            } else {
+                extremeCount++
+            }
+        }
+        val extremeRrRatio = if (totalPairs > 0) extremeCount.toFloat() / totalPairs else 0f
+        val validRrRatio = if (totalPairs > 0) validCount.toFloat() / totalPairs else 1f
+
+        // 3. 相邻 RR 跳变比例（用 filterEctopicBeats 清洗后的 RR，>40% mean 视为跳变）
+        // 用清洗后 RR 而非原始 RR：原始 RR 含误检/早搏导致跳变普遍偏高（30-60%），无区分度；
+        // 清洗后 RR 的跳变反映 filterEctopicBeats 救不了的残余剧烈跳变，更能区分"真不稳定"
+        // 40% 阈值与 shortLongPairs 的 0.8/1.2 倍均值一致（差值>40% mean）
+        val rrCleanForJump = filterEctopicBeats(rrIntervals)
+        val rrJumpRatio = if (rrCleanForJump.size >= 2 && rrCleanForJump.average() > 0) {
+            val mean = rrCleanForJump.average()
+            val jumpCount = (1 until rrCleanForJump.size).count { k ->
+                abs(rrCleanForJump[k] - rrCleanForJump[k - 1]) / mean > 0.40
+            }
+            jumpCount.toFloat() / (rrCleanForJump.size - 1)
+        } else 0f
+
+        // 4. R 峰-时长一致性：实际 R 峰数 / 期望 R 峰数
+        // 期望 = durationSec × avgHr / 60（avgHr 来自剔早搏 RR，比原始 RR 稳）
+        // 比值 <1 = 漏检，>1 = 误检
+        val expectedPeaks = if (avgHr > 0) (durationSec * avgHr / 60f).coerceAtLeast(1f) else 1f
+        val rateConsistency = effectiveRPeaks.size / expectedPeaks
+
+        // 5. 异常段占比：R 波数为 0 或 rms<0.1 的段
+        val abnormalSegCount = segments.count { it.rPeakCount == 0 || it.rmsMv < 0.10f }
+        val abnormalSegmentRatio = if (segments.isNotEmpty()) {
+            abnormalSegCount.toFloat() / segments.size
+        } else 1f
+
+        // 综合判定：不可信
+        val reasons = mutableListOf<String>()
+        if (extremeRrRatio > 0.18f) reasons.add("极端RR占比${"%.0f".format(extremeRrRatio * 100)}%")
+        if (validRrRatio < 0.80f) reasons.add("有效RR占比${"%.0f".format(validRrRatio * 100)}%")
+        if (rrJumpRatio > 0.20f) reasons.add("相邻RR跳变(清洗后)${"%.0f".format(rrJumpRatio * 100)}%")
+        if (rateConsistency < 0.60f) reasons.add("R峰数偏少(一致性${"%.2f".format(rateConsistency)})")
+        if (rateConsistency > 1.50f) reasons.add("R峰数偏多(一致性${"%.2f".format(rateConsistency)})")
+        if (abnormalSegmentRatio > 0.50f) reasons.add("异常段占比${"%.0f".format(abnormalSegmentRatio * 100)}%")
+
+        if (reasons.isNotEmpty()) {
+            return RPeakReliability(
+                extremeRrRatio = extremeRrRatio,
+                validRrRatio = validRrRatio,
+                rrJumpRatio = rrJumpRatio,
+                rateConsistency = rateConsistency,
+                abnormalSegmentRatio = abnormalSegmentRatio,
+                reliable = false, level = "不可信",
+                reason = "R波定位稳定性不足：${reasons.joinToString("、")}",
+            )
+        }
+
+        // 边缘判定
+        val edgeReasons = mutableListOf<String>()
+        if (extremeRrRatio > 0.08f) edgeReasons.add("极端RR占比${"%.0f".format(extremeRrRatio * 100)}%")
+        if (validRrRatio < 0.90f) edgeReasons.add("有效RR占比${"%.0f".format(validRrRatio * 100)}%")
+        if (rrJumpRatio > 0.10f) edgeReasons.add("相邻RR跳变(清洗后)${"%.0f".format(rrJumpRatio * 100)}%")
+        if (rateConsistency < 0.75f) edgeReasons.add("R峰数偏少(一致性${"%.2f".format(rateConsistency)})")
+        if (rateConsistency > 1.35f) edgeReasons.add("R峰数偏多(一致性${"%.2f".format(rateConsistency)})")
+        if (abnormalSegmentRatio > 0.30f) edgeReasons.add("异常段占比${"%.0f".format(abnormalSegmentRatio * 100)}%")
+
+        if (edgeReasons.isNotEmpty()) {
+            return RPeakReliability(
+                extremeRrRatio = extremeRrRatio,
+                validRrRatio = validRrRatio,
+                rrJumpRatio = rrJumpRatio,
+                rateConsistency = rateConsistency,
+                abnormalSegmentRatio = abnormalSegmentRatio,
+                reliable = true, level = "边缘",
+                reason = "R波定位稳定性边缘：${edgeReasons.joinToString("、")}，节律判读需谨慎",
+            )
+        }
+
+        return RPeakReliability(
+            extremeRrRatio = extremeRrRatio,
+            validRrRatio = validRrRatio,
+            rrJumpRatio = rrJumpRatio,
+            rateConsistency = rateConsistency,
+            abnormalSegmentRatio = abnormalSegmentRatio,
+            reliable = true, level = "可信",
+            reason = "",
+        )
     }
 
     private data class IntervalEstimates(
@@ -1014,11 +1203,41 @@ object EcgFeatureExtractor {
         sb.append("\n")
 
         // 节律判别特征（帮助区分窦性/房颤/早搏，基于 RR 间期序列）
+        // 降级原则：R 峰可靠性不足时，不把 CV/Poincaré/shortLongPairs 当节律证据，
+        // 不向 DS 传递"高度不规律/疑似房颤"等强引导标签，禁止 DS 输出"高度提示房颤/高置信早搏"。
         sb.append("[节律判别特征]\n")
-        sb.append("RR变异系数:${"%.3f".format(g.rrVariabilityCoef)}")
-        sb.append("(${if (g.rrVariabilityCoef < 0.05f) "规律" else if (g.rrVariabilityCoef < 0.15f) "轻度不齐" else "高度不规律"})\n")
-        sb.append("Poincaré散点形态:${g.poincarePattern}\n")
-        sb.append("短-长RR配对数(早搏代偿):${g.shortLongPairs}个\n")
+        val rel = g.rPeakReliability
+        if (!rel.reliable) {
+            // 不可信：降级输出，不让 DS 把检测噪声当房颤
+            sb.append("R波可靠性:${rel.level}\n")
+            sb.append("可靠性指标:极端RR占比${"%.0f".format(rel.extremeRrRatio * 100)}% 有效RR占比${"%.0f".format(rel.validRrRatio * 100)}% 相邻RR跳变${"%.0f".format(rel.rrJumpRatio * 100)}% R峰-时长一致性${"%.2f".format(rel.rateConsistency)} 异常段占比${"%.0f".format(rel.abnormalSegmentRatio * 100)}%\n")
+            sb.append("原因:${rel.reason}\n")
+            sb.append("【节律判读降级】R波定位稳定性不足，当前记录无法可靠评估节律；CV/Poincaré/短长RR配对不作为节律证据。\n")
+            sb.append("禁止：输出「高度提示房颤」「高置信早搏」等强诊断标签。\n")
+            sb.append("建议：在静止、接触稳定时重新测量。\n")
+            // 仍输出原始 RR 序列数值供 DS 参考，但明确标注"仅作参考，不作为节律证据"
+            sb.append("(以下RR指标因R波不可信，仅作参考，不作为节律证据)\n")
+            sb.append("RR变异系数:${"%.3f".format(g.rrVariabilityCoef)}(参考)\n")
+            sb.append("Poincaré散点形态:${g.poincarePattern}(参考)\n")
+            sb.append("短-长RR配对数:${g.shortLongPairs}个(参考)\n")
+        } else if (rel.level == "边缘") {
+            // 边缘：仍传数值，但加降级提示
+            sb.append("R波可靠性:${rel.level}\n")
+            sb.append("可靠性指标:极端RR占比${"%.0f".format(rel.extremeRrRatio * 100)}% 有效RR占比${"%.0f".format(rel.validRrRatio * 100)}% 相邻RR跳变${"%.0f".format(rel.rrJumpRatio * 100)}% R峰-时长一致性${"%.2f".format(rel.rateConsistency)} 异常段占比${"%.0f".format(rel.abnormalSegmentRatio * 100)}%\n")
+            sb.append("提示:${rel.reason}\n")
+            sb.append("RR变异系数:${"%.3f".format(g.rrVariabilityCoef)}")
+            sb.append("(${if (g.rrVariabilityCoef < 0.05f) "规律" else if (g.rrVariabilityCoef < 0.15f) "轻度不齐" else "不规律"})\n")
+            sb.append("Poincaré散点形态:${g.poincarePattern}\n")
+            sb.append("短-长RR配对数(早搏代偿):${g.shortLongPairs}个\n")
+            sb.append("注意:R波定位稳定性边缘，节律判读需谨慎，不宜仅凭CV/Poincaré下房颤诊断。\n")
+        } else {
+            // 可信：原输出
+            sb.append("R波可靠性:${rel.level}\n")
+            sb.append("RR变异系数:${"%.3f".format(g.rrVariabilityCoef)}")
+            sb.append("(${if (g.rrVariabilityCoef < 0.05f) "规律" else if (g.rrVariabilityCoef < 0.15f) "轻度不齐" else "高度不规律"})\n")
+            sb.append("Poincaré散点形态:${g.poincarePattern}\n")
+            sb.append("短-长RR配对数(早搏代偿):${g.shortLongPairs}个\n")
+        }
         sb.append("\n")
 
         // 逐秒分段表

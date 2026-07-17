@@ -528,4 +528,64 @@ class EcgFeatureExtractorTest {
             gElevated.stDeviationMv > 0.10f,
         )
     }
+
+    // ===== R 峰可靠性评估（独立于 signalQuality） =====
+    // 目的：区分"波形可读"与"R 峰定位稳定"。223211 案例证明 signalQuality 通过
+    // 但 R 峰不可信（导联反接+漂移导致误检），误判房颤。
+    // 核心原则：波形可见 ≠ R 峰可信；R 峰不可信 ≠ 可以推断房颤
+
+    /**
+     * 干净规则信号 R 峰可靠性应为"可信"。
+     *
+     * 合成 70bpm 规则 R 波（振幅 1.0mV，低噪声），R 波检测准确，
+     * 极端 RR 占比应为 0，reliability.level 应为"可信"。
+     */
+    @Test
+    fun cleanSignalHasReliableRPeaks() {
+        val rTimes = (0 until 35).map { it * 0.857f }
+        // noiseLevel=0.01（100:1 SNR），与 detectsRegularRPeaksAndHeartRate 一致，
+        // 确保合成信号 R 波检测稳定（无误检），极端 RR 占比为 0
+        val ecg = syntheticEcg(30f, rTimes, rAmplitudeMv = 1.0f, noiseLevel = 0.01f, seed = 42L)
+        val g = EcgFeatureExtractor.extract(ecg, sampleRate).global
+        assertTrue(
+            "干净信号 R 峰可靠性应为可信，实际 ${g.rPeakReliability.level}（${g.rPeakReliability.reason}）",
+            g.rPeakReliability.reliable && g.rPeakReliability.level == "可信",
+        )
+    }
+
+    /**
+     * R 峰不足时可靠性应判"不可信"，toPromptText 应输出降级提示。
+     *
+     * 场景：合成 <5 秒的短信号（detectRPeaks 返回空列表），
+     * reliability 走"R 波数不足"分支判"不可信"，toPromptText 应包含"无法可靠评估节律"，
+     * 且 RR 指标应标注为"参考"（不作为节律证据）。
+     *
+     * 这是 reliability 逻辑的确定性边界 case 测试（不依赖合成信号的误检率）。
+     */
+    @Test
+    fun unreliableRPeaksTriggersDowngrade() {
+        // 4 秒信号：detectRPeaks 要求 >=5 秒，返回空列表 → reliability 走"R 波数不足"分支
+        val ecg = syntheticEcg(4f, listOf(1f, 2f, 3f), rAmplitudeMv = 1.0f,
+            noiseLevel = 0.02f, seed = 42L)
+        val bundle = EcgFeatureExtractor.extract(ecg, sampleRate)
+        val g = bundle.global
+        assertTrue(
+            "R 峰不足时可靠性应判不可信，实际 ${g.rPeakReliability.level}（${g.rPeakReliability.reason}）",
+            !g.rPeakReliability.reliable && g.rPeakReliability.level == "不可信",
+        )
+        val text = EcgFeatureExtractor.toPromptText(bundle)
+        assertTrue(
+            "不可信时应输出降级提示，实际文本:\n$text",
+            text.contains("无法可靠评估节律"),
+        )
+        assertTrue(
+            "不可信时应建议重新测量",
+            text.contains("重新测量"),
+        )
+        // 降级时 RR 指标应标注为"参考"，不作为节律证据
+        assertTrue(
+            "不可信时 RR 变异系数应标注为参考",
+            text.contains("RR变异系数:") && text.contains("(参考)"),
+        )
+    }
 }
