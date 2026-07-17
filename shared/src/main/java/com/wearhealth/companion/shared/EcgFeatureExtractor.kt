@@ -343,6 +343,14 @@ object EcgFeatureExtractor {
                     bestIdx = j
                 }
             }
+            // 二次不应期验证（v6 新增）：精修位移可能让 bestIdx 距上一个 R 峰 < refractory。
+            // 根因：envelope 峰 i 满足 i - lastPeakIdx >= refractory，但 bestIdx = i ± 50ms，
+            // 若 bestIdx = i - 50ms，则 bestIdx - 上一个 bestIdx 可能 < refractory，
+            // 产生 156-186ms 的超短 RR（生理不可能）。
+            // 验证（test_refine_refractory.py）：静息/223211/运动后 均有精修后 RR<200ms 的违规对。
+            // 修复：精修后若 bestIdx 距上一个 R 峰 < refractory，跳过（双峰/切迹第二峰）。
+            // 效果（test_refine_fix.py）：极端 RR 占比降 2-9%，心电api静息换右手 不可信→边缘。
+            if (rPeaks.isNotEmpty() && (bestIdx - rPeaks.last()) < refractory) continue
             rPeaks.add(bestIdx)
             // 关键修复：lastPeakIdx 必须用精修后的 bestIdx，否则不应期基于包络峰位置计算，
             // 与实际 R 峰位置偏差累积，可能让相邻 QRS 的精修位置进入同一不应期窗口
@@ -404,6 +412,18 @@ object EcgFeatureExtractor {
                                 rIdx = j
                             }
                         }
+                        // T 波位置排除（v6 新增）：回溯补检可能把 T 波当 R 波补检。
+                        // 根因：腕表 ECG 的 T/R 比普遍 ≥1（223211 T/R=1.09、静息 T/R=1.80、
+                        // 运动后 T/R=0.97），T 波也有斜率会产生 envelope 峰，半阈值搜索时
+                        // 可能找到 T 波峰 → 产生 R-T 短 RR + T-下个R 长 RR 的伪配对。
+                        // 验证（test_backfill_twave.py）：223211 有 4 个、静息有 3 个回溯补检峰
+                        // 落在 T 波位置（距前 R 峰 200-450ms）。
+                        // 修复：补检峰若距前一个 R 峰在 200-450ms（T 波位置），判为 T 波，跳过。
+                        // T 波窗口 200-450ms 依据：生理 T 波在 R 峰后 200-400ms（tOffsetSec 默认 0.3s），
+                        // 加 50ms 容差覆盖精修位移。
+                        val prevR = rPeaks.filter { it < rIdx }.maxOrNull() ?: -refractory * 4
+                        val offsetToPrevMs = (rIdx - prevR) * 1000.0 / sampleRateHz
+                        if (offsetToPrevMs in 200.0..450.0) continue  // T 波位置，跳过
                         extraPeaks.add(rIdx)
                     }
                 }
