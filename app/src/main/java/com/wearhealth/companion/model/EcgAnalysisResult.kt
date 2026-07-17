@@ -26,6 +26,10 @@ data class EcgAnalysisResult(
     val aiReport: String = "",                 // DeepSeek JSON 报告（仅 DS 方式有值）
     val tavilyStatus: String = "",             // Tavily 联网检索状态（仅 DS Max 档有值），供 UI 展示
     val ppgReferenceHr: Int = 0,               // PPG 绿光参考心率（测后读系统心率，0=未采集/不可用）
+    // HRV 时域指标（raw 模式由 DS 从 RR 序列自算，算法模式由本地算法计算）
+    val sdnnMs: Double = 0.0,                  // SDNN（全部 RR 标准差），自主神经总张力
+    val rmssdMs: Double = 0.0,                 // RMSSD（相邻 RR 差值均方根），副交感张力
+    val pnn50Pct: Double = 0.0,                // pNN50（相邻 RR 差值>50ms 比例%），副交感张力
 )
 
 /**

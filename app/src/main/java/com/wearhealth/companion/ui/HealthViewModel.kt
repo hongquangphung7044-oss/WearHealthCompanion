@@ -291,9 +291,20 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             // raw 模式从 DS 报告 JSON 提取数值（DS 自己测量），算法模式用本地 g
+            // 字段名兼容：新 prompt 用 _ms 后缀（QRS宽度_ms/PR间期_ms/QT间期_ms/QTc_ms），
+            // 旧历史记录用无后缀（QRS宽度/PR间期/QT间期/QTc），两种都尝试解析
             val rawJson = runCatching {
                 org.json.JSONObject(com.wearhealth.companion.shared.JsonCleaner.extractJsonObject(report.reportJson))
             }.getOrNull()
+            // 间期字段可能是数字或字符串（如"数据不足,无法判断"），用 optInt 兜底取数字
+            fun optIntCompat(newKey: String, oldKey: String): Int {
+                val v = rawJson?.opt(newKey) ?: rawJson?.opt(oldKey)
+                return when (v) {
+                    is Number -> v.toInt()
+                    is String -> v.toIntOrNull() ?: 0
+                    else -> 0
+                }
+            }
             EcgAnalysisResult(
                 isAbnormal = dsDiagnosis.any { it !in listOf("SN", "SNT", "SNB") },
                 signalQuality = g?.signalQuality?.toDouble() ?: 0.7,  // raw 模式无本地质量评估，用中性默认值
@@ -303,12 +314,12 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 avgHeartRate = g?.avgHeartRate ?: rawJson?.optInt("平均心率", 0) ?: 0,
                 minHeartRate = g?.minHeartRate ?: rawJson?.optInt("最小心率", 0) ?: 0,
                 maxHeartRate = g?.maxHeartRate ?: rawJson?.optInt("最大心率", 0) ?: 0,
-                avgQrs = g?.qrsWidthMs ?: rawJson?.optInt("QRS宽度", 0) ?: 0,
+                avgQrs = g?.qrsWidthMs ?: optIntCompat("QRS宽度_ms", "QRS宽度"),
                 avgP = 0,
-                prInterval = g?.prIntervalMs ?: rawJson?.optInt("PR间期", 0) ?: 0,
-                avgQt = g?.qtIntervalMs ?: rawJson?.optInt("QT间期", 0) ?: 0,
-                avgQtc = g?.qtcMs ?: rawJson?.optInt("QTc", 0) ?: 0,
-                avgQtcFridericia = g?.qtcFridericiaMs ?: 0,
+                prInterval = g?.prIntervalMs ?: optIntCompat("PR间期_ms", "PR间期"),
+                avgQt = g?.qtIntervalMs ?: optIntCompat("QT间期_ms", "QT间期"),
+                avgQtc = g?.qtcMs ?: optIntCompat("QTc_ms", "QTc"),
+                avgQtcFridericia = g?.qtcFridericiaMs ?: optIntCompat("QTcFridericia_ms", "QTcFridericia"),
                 pacCount = 0,
                 pvcCount = 0,
                 rawData = "",  // DS 模式不保留原始 API 响应
@@ -317,6 +328,10 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 aiReport = report.reportJson,
                 tavilyStatus = report.tavilyStatus,
                 ppgReferenceHr = ppgReferenceHr,
+                // HRV：raw 模式从 DS 报告解析（DS 自算），算法模式从本地 g 解析
+                sdnnMs = g?.sdnnMs?.toDouble() ?: rawJson?.optDouble("SDNN_ms", 0.0) ?: 0.0,
+                rmssdMs = g?.rmssdMs?.toDouble() ?: rawJson?.optDouble("RMSSD_ms", 0.0) ?: 0.0,
+                pnn50Pct = g?.pnn50Pct?.toDouble() ?: rawJson?.optDouble("pNN50_pct", 0.0) ?: 0.0,
             )
         }
     }

@@ -1421,7 +1421,8 @@ object EcgFeatureExtractor {
         sb.append("采样率:${sampleRateHz}Hz\n")
         sb.append("时长:${if (sampleRateHz > 0) ecgData.size.toFloat() / sampleRateHz else 0f}秒\n")
         sb.append("总点数:${ecgData.size}\n")
-        sb.append("数据格式:去DC后的整数序列(原始ADC值减去全局中位数),1点=${1000f / sampleRateHz}ms\n")
+        sb.append("数据格式:去DC+去趋势后的整数序列,1点=${1000f / sampleRateHz}ms\n")
+        sb.append("预处理:减去2秒滑动窗口局部均值(去除基线漂移+DC偏移,保留R波/T波形态不失真)\n")
         sb.append("算法处理:无(原始波形直传,未经本地算法间期/形态估测)\n")
         sb.append("\n")
 
@@ -1440,22 +1441,23 @@ object EcgFeatureExtractor {
             sb.append("\n")
         }
 
-        // 去DC后的原始波形
-        sb.append("[原始ECG波形(去DC,每行1秒])\n")
+        // 去DC+去趋势后的原始波形
+        // 用滑动窗口局部均值去趋势：窗口2秒(1000点@500Hz)，覆盖基线漂移同时保留R波/T波形态
+        // 比全局中位数更优：严重基线漂移时全局中位数会被漂移带偏，局部均值只去低频漂移
+        sb.append("[原始ECG波形(去DC+去趋势,每行1秒])\n")
         sb.append("说明:每行${sampleRateHz}个整数(1秒),正值表示基线上方,负值表示基线下方\n")
-        sb.append("R波通常表现为尖锐的同向尖峰,T波在R波后100-400ms,振幅约为R波的1/5-1/2\n")
+        sb.append("R波通常表现为尖锐的同向尖峰(振幅100-500),T波在R波后100-400ms(振幅20-100),P波常不可辨\n")
         sb.append("\n")
-        val ecgSorted = ecgData.sorted()
-        val dcOffset = ecgSorted[ecgSorted.size / 2]  // 中位数去DC
+        val detrended = detrendBySlidingWindow(ecgData, windowSize = sampleRateHz * 2)
         val samplesPerSec = sampleRateHz
         var sec = 0
         var i = 0
-        while (i < ecgData.size) {
-            val end = minOf(ecgData.size, i + samplesPerSec)
+        while (i < detrended.size) {
+            val end = minOf(detrended.size, i + samplesPerSec)
             val secData = StringBuilder()
             for (j in i until end) {
                 if (j > i) secData.append(",")
-                secData.append(ecgData[j] - dcOffset)
+                secData.append(detrended[j])
             }
             sb.append("第${sec}秒:${secData}\n")
             sec++
@@ -1464,5 +1466,48 @@ object EcgFeatureExtractor {
         sb.append("\n")
 
         return sb.toString()
+    }
+
+    /**
+     * 滑动窗口去趋势：每个点减去以其为中心的窗口内局部均值
+     *
+     * 作用：去除低频基线漂移（呼吸/电极接触变化引起）+ DC 偏移，保留 R 波/T 波等高频形态不失真
+     * 对比全局中位数：严重漂移时全局中位数会被漂移带偏（如某段持续-5000），局部均值只平滑低频
+     *
+     * @param data 原始 ADC 整数序列
+     * @param windowSize 窗口大小（点数），建议 2 秒（1000@500Hz）：足够覆盖多个心跳周期，
+     *                   不会把 R 波平均掉（R 波持续<100ms，2 秒窗口里 R 波占比小）
+     * @return 去趋势后的整数序列（以 0 为中心）
+     */
+    private fun detrendBySlidingWindow(data: List<Int>, windowSize: Int): List<Int> {
+        if (data.isEmpty()) return emptyList()
+        val halfWin = windowSize / 2
+        // 滑动窗口均值用累加和优化，避免每点重新求和
+        val n = data.size
+        val result = IntArray(n)
+        var winSum = 0L
+        var winCount = 0
+        // 初始化第一个窗口 [0, halfWin]
+        for (i in 0..minOf(n - 1, halfWin)) {
+            winSum += data[i]
+            winCount++
+        }
+        for (i in 0 until n) {
+            val left = i - halfWin - 1
+            val right = i + halfWin
+            // 左边界点滑出窗口
+            if (left >= 0 && winCount > 1) {
+                winSum -= data[left]
+                winCount--
+            }
+            // 右边界点滑入窗口
+            if (right < n) {
+                winSum += data[right]
+                winCount++
+            }
+            val localMean = (winSum / winCount).toInt()
+            result[i] = data[i] - localMean
+        }
+        return result.toList()
     }
 }
