@@ -9,7 +9,10 @@ import java.util.Locale
  * 方便用户复制贴给助手，由助手精确定位是原始数据/本地算法/AI 哪一步出错。
  *
  * 三段：
- * 1. 原始 ECG 数据：mV×1000 整数数组，全量不降采样（30s×500Hz=15000 个点）
+ * 1. 原始 ECG 数据：手表 SDK 返回的 ADC 原始整数值（约 14-17.5 万，含 DC 偏移），
+ *    全量不降采样（30s×500Hz=15000 个点）。注意不是 mV×1000——R 波振幅在 ADC 中
+ *    表现为相对基线的偏移（±100-500 范围），不是绝对值。EcgFeatureExtractor 在
+ *    所有计算前先去 DC（减基线/中位数/滑动均值），所以算法工作在相对值上正确。
  * 2. 算法提取后的结构化特征：在手机端用 [EcgFeatureExtractor.extract] + [EcgFeatureExtractor.toPromptText]
  *    重建（与手表端发给 DS 的提示词文本一致）
  * 3. AI 给出的解读：[EcgMeasurementTransfer.aiReport] 原始 JSON
@@ -63,11 +66,21 @@ object DiagnosticExporter {
         sb.append("\n")
 
         // ===== 第 1 段：原始 ECG 数据 =====
+        // 数据单位说明（重要）：手表 SDK 返回的是 ADC 原始整数值（约 14-17.5 万），不是 mV×1000。
+        // 真实 R 波振幅在 ADC 中表现为"相对基线的偏移"（±100-500 范围），不是绝对值。
+        // 助手复现算法时必须先去 DC（减中位数/滑动窗口均值），不能直接把这些数字当 mV 解读。
+        // EcgFeatureExtractor 在所有计算前先做去 DC（detectRPeaks 减 1 秒窗口均值，
+        // toRawEcgPromptText 用 detrendBySlidingWindow 2 秒窗口），所以算法工作在相对值上正确。
         sb.append("[原始 ECG 数据]\n")
-        sb.append("# 单位: mV×1000 整数（如 500 = 0.5mV，-1000 = -1.0mV）\n")
+        sb.append("# 单位: ADC 原始整数值（手表 Samsung ECG SDK 返回值，约 14-17.5 万，含 DC 偏移）\n")
+        sb.append("# 重要: 不是 mV×1000！R 波振幅在 ADC 中表现为相对基线的偏移（±100-500），\n")
+        sb.append("#       不是绝对值。助手复现算法时必须先去 DC（减中位数/滑动窗口均值），\n")
+        sb.append("#       不能直接把这些数字当 mV 解读。\n")
         sb.append("# 采样率: ${transfer.sampleRate} Hz，连续采样，无降采样无压缩\n")
         sb.append("# 用途: 助手据此复现本地算法行为（基线漂移/噪声段/R波检测）\n")
         sb.append("# 格式: 每行一个数值，行号=采样点索引（第1行=索引0，即 t=0.000s）\n")
+        sb.append("# 增益校准: 应用层未做 ADC→mV 转换；如需 mV，需自行用基线/中位数去 DC 后\n")
+        sb.append("#           视为相对振幅（无绝对 mV 标定，因手表未公布增益系数）\n")
         for (value in transfer.rawEcgData) {
             sb.append(value)
             sb.append("\n")

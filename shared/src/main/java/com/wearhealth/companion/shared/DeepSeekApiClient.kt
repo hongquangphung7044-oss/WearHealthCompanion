@@ -86,10 +86,11 @@ class DeepSeekApiClient(
      * @param featureText EcgFeatureExtractor.toPromptText() 输出的结构化特征文本
      * @param model 选用模型
      * @param thinkingMode 思考强度
-     * @param tavilyApiKey 可选 Tavily Key；非空且非 FAST 档时，分析前联网检索
+     * @param tavilyApiKey 可选 Tavily Key；非空且非 FAST 档时，分析前联网检索。
+     *   固定 3 个医学文献方向并行执行（async+awaitAll），6h 进程内缓存。
+     *   总耗时≈最慢查询（4-6s），失败不阻断 DS 分析（返回空字符串）
      * @param rawEcgMode 是否为原始波形直传模式。true 时用原始波形专用系统提示词，
      *   DS 直接分析波形而非本地算法估测的特征。feature/raw-ecg-to-ds 分支新增。
-     *        固定医学文献方向，把摘要注入提示词（搜索预算：3 个固定查询 + 6h 进程内缓存）
      * @return 成功返回 [DeepSeekReport]，失败返回异常
      */
     suspend fun analyzeEcg(
@@ -113,11 +114,13 @@ class DeepSeekApiClient(
         }
 
         try {
-            // 联网检索（均衡/Max 档 + Tavily Key 已配置）：固定 3 个医学文献方向，6h 进程内缓存
+            // 联网检索（均衡/Max 档 + Tavily Key 已配置）：固定 3 个医学文献方向并行检索，6h 进程内缓存
             // 快速档不检索，省搜索预算；检索失败不阻断 DS 分析（返回空字符串）
             // 状态记录供 UI 展示（用户能看见是否联网成功）
-            // 设计变更（feature/raw-ecg-to-ds）：Tavily 从仅 Max 下放到均衡档，
-            // 原因是均衡档是日常主力分析路径，配 Tavily 文献后判读依据更全面准确
+            // 设计变更（feature/raw-ecg-to-ds）：
+            // 1. Tavily 从仅 Max 下放到均衡档（均衡是日常主力路径，配 Tavily 文献后判读依据更全面）
+            // 2. v4 改为 3 个查询并行执行（async+awaitAll），合并房颤+早搏为"心律失常检测"
+            //    总耗时≈最慢查询（4-6s），比 v3 串行（12-20s）省 6-10s
             var tavilyStatus = ""
             val tavilyRefs = if (thinkingMode != ThinkingMode.FAST) {
                 if (tavilyApiKey.isBlank()) {
@@ -131,7 +134,7 @@ class DeepSeekApiClient(
                         ""
                     }
                     if (refs.isNotBlank()) {
-                        tavilyStatus = "已检索医学文献并注入提示词（房颤检测方法学/HRV参考值/QTc临床意义）"
+                        tavilyStatus = "已检索医学文献并注入提示词（心律失常检测/HRV参考值/QTc临床意义）"
                     }
                     refs
                 }
