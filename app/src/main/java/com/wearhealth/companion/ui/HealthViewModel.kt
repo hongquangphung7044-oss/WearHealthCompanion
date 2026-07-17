@@ -305,9 +305,34 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                     else -> 0
                 }
             }
+            // HRV/Double 字段也可能是数字或字符串，统一处理
+            fun optDoubleCompat(vararg keys: String): Double {
+                for (key in keys) {
+                    val v = rawJson?.opt(key)
+                    val parsed = when (v) {
+                        is Number -> v.toDouble()
+                        is String -> v.toDoubleOrNull()
+                        else -> null
+                    }
+                    if (parsed != null && parsed > 0) return parsed
+                }
+                return 0.0
+            }
+            // 信号质量从 DS 报告"信号质量"字段解析（字符串映射到 0-1 数值）
+            // raw 模式无本地 g.signalQuality，必须从 DS 报告取，否则永远是硬编码 0.7
+            val dsSignalQuality = g?.signalQuality?.toDouble() ?: run {
+                val sqStr = rawJson?.optString("信号质量", "") ?: ""
+                when {
+                    sqStr.contains("良好") -> 0.9
+                    sqStr.contains("中等") || sqStr.contains("中") -> 0.7
+                    sqStr.contains("差") -> 0.3
+                    sqStr.contains("精度有限") -> 0.5
+                    else -> 0.7  // DS 未输出时用中性默认
+                }
+            }
             EcgAnalysisResult(
                 isAbnormal = dsDiagnosis.any { it !in listOf("SN", "SNT", "SNB") },
-                signalQuality = g?.signalQuality?.toDouble() ?: 0.7,  // raw 模式无本地质量评估，用中性默认值
+                signalQuality = dsSignalQuality,
                 diagnosis = dsDiagnosis,
                 possibleDiagnoses = emptyList(),
                 isReverse = false,
@@ -329,9 +354,10 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 tavilyStatus = report.tavilyStatus,
                 ppgReferenceHr = ppgReferenceHr,
                 // HRV：raw 模式从 DS 报告解析（DS 自算），算法模式从本地 g 解析
-                sdnnMs = g?.sdnnMs?.toDouble() ?: rawJson?.optDouble("SDNN_ms", 0.0) ?: 0.0,
-                rmssdMs = g?.rmssdMs?.toDouble() ?: rawJson?.optDouble("RMSSD_ms", 0.0) ?: 0.0,
-                pnn50Pct = g?.pnn50Pct?.toDouble() ?: rawJson?.optDouble("pNN50_pct", 0.0) ?: 0.0,
+                // 兼容多种字段名：SDNN_ms/SDNN/RMSSD_ms/RMSSD/pNN50_pct/pNN50
+                sdnnMs = g?.sdnnMs?.toDouble() ?: optDoubleCompat("SDNN_ms", "SDNN"),
+                rmssdMs = g?.rmssdMs?.toDouble() ?: optDoubleCompat("RMSSD_ms", "RMSSD"),
+                pnn50Pct = g?.pnn50Pct?.toDouble() ?: optDoubleCompat("pNN50_pct", "pNN50", "pNN50%"),
             )
         }
     }
