@@ -369,6 +369,57 @@ class EcgFeatureExtractorTest {
         }
     }
 
+    /**
+     * v8：QRS SNR 自适应法验证
+     *
+     * 合成高 SNR 信号（R 波 1.0mV + 噪声 0.02mV，SNR≈50），QRS 应走阈值交叉法（5% 阈值），
+     * 置信度标"高置信"。合成高斯 R 波的真实 QRS 宽度 ≈ 4σ ≈ 40ms（σ=10ms），
+     * 5% 阈值交叉法测得应在 30-60ms。
+     */
+    @Test
+    fun qrsSnrAdaptiveHighSnrUsesMeasured() {
+        val rTimes = (0 until 35).map { it * 0.857f }
+        val ecg = syntheticEcg(30f, rTimes, rAmplitudeMv = 1.0f, noiseLevel = 0.02f)
+        val g = EcgFeatureExtractor.extract(ecg, sampleRate).global
+        assertTrue("高 SNR 应有 QRS 估测值，实际 ${g.qrsWidthMs}ms", g.qrsWidthMs > 0)
+        assertTrue("高 SNR QRS ${g.qrsWidthMs}ms 应在 30-80ms", g.qrsWidthMs in 30..80)
+        assertEquals("高 SNR QRS 置信度应为高置信", "高置信", g.qrsConfidence)
+    }
+
+    /**
+     * v8：QRS 低 SNR 用先验 100ms 验证
+     *
+     * 合成低 SNR 信号（R 波 0.3mV + 噪声 0.15mV，SNR≈2），QRS 应走先验 100ms，
+     * 置信度标"低置信"。依据：AHA/ESC 正常 QRS 范围 80-120ms，中位数 100ms。
+     */
+    @Test
+    fun qrsSnrAdaptiveLowSnrUsesPrior() {
+        val rTimes = (0 until 35).map { it * 0.857f }
+        val ecg = syntheticEcg(30f, rTimes, rAmplitudeMv = 0.3f, noiseLevel = 0.15f, seed = 7L)
+        val g = EcgFeatureExtractor.extract(ecg, sampleRate).global
+        // 低 SNR 时多数 R 波走先验 100ms，均值应在 90-110ms
+        assertTrue("低 SNR QRS ${g.qrsWidthMs}ms 应接近先验 100ms", g.qrsWidthMs in 90..110)
+        assertEquals("低 SNR QRS 置信度应为低置信", "低置信", g.qrsConfidence)
+    }
+
+    /**
+     * v8：QT 用 Bazett 反向先验验证
+     *
+     * 腕表 ECG T 波振幅 <0.05mV 被噪声淹没，实测不可靠，改用 Bazett 反向公式：
+     * QT = QTc × sqrt(RR)，QTc=400ms（AHA/ESC 正常范围 350-450ms 中位数）。
+     * 心率 70bpm → RR=0.857s → QT ≈ 400 × sqrt(0.857) ≈ 370ms。
+     * 置信度标"低置信"（本地算法受腕表信号物理上限）。
+     */
+    @Test
+    fun qtUsesBazettPriorWithLowConfidence() {
+        val rTimes = (0 until 35).map { it * 0.857f }  // RR=0.857s, HR≈70bpm
+        val ecg = syntheticEcg(30f, rTimes, rAmplitudeMv = 1.0f)
+        val g = EcgFeatureExtractor.extract(ecg, sampleRate).global
+        // Bazett 先验：QT = 400 × sqrt(0.857) ≈ 370ms
+        assertTrue("QT ${g.qtIntervalMs}ms 应接近 Bazett 先验 370ms (±15ms)", g.qtIntervalMs in 355..385)
+        assertEquals("QT 置信度应为低置信", "低置信", g.qtConfidence)
+    }
+
     @Test
     fun intervalsZeroForInsufficientBeats() {
         // 2 个 R 波 < 3 的间期估测门槛，应返回 0
