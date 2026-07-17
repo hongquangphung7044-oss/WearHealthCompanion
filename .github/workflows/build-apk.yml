@@ -100,24 +100,26 @@ jobs:
           path: artifacts/*.apk
           retention-days: 30
 
-      - name: Create GitHub Release (on push to main)
-        if: github.ref_type == 'branch'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*.apk
-          name: "Build #${{ github.run_number }} (v1.0.${{ github.run_number }})"
-          tag_name: "build-${{ github.run_number }}"
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
-          prerelease: false
-
-      - name: Create GitHub Release (on tag)
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*.apk
-          generate_release_notes: true
-          tag_name: ${{ github.ref_name }}
+      # 测试产品阶段：暂不自动创建 GitHub Release，仅产出 APK artifact。
+      # 如需恢复发布，取消下方两个步骤的注释即可。
+      # - name: Create GitHub Release (on push to main)
+      #   if: github.ref_type == 'branch'
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: artifacts/*.apk
+      #     name: "Build #${{ github.run_number }} (v1.0.${{ github.run_number }})"
+      #     tag_name: "build-${{ github.run_number }}"
+      #     target_commitish: ${{ github.sha }}
+      #     generate_release_notes: true
+      #     prerelease: false
+      #
+      # - name: Create GitHub Release (on tag)
+      #   if: github.ref_type == 'tag'
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: artifacts/*.apk
+      #     generate_release_notes: true
+      #     tag_name: ${{ github.ref_name }}
 
       - name: Update README with successful build status
         if: github.ref_type == 'branch'
@@ -128,7 +130,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # This step runs only after tests, both APKs, Artifact upload and Release succeeded.
+          # This step runs only after tests, both APKs and Artifact upload succeeded.
           # Keep real-device findings outside the generated block: CI success is not BLE proof.
           # Start from the latest main so an older concurrent run cannot overwrite a newer block.
           git pull --rebase origin main
