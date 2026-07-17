@@ -51,6 +51,9 @@ class EcgHistoryRepository(context: Context) {
             aiReport = result.aiReport,
             tavilyStatus = result.tavilyStatus,
             ppgReferenceHr = result.ppgReferenceHr,
+            sdnnMs = result.sdnnMs,
+            rmssdMs = result.rmssdMs,
+            pnn50Pct = result.pnn50Pct,
         )
         list.add(0, saved)
         // 最多保留 50 条
@@ -126,6 +129,10 @@ class EcgHistoryRepository(context: Context) {
                 if (item.ppgReferenceHr > 0) {
                     put("ppgHr", item.ppgReferenceHr)
                 }
+                // HRV 时域指标（仅 >0 时写入，保持向后兼容）
+                if (item.sdnnMs > 0) put("sdnn", item.sdnnMs)
+                if (item.rmssdMs > 0) put("rmssd", item.rmssdMs)
+                if (item.pnn50Pct > 0) put("pnn50", item.pnn50Pct)
             })
         }
         return arr.toString()
@@ -173,6 +180,9 @@ class EcgHistoryRepository(context: Context) {
                 aiReport = o.optString("aiReport", ""),
                 tavilyStatus = o.optString("tavilyStatus", ""),
                 ppgReferenceHr = o.optInt("ppgHr", 0),
+                sdnnMs = o.optDouble("sdnn", 0.0),
+                rmssdMs = o.optDouble("rmssd", 0.0),
+                pnn50Pct = o.optDouble("pnn50", 0.0),
             ))
         }
         return list
@@ -213,4 +223,8 @@ data class HistoryItem(
     val aiReport: String = "",                 // DeepSeek JSON 报告（仅 DS 方式有值）
     val tavilyStatus: String = "",             // Tavily 联网检索状态（仅 DS Max 档有值）
     val ppgReferenceHr: Int = 0,               // PPG 绿光参考心率（0=未采集/不可用）
+    // HRV 时域指标（raw 模式由 DS 自算，算法模式由本地算法计算）
+    val sdnnMs: Double = 0.0,                  // SDNN，自主神经总张力
+    val rmssdMs: Double = 0.0,                 // RMSSD，副交感张力
+    val pnn50Pct: Double = 0.0,                // pNN50%，副交感张力
 )

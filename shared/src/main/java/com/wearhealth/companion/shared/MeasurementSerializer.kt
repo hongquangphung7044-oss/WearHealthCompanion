@@ -47,6 +47,10 @@ object MeasurementSerializer {
         if (data.ppgReferenceHr > 0) {
             putInt(DataLayerPaths.KEY_PPG_HR, data.ppgReferenceHr)
         }
+        // HRV 时域指标（仅 >0 时写入，保持向后兼容）
+        if (data.sdnnMs > 0) putDouble(DataLayerPaths.KEY_SDNN_MS, data.sdnnMs)
+        if (data.rmssdMs > 0) putDouble(DataLayerPaths.KEY_RMSSD_MS, data.rmssdMs)
+        if (data.pnn50Pct > 0) putDouble(DataLayerPaths.KEY_PNN50_PCT, data.pnn50Pct)
         // raw 模式标记（默认 true，raw 模式为 false 时不写，反序列化默认 true 保持向后兼容）
         if (!data.processedByAlgorithm) {
             putBoolean(DataLayerPaths.KEY_PROCESSED_BY_ALGORITHM, false)
@@ -103,6 +107,9 @@ object MeasurementSerializer {
             aiReport = dataMap.getString(DataLayerPaths.KEY_AI_REPORT, ""),
             tavilyStatus = dataMap.getString(DataLayerPaths.KEY_TAVILY_STATUS, ""),
             ppgReferenceHr = dataMap.getInt(DataLayerPaths.KEY_PPG_HR, 0),
+            sdnnMs = dataMap.getDouble(DataLayerPaths.KEY_SDNN_MS, 0.0),
+            rmssdMs = dataMap.getDouble(DataLayerPaths.KEY_RMSSD_MS, 0.0),
+            pnn50Pct = dataMap.getDouble(DataLayerPaths.KEY_PNN50_PCT, 0.0),
             processedByAlgorithm = dataMap.getBoolean(DataLayerPaths.KEY_PROCESSED_BY_ALGORITHM, true),
         )
     }
@@ -146,6 +153,10 @@ object MeasurementSerializer {
             if (data.ppgReferenceHr > 0) {
                 put("ppgHr", data.ppgReferenceHr)
             }
+            // HRV 时域指标（仅 >0 时写入，保持向后兼容）
+            if (data.sdnnMs > 0) put("sdnn", data.sdnnMs)
+            if (data.rmssdMs > 0) put("rmssd", data.rmssdMs)
+            if (data.pnn50Pct > 0) put("pnn50", data.pnn50Pct)
             if (!data.processedByAlgorithm) {
                 put("processedByAlgorithm", false)
             }
@@ -187,6 +198,9 @@ object MeasurementSerializer {
             aiReport = o.optString("aiReport", ""),
             tavilyStatus = o.optString("tavilyStatus", ""),
             ppgReferenceHr = o.optInt("ppgHr", 0),
+            sdnnMs = o.optDouble("sdnn", 0.0),
+            rmssdMs = o.optDouble("rmssd", 0.0),
+            pnn50Pct = o.optDouble("pnn50", 0.0),
             processedByAlgorithm = o.optBoolean("processedByAlgorithm", true),
         )
     }

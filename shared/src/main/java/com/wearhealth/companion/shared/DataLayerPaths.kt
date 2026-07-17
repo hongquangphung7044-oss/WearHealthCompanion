@@ -62,6 +62,9 @@ object DataLayerPaths {
     const val KEY_AI_REPORT = "aiReport"               // DeepSeek JSON 报告
     const val KEY_TAVILY_STATUS = "tavilyStatus"       // Tavily 联网检索状态（DS 均衡/Max 档）
     const val KEY_PPG_HR = "ppgHr"                     // PPG 绿光参考心率
+    const val KEY_SDNN_MS = "sdnnMs"                   // HRV: SDNN（ms）
+    const val KEY_RMSSD_MS = "rmssdMs"                 // HRV: RMSSD（ms）
+    const val KEY_PNN50_PCT = "pnn50Pct"               // HRV: pNN50（%）
     const val KEY_PROCESSED_BY_ALGORITHM = "processedByAlgorithm"  // 是否经过本地算法处理（raw 模式为 false）
 
     // API Key 字段

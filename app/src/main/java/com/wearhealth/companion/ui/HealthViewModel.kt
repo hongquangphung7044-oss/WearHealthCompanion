@@ -794,6 +794,9 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         aiReport = aiReport,
         tavilyStatus = tavilyStatus,
         ppgReferenceHr = ppgReferenceHr,
+        sdnnMs = sdnnMs,
+        rmssdMs = rmssdMs,
+        pnn50Pct = pnn50Pct,
         processedByAlgorithm = !analysisMethod.endsWith("_raw") && analysisMethod != "ds_raw",
     )
 
@@ -853,6 +856,11 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                         sampleRate = 500,
                         analysisMethod = item.analysisMethod,
                         aiReport = item.aiReport,
+                        tavilyStatus = item.tavilyStatus,
+                        ppgReferenceHr = item.ppgReferenceHr,
+                        sdnnMs = item.sdnnMs,
+                        rmssdMs = item.rmssdMs,
+                        pnn50Pct = item.pnn50Pct,
                         processedByAlgorithm = !item.analysisMethod.endsWith("_raw") && item.analysisMethod != "ds_raw",
                     )
                     val putDataMapReq = PutDataMapRequest.create(

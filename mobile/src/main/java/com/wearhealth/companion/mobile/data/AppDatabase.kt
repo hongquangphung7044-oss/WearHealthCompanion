@@ -10,7 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 /** Phone-side Room database. */
 @Database(
     entities = [EcgMeasurementEntity::class],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -82,12 +82,27 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v6 → v7: 加 HRV 时域指标（sdnnMs/rmssdMs/pnn50Pct） */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE ecg_measurements ADD COLUMN sdnnMs REAL NOT NULL DEFAULT 0",
+                )
+                database.execSQL(
+                    "ALTER TABLE ecg_measurements ADD COLUMN rmssdMs REAL NOT NULL DEFAULT 0",
+                )
+                database.execSQL(
+                    "ALTER TABLE ecg_measurements ADD COLUMN pnn50Pct REAL NOT NULL DEFAULT 0",
+                )
+            }
+        }
+
         fun get(context: Context): AppDatabase = INSTANCE ?: synchronized(this) {
             INSTANCE ?: Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "ecg_mobile.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { INSTANCE = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { INSTANCE = it }
         }
     }
 }

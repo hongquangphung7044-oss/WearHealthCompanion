@@ -749,6 +749,23 @@ private fun HistoryDetailCard(item: HistoryItem) {
             Text("QTc: ${item.avgQtc} ms（男<450 / 女<460）",
                 style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
         }
+        // HRV 时域指标
+        if (item.sdnnMs > 0 || item.rmssdMs > 0 || item.pnn50Pct > 0) {
+            Text("HRV（自主神经张力）",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFFB0BEC5))
+            if (item.sdnnMs > 0) {
+                Text("  SDNN: ${"%.1f".format(item.sdnnMs)} ms（参考 30-80）",
+                    style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
+            }
+            if (item.rmssdMs > 0) {
+                Text("  RMSSD: ${"%.1f".format(item.rmssdMs)} ms（副交感，参考 20-60）",
+                    style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
+            }
+            if (item.pnn50Pct > 0) {
+                Text("  pNN50: ${"%.1f".format(item.pnn50Pct)}%（参考 >3%）",
+                    style = MaterialTheme.typography.bodySmall, color = Color(0xFF78909C))
+            }
+        }
         // 早搏
         if (item.pacCount > 0 || item.pvcCount > 0) {
             Text("房早 ${item.pacCount} 次 / 室早 ${item.pvcCount} 次",
@@ -758,14 +775,17 @@ private fun HistoryDetailCard(item: HistoryItem) {
         // 分析方式标记 + DS 报告
         if (item.analysisMethod != "heartvoice") {
             Text(
-                text = "分析方式: " + when (item.analysisMethod) {
-                    "ds_flash_fast" -> "DS快速(旧)"
-                    "ds_flash_balanced" -> "DS均衡"
-                    "ds_pro_max" -> "DS Max"
+                text = "分析方式: " + when {
+                    item.analysisMethod == "ds_flash_fast" -> "DS快速(旧)"
+                    item.analysisMethod == "ds_flash_balanced" -> "DS均衡"
+                    item.analysisMethod == "ds_flash_balanced_raw" -> "DS均衡+原始直传"
+                    item.analysisMethod == "ds_pro_max" -> "DS Max"
+                    item.analysisMethod == "ds_pro_max_raw" -> "DS Max+原始直传"
+                    item.analysisMethod == "ds_raw" -> "DS原始(旧)"
                     else -> item.analysisMethod
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF9C27B0),
+                color = if (item.analysisMethod.endsWith("_raw")) Color(0xFFFF9800) else Color(0xFF9C27B0),
             )
         }
         if (item.aiReport.isNotEmpty()) {

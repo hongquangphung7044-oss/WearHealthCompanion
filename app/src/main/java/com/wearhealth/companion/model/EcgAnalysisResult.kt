@@ -150,6 +150,25 @@ fun EcgAnalysisResult.toParamInfos(): List<EcgParamInfo> = buildList {
             "校正心率后的 QT（Fridericia 公式，50-90bpm 全区间误差小，心率波动大时更稳）"
         ))
     }
+    // HRV 时域指标（raw 模式由 DS 自算，算法模式由本地算法计算）
+    if (sdnnMs > 0) {
+        add(EcgParamInfo(
+            "SDNN", "${"%.1f".format(sdnnMs)} ms", "30-80（年轻人）",
+            "全部 RR 间期标准差，反映自主神经总张力。<30 偏弱"
+        ))
+    }
+    if (rmssdMs > 0) {
+        add(EcgParamInfo(
+            "RMSSD", "${"%.1f".format(rmssdMs)} ms", "20-60",
+            "相邻 RR 差值均方根，反映副交感张力，越高副交感越活跃"
+        ))
+    }
+    if (pnn50Pct > 0) {
+        add(EcgParamInfo(
+            "pNN50", "${"%.1f".format(pnn50Pct)}%", ">3%",
+            "相邻 RR 差值>50ms 的比例，与 RMSSD 同向反映副交感张力"
+        ))
+    }
 }
 
 /**

@@ -52,6 +52,10 @@ data class EcgMeasurementTransfer(
     val aiReport: String = "",
     val tavilyStatus: String = "",   // Tavily 联网检索状态（仅 DS Max 档有值）
     val ppgReferenceHr: Int = 0,     // PPG 绿光参考心率（0=未采集/不可用）
+    // HRV 时域指标（raw 模式由 DS 自算，算法模式由本地算法计算，0=未测）
+    val sdnnMs: Double = 0.0,        // SDNN，自主神经总张力
+    val rmssdMs: Double = 0.0,       // RMSSD，副交感张力
+    val pnn50Pct: Double = 0.0,      // pNN50%，副交感张力
     // 是否经过本地算法处理（feature/raw-ecg-to-ds 分支新增）
     // true=经过 EcgFeatureExtractor 算法估测（间期/HRV/形态等本地算出）
     // false=原始波形直传 DS 分析（ds_raw 方式，未经本地算法）

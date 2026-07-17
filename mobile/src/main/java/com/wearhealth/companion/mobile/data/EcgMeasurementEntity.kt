@@ -79,6 +79,15 @@ data class EcgMeasurementEntity(
     /** PPG 绿光参考心率（0=未采集/不可用） */
     @ColumnInfo(defaultValue = "0")
     val ppgReferenceHr: Int = 0,
+    /** HRV: SDNN（ms），0=未测 */
+    @ColumnInfo(defaultValue = "0")
+    val sdnnMs: Double = 0.0,
+    /** HRV: RMSSD（ms），0=未测 */
+    @ColumnInfo(defaultValue = "0")
+    val rmssdMs: Double = 0.0,
+    /** HRV: pNN50（%），0=未测 */
+    @ColumnInfo(defaultValue = "0")
+    val pnn50Pct: Double = 0.0,
     /** 是否经过本地算法处理（ds_raw 模式为 false，其余为 true） */
     @ColumnInfo(defaultValue = "1")
     val processedByAlgorithm: Boolean = true,
@@ -112,6 +121,9 @@ data class EcgMeasurementEntity(
                 aiReport == other.aiReport &&
                 tavilyStatus == other.tavilyStatus &&
                 ppgReferenceHr == other.ppgReferenceHr &&
+                sdnnMs == other.sdnnMs &&
+                rmssdMs == other.rmssdMs &&
+                pnn50Pct == other.pnn50Pct &&
                 processedByAlgorithm == other.processedByAlgorithm
     }
 
@@ -141,6 +153,9 @@ data class EcgMeasurementEntity(
         result = 31 * result + aiReport.hashCode()
         result = 31 * result + tavilyStatus.hashCode()
         result = 31 * result + ppgReferenceHr
+        result = 31 * result + sdnnMs.hashCode()
+        result = 31 * result + rmssdMs.hashCode()
+        result = 31 * result + pnn50Pct.hashCode()
         result = 31 * result + processedByAlgorithm.hashCode()
         return result
     }
