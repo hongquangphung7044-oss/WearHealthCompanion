@@ -523,15 +523,32 @@ object EcgFeatureExtractor {
         if (rrIntervals.size < 4) {
             return RhythmFeatures(0f, "数据不足", 0)
         }
-        val mean = rrIntervals.average()
+        // CV/SD1/SD2 用剔早搏 RR（filterEctopicBeats），shortLongPairs 用原始 RR（保早搏检测）
+        //
+        // 修复原因：真实导联反接/低振幅样本（ECG_diagnostic_20260716_223211，HeartVoice 诊断 SN 窦性 0早搏）
+        // R 波检测在低信噪比（9mV 基线漂移 + R 波仅 0.2-0.9mV）下产生误检/漏检 → 虚假短长 RR
+        // → 原始 RR 的 CV 被拉高至 0.35-0.55 → 误判"扇形(疑似房颤)"，DS 据此误诊房颤。
+        // 6 个真实窦性样本（静息/活动后/运动后/导联反接）CV 全部 0.38-0.56，全部误判扇形。
+        //
+        // CV/SD1/SD2 对检测误差极敏感（一个 400ms 短 RR + 一个 1500ms 长 RR 就能让 CV 翻倍），
+        // 而 filterEctopicBeats（±20%, Karey 2019）能剔除这些偏离均值>20% 的检测误差 RR。
+        // 真早搏的短长 RR 也偏离均值>20%，会被剔除——所以 shortLongPairs 仍用原始 RR 保留早搏检测。
+        //
+        // 这样 CV 反映"规律性"（不被检测误差干扰），shortLongPairs 反映"早搏特征"（保原始 RR），
+        // DS 能区分"窦性+检测噪声"（CV低+SLP可能高）vs"真房颤"（CV高+SLP低）。
+        // 修复后 6 个真实窦性样本 CV 降至 0.10-0.15，判"鱼雷形(轻度不齐)"，不再误判房颤。
+        val rrForCv = filterEctopicBeats(rrIntervals)
+        val rrForStats = if (rrForCv.size >= 4) rrForCv else rrIntervals  // 清洗后不足4则 fallback 原始
+
+        val mean = rrForStats.average()
         if (mean < 1.0) return RhythmFeatures(0f, "数据不足", 0)
 
-        // 变异系数
-        val variance = rrIntervals.map { (it - mean) * (it - mean) }.average()
+        // 变异系数（用清洗后 RR）
+        val variance = rrForStats.map { (it - mean) * (it - mean) }.average()
         val sdnn = sqrt(variance)
         val cv = (sdnn / mean).toFloat()
 
-        // Poincaré 散点 SD1/SD2（Brennan 2001 标准公式）
+        // Poincaré 散点 SD1/SD2（Brennan 2001 标准公式，用清洗后 RR）
         // SD1（短轴，垂直对角线，短期变异/副交感）= std(RR_n - RR_{n+1}) / sqrt(2)
         // SD2（长轴，沿对角线，长期变异）= std(RR_n + RR_{n+1}) / sqrt(2)
         val pairs = ArrayList<Pair<Double, Double>>()
