@@ -22,28 +22,28 @@ WearHealthCompanion 是一个面向 Samsung Galaxy Watch 的 Wear OS 单导联 E
 | Release | `https://github.com/hongquangphung7044-oss/WearHealthCompanion/releases/tag/build-138` |
 | APK | `WearHealthCompanion-mobile-v1.0.138-code138.apk`；`WearHealthCompanion-watch-v1.0.138-code138-ecg.apk` |
 | 更新时间 | 2026-07-17T02:59:22Z |
-| 状态边界 | 仅证明 CI / Artifact / Release 成功；国行 One UI Watch 8 实机结论以“实机验证状态”和任务清单为准 |
+| 状态边界 | 仅证明 CI / Artifact / Release 成功；国行 Galaxy Watch7 实机结论以“实机验证状态”和任务清单为准 |
 <!-- AUTO_BUILD_STATUS:END -->
 
 | 项目 | 状态 |
 |---|---|
-| 仓库 | `hongquangphung7044-oss/WearHealthCompanion`（private） |
+| 仓库 | `hongquangphung7044-oss/WearHealthCompanion`（public） |
 | 默认分支 | `main` |
-| 当前功能 | BLE Key 获取入口对“无 Key / 已有 Key”均可见；手表主页始终保留手工输入 API Key 入口；手机设置页可清除缓存（API Key + ECG 历史）并重启 BLE；ECG 波形改用固定时间/电压比例（接近 25 mm/s、10 mm/mV），不再自适应拉伸；Release APK 不再内置 HeartVoice Key。**DeepSeek 双档分析已上线**：手表可选 HeartVoice 专业 API 或 DS 均衡（flash + reasoning_effort=high）/ DS Max（flash + reasoning_effort=max），DS 模式由本地 `EcgFeatureExtractor` 提取特征 + DS 大模型解读，输出扁平 JSON 报告。**DS 设置 BLE 下发**：国行无 GMS，DS 设置经 `DS_SETTINGS_UUID` GATT 特征值从手机拉取（与 HeartVoice Key 同思路）。**Tavily 联网检索集成**：DS Max 档在 Tavily Key 已配置时，自动检索房颤检测方法学 / HRV 正常参考值 / QTc 临床意义三个固定方向，注入 DS 提示词做循证推理（均衡/快速档不检索省预算，进程内 6 小时缓存）。**节律判别增强**：RR 变异系数 + Poincaré 散点形态（彗星/扇形/鱼雷/复杂形）+ 短-长 RR 配对数喂给 DS，可区分窦性/房颤/早搏。**HRV 双通路**：HRV 计算用剔早搏 RR（偏离均值>20%，Karey 2019），节律判别保留原始 RR，避免早搏短长 RR 污染 SDNN/RMSSD 导致 DS 误判房颤。**R 波检测 v5（Pan-Tompkins 风格）**：MWI 窗口 150ms + 不应期 200ms + 精修窗口 ±50ms（v5 修复：envelope 峰在 R 峰上升沿提前 ~30-50ms，旧 ±25ms 够不到 R 峰导致 HR range>10）+ mean+1.7×std 分段阈值（v4 修复运动后漏检 60%）+ 回溯补检（RR>1.66×均值时半阈值补检，PT 核心）。算法详情见 [docs/ALGORITHM_OPTIMIZATION.md](docs/ALGORITHM_OPTIMIZATION.md)（含 TL;DR、Bug 历史、验证脚本索引）。**心率统计抗误检**：avgHr 用中位数 RR 反算（对≤49% 误检免疫），心率范围基于 Hiss 1976 年龄公式（Percent variation = 23.2 - 0.35×age）。**间期算法优化**：QRS 阈值交叉法（兼容负向 R 波）+ T 波去基线平滑导数法 + 中位数基线估计；Fridericia QTc 完整链路（计算→UI→DS 提示词→手机解析→PDF 导出）。**算法循证审查**：所有影响结果的算法均核对文献依据，有依据的补全引用（Task Force 1996 HRV 标准、Brennan 2001 Poincaré、Karey 2019 早搏剔除、Hiss 1976 心率变异、Bazett 1920 / Fridericia 1920 QTc、Pan-Tompkins 1985 R 波检测、Tuboly 2019 / Park 2009 房颤检测），工程经验值如实标注"非临床金标准"。**JsonCleaner**：剥离 Markdown 包裹 + 全角引号/冒号/逗号转半角（DS 输出中文标点不再导致解析失败）。**PDF 波形降采样**：`downsampleKeepPeaks` 保留桶内 max+min，R 波尖峰不丢失。**PPG 干扰检测**：绿灯闪烁时告警提示停止后台心率监测再测心电。 |
-| 目标设备 | Samsung Galaxy Watch，尤其是 One UI Watch 8 国行版（无可用 Google Data Layer 的场景） |
+| 当前功能 | BLE Key 获取入口对“无 Key / 已有 Key”均可见；手表主页始终保留手工输入 API Key 入口；手机设置页可清除缓存（API Key + ECG 历史）并重启 BLE；ECG 波形改用固定时间/电压比例（接近 25 mm/s、10 mm/mV），不再自适应拉伸；Release APK 不再内置 HeartVoice Key。**DeepSeek 双档分析已上线**：手表可选 HeartVoice 专业 API 或 DS 均衡（flash + reasoning_effort=high）/ DS Max（flash + reasoning_effort=max），DS 模式由本地 `EcgFeatureExtractor` 提取特征 + DS 大模型解读，输出扁平 JSON 报告。**DS 设置 BLE 下发**：国行无 GMS，DS 设置经 `DS_SETTINGS_UUID` GATT 特征值从手机拉取（与 HeartVoice Key 同思路）。**Tavily 联网检索集成**：DS Max 档在 Tavily Key 已配置时，自动检索房颤检测方法学 / HRV 正常参考值 / QTc 临床意义三个固定方向，注入 DS 提示词做循证推理（均衡/快速档不检索省预算，进程内 6 小时缓存）。**节律判别增强**：RR 变异系数 + Poincaré 散点形态（彗星/扇形/鱼雷/复杂形）+ 短-长 RR 配对数喂给 DS，可区分窦性/房颤/早搏。**HRV 双通路**：HRV 计算用剔早搏 RR（偏离均值>20%，Karey 2019），节律判别保留原始 RR，避免早搏短长 RR 污染 SDNN/RMSSD 导致 DS 误判房颤。**R 波检测 v7（Pan-Tompkins 风格）**：MWI 窗口 150ms + envelope 峰间距不应期 200ms + 精修窗口 ±50ms + **精修二次不应期 300ms**（v6/v7 修复：精修位移会让两 R 峰 <200ms，旧版只检查 envelope 峰间距导致超短 RR 误判早搏/房颤）+ **回溯补检 T 波排除 300-450ms**（v6/v7 修复：腕表 ECG T/R≥1，T 波斜率产生 envelope 峰被误补检）+ mean+1.7×std 分段阈值（v4 修复运动后漏检 60%）+ 回溯补检（RR>1.66×均值时半阈值补检，PT 核心）。**PPG 兜底 avgHr**（v7 新增）：本地 R 波检测失败（RR<3→avgHr=0）但 PPG 可用时，用 PPG 填充 avgHr。算法详情见 [docs/ALGORITHM_OPTIMIZATION.md](docs/ALGORITHM_OPTIMIZATION.md)（含 TL;DR、Bug 历史、验证脚本索引）。**R 峰可靠性评估**（v6 新增，独立于 signalQuality）：从 RR 序列生理合理性反推 R 峰定位稳定性，5 维度（极端 RR 占比/有效 RR 占比/相邻 RR 跳变比例/R 峰-时长一致性/异常段占比），三档判定（可信/边缘/不可信），不可信时降级输出禁止 DS 输出"高度提示房颤/高置信早搏"等强诊断标签。**心率统计抗误检**：avgHr 用中位数 RR 反算（对≤49% 误检免疫），心率范围基于 Hiss 1976 年龄公式（Percent variation = 23.2 - 0.35×age）。**间期算法优化**：QRS 阈值交叉法（兼容负向 R 波）+ T 波去基线平滑导数法 + 中位数基线估计；Fridericia QTc 完整链路（计算→UI→DS 提示词→手机解析→PDF 导出）。**算法循证审查**：所有影响结果的算法均核对文献依据，有依据的补全引用（Task Force 1996 HRV 标准、Brennan 2001 Poincaré、Karey 2019 早搏剔除、Hiss 1976 心率变异、Bazett 1920 / Fridericia 1920 QTc、Pan-Tompkins 1985 R 波检测、Tuboly 2019 / Park 2009 房颤检测），工程经验值如实标注"非临床金标准"。**JsonCleaner**：剥离 Markdown 包裹 + 全角引号/冒号/逗号转半角（DS 输出中文标点不再导致解析失败）。**PDF 波形降采样**：`downsampleKeepPeaks` 保留桶内 max+min，R 波尖峰不丢失。**PPG 干扰检测**：绿灯闪烁时告警提示停止后台心率监测再测心电。 |
+| 目标设备 | Samsung Galaxy Watch，尤其是 Galaxy Watch7 国行版（无可用 Google Data Layer 的场景） |
 | 当前同步策略 | Google Data Layer 保留；无 GMS 时自动/主动使用直接 BLE GATT |
-| 实机验证状态 | Build #59 已在国行 One UI Watch 8 确认：手机向手表提供 Key 成功，ECG 已能从手表传到手机，Build #58 的 514-byte CHUNK 闪退已解决。用户已能在手机打开记录详情并尝试导出 PDF；但尚无明确证据确认手表最终成功文案、匹配 timestamp 标记和 ACK indication 的完整最终状态，因此仍不得把端到端 ACK 声称为实机通过 |
+| 实机验证状态 | Build #59 已在国行 Galaxy Watch7 确认：手机向手表提供 Key 成功，ECG 已能从手表传到手机，Build #58 的 514-byte CHUNK 闪退已解决。用户已能在手机打开记录详情并尝试导出 PDF；但尚无明确证据确认手表最终成功文案、匹配 timestamp 标记和 ACK indication 的完整最终状态，因此仍不得把端到端 ACK 声称为实机通过 |
 
 ### 最近构建演进
 
 | Build | 结果 | 说明 |
 |---:|---|---|
 | #131 | ✅ 成功 | 顶部自动区块维护的最新成功构建（Release APK + Artifact + Release 全部成功） |
-| #59 | ⚠️ ECG 已到手机，最终 ACK 待确认 | 完整 CHUNK 帧限制为 512 字节后不再闪退；国行 Watch 8 已确认手机可收到 ECG，匹配 timestamp ACK/手表最终成功状态尚待明确实测 |
+| #59 | ⚠️ ECG 已到手机，最终 ACK 待确认 | 完整 CHUNK 帧限制为 512 字节后不再闪退；国行 Galaxy Watch7 已确认手机可收到 ECG，匹配 timestamp ACK/手表最终成功状态尚待明确实测 |
 | #58 | ⚠️ 实机传送触发手表闪退 | Key 链路仍成功；点击 ECG 传送后手机未收到数据。Android 14 会将 MTU 提升为 517，旧公式产生 514 字节 CHUNK attribute value，而 Android 13+ 写 API 的上限为 512 字节且会抛出异常 |
 | #57 | ⚠️ BEGIN 实机成功、CHUNK 入队失败 | BLE 已连接，Service/MTU/ACK 已就绪，手机收到 63,748 字节 BEGIN；手表紧接着提交下一帧时 GATT 队列拒绝 |
 | #54 | ⚠️ Key 链路实机成功、ECG 失败 | 手机 Key 已成功传到手表，证明 bonded 直连和加密读取可用；ECG 专用 MTU/ACK/分片阶段仍失败 |
-| #53 | ⚠️ 构建成功，实机仍无扫描回调 | 已绕过 128-bit UUID 硬件过滤，但国行 Watch 8 未向第三方 App 交付任何 BLE 广播 |
+| #53 | ⚠️ 构建成功，实机仍无扫描回调 | 已绕过 128-bit UUID 硬件过滤，但国行 Galaxy Watch7 未向第三方 App 交付任何 BLE 广播 |
 | #50 | ⚠️ 构建成功但实机入口隐藏 | 手表 APK 仍有编译时 Key fallback，UI 误判为已有 Key，故不显示仅限缺 Key 页面的按钮 |
 | #48 | ✅ 成功 | 直接 BLE ECG 回传版本成功产出 Release APK |
 | #44 | ✅ 成功 | Data Layer ACK 修复后，手表和手机 Release APK 均产出 |
@@ -52,7 +52,7 @@ WearHealthCompanion 是一个面向 Samsung Galaxy Watch 的 Wear OS 单导联 E
 
 ### 为什么改成双通道
 
-国行 One UI Watch 8 与 Galaxy Wearable 蓝牙配对正常，但项目使用的：
+国行 Galaxy Watch7 与 Galaxy Wearable 蓝牙配对正常，但项目使用的：
 
 ```kotlin
 CapabilityClient.FILTER_REACHABLE
@@ -254,7 +254,7 @@ shared/src/main/java/com/wearhealth/companion/shared/
 - HeartVoice 基础版单导联 API 当前文档字段均已建模：确定诊断、可能诊断、导联方向、平均心率、P/PR/QRS/QT/QTc、PAC/PVC、信号质量和异常标志；原始响应字符串仅在分析结果对象中短暂保留，不进入手表历史、跨端模型或手机 Room，也不直接展示；
 - **DeepSeek 双档分析**：DS 均衡（flash + reasoning_effort=high）与 DS Max（flash + reasoning_effort=max），均用 V4-Flash 模型。本地 `EcgFeatureExtractor` 提取统计特征（HRV 时域、Poincaré、间期估测、节律特征），喂给 DS 生成中文 JSON 报告。思考模式不支持 temperature，思维链通过 `reasoning_content` 返回；`extractValidJson` 健壮提取（content 整体→片段→reasoning_content 最后一个 JSON 逐个验证），避免 Max 档思维过程文字污染报告。
 - **Tavily 联网检索（仅 Max 档 + Tavily Key 已配置时触发）**：DS 本身无联网能力，通过 Tavily API 检索三个固定方向（房颤检测方法学、HRV 正常参考值、QTc 临床意义），清洗后注入 DS 提示词做循证推理。均衡/快速档不检索省预算，进程内 6 小时缓存避免重复检索。检索失败不阻断 DS 分析。
-- 本地 R-R 算法用于 min/max 心率估算与节律判别（不用于拒绝测量）：R 波检测用 Pan-Tompkins 风格预处理（1 秒去基线 + |梯度| + 150ms MWI 平滑）+ 自适应阈值 + 200ms 不应期 + 回溯补检；心率统计用剔早搏 RR + 中位数反算 avgHr，心率范围基于 Hiss 1976 年龄公式（Percent variation = 23.2 - 0.35×age）；
+- 本地 R-R 算法用于 min/max 心率估算与节律判别（不用于拒绝测量）：R 波检测用 Pan-Tompkins 风格预处理（1 秒去基线 + |梯度| + 150ms MWI 平滑）+ 自适应阈值 + envelope 峰间距 200ms 不应期 + **精修二次不应期 300ms** + **回溯补检 T 波排除 300-450ms** + 回溯补检；心率统计用剔早搏 RR + 中位数反算 avgHr，心率范围基于 Hiss 1976 年龄公式（Percent variation = 23.2 - 0.35×age）；R 波检测失败时用 PPG 绿光参考心率兜底 avgHr；
 - HRV 双通路：HRV 计算（SDNN/RMSSD/pNN50）用剔早搏 RR（偏离均值>20% 剔除，Karey 2019），节律判别保留原始 RR（保早搏特征），避免早搏短长 RR 污染 HRV 导致 DS 误判房颤；
 - 手表保存最近 50 条历史、缩略波形和完整原始波形；
 - 交互波形支持拖动和双指缩放；
@@ -389,7 +389,7 @@ historyRepo.markSynced(timestamp)
 
 ### Samsung / Wear OS 扫描兼容性
 
-Build #51/#52 的错误为“未发现手机 BLE 同步器”；Build #53 改用空过滤器后，实机进一步确认“未收到任何 BLE 广播”，说明 One UI Watch 8 未向本 App 交付扫描回调。部分 Android/Samsung 蓝牙控制器不仅会对自定义 128-bit Service UUID 的硬件 `ScanFilter` 静默漏报，还可能受 Nearby Devices AppOps 限制。因此 Build #54 同时采用两条路径：
+Build #51/#52 的错误为“未发现手机 BLE 同步器”；Build #53 改用空过滤器后，实机进一步确认“未收到任何 BLE 广播”，说明 Galaxy Watch7 未向本 App 交付扫描回调。部分 Android/Samsung 蓝牙控制器不仅会对自定义 128-bit Service UUID 的硬件 `ScanFilter` 静默漏报，还可能受 Nearby Devices AppOps 限制。因此 Build #54 同时采用两条路径：
 
 ```text
 优先：BluetoothAdapter.bondedDevices
@@ -414,7 +414,7 @@ device.bondState == BluetoothDevice.BOND_BONDED
 
 手机还只允许当前活动连接设备读取 Key/写 ECG。API Key 特征使用 `PERMISSION_READ_ENCRYPTED`。
 
-> **实机风险：** Galaxy Wearable 的配对设备在应用扫描结果中是否始终报告 `BOND_BONDED`，需用国行 One UI Watch 8 验证。如果手表能看到广播但被此条件忽略，需要采集 `bondState` 和地址日志后调整，不能未经验证直接删除安全检查。
+> **实机风险：** Galaxy Wearable 的配对设备在应用扫描结果中是否始终报告 `BOND_BONDED`，需用国行 Galaxy Watch7 验证。如果手表能看到广播但被此条件忽略，需要采集 `bondState` 和地址日志后调整，不能未经验证直接删除安全检查。
 
 ### ECG payload
 
@@ -446,7 +446,7 @@ ACK   = type + success/failure + measurementTimestamp
 
 - 手表请求 MTU 247；ECG 最低接受 MTU 188；Android 14 可能把首次 MTU 请求提升为 517，因此单个完整 CHUNK attribute value 还必须限制为 512 字节；
 - chunk payload 根据实际 MTU 和 attribute 上限计算：`min(mtu - 3 ATT, 512) - 1 type - 4 sequence`；
-- 每个 chunk 使用 write with response，前一个成功后才发送下一个；One UI Watch 8 上必须等成功回调完全退出，再延迟 12 ms 提交下一帧；若新写 API 返回 GATT busy，则保持同一序号延迟重试，只有成功回调后才推进序号；
+- 每个 chunk 使用 write with response，前一个成功后才发送下一个；Galaxy Watch7 上必须等成功回调完全退出，再延迟 12 ms 提交下一帧；若新写 API 返回 GATT busy，则保持同一序号延迟重试，只有成功回调后才推进序号；
 - 手机验证序号、总长度、chunk 数和 CRC；
 - 手机只在 Room 成功后发送 indication ACK；
 - 手表上传总超时 45 秒；Key 获取超时 25 秒。
@@ -528,7 +528,8 @@ Data Layer 路径仍保留，GMS 可用时手机也会尝试提交三种 Key。
 - Release APK 已移除 HeartVoice Key 的编译时 fallback；全新安装必须手工输入，或从手机通过 BLE / Data Layer 配置；
 - API Key 在所有入口（BLE / Data Layer / 手工输入 / GATT read 响应 / HTTP 请求前）必须经 `shared.ApiKeyValidator` 清洗 NUL 与控制字符；直接 `.trim()` 不足以清除 BLE 协议栈填充的 `0x00`，会导致 OkHttp 抛 `Unexpected char 0x00 at N in Authorization value`；
 - 手机设置页提供“删除缓存并重启 BLE”入口，会清除手机端三种 API Key 与全部 ECG 历史，并重启 BLE 同步器（手表端不受影响）；
-- 曾在对话中明文使用的 GitHub Personal Access Token 必须撤销并重建。
+- 曾在对话中明文使用的 GitHub Personal Access Token 必须撤销并重建；
+- **历史泄露清理记录**：早期构建（build #1-100）的 `app/build.gradle.kts` 曾硬编码 HeartVoice Key 作为 fallback（`aiecg_sk_***`）。已通过 `git filter-repo` 重写历史，删除前 100 个提交并替换所有含 key 的 blob，现全历史 0 处 key 残留；GitHub Releases build-100 及以下、Actions runs #1-100 及其 artifacts 已全部删除。仓库已转为 public，但 key 曾在 GitHub 缓存中暴露过，建议在 HeartVoice 后台吊销并轮换该 key（当前未轮换）。
 
 不要在交接文档中记录任何 Secret 实值。
 
@@ -616,7 +617,7 @@ app/libs/samsung-health-sensor-api.aar
 3. 确认 Rename、Artifact、Release 步骤均成功；
 4. 如果失败，下载完整 run logs，按**全部错误**修复，不只看网页摘要。
 
-### P0：国行 One UI Watch 8 端到端实机测试
+### P0：国行 Galaxy Watch7 端到端实机测试
 
 使用同一 Build 的两个 APK：
 
@@ -681,11 +682,11 @@ adb logcat -s BleSyncServer BleEcgUploader BleApiKeyFetcher
 
 ### P1：后台可靠性实机验证
 
-代码已实现显式 connected-device 前台服务、低重要度通知渠道、设置开关、Android 13+ 通知权限和进程级唯一 BLE Server。仍需在国行 One UI Watch 8 验证：App 返回桌面后 Room 落库、ACK 返回、服务停止/重启，以及三星电池策略下的长期存活；不要声称前台服务可百分之百防杀。
+代码已实现显式 connected-device 前台服务、低重要度通知渠道、设置开关、Android 13+ 通知权限和进程级唯一 BLE Server。仍需在国行 Galaxy Watch7 验证：App 返回桌面后 Room 落库、ACK 返回、服务停止/重启，以及三星电池策略下的长期存活；不要声称前台服务可百分之百防杀。
 
 ### P1：安全清理
 
-1. 轮换已暴露 Key；
+1. **HeartVoice Key 轮换**：历史泄露的 `aiecg_sk_***` 虽已通过 `git filter-repo` 从 git 历史清除，但曾在 GitHub 缓存中暴露，当前未轮换。建议在 HeartVoice 后台吊销并生成新 key，更新 GitHub Actions 的 `HEARTVOICE_API_KEY` secret；
 2. 手机/手表 Key 迁移到加密存储；
 3. 撤销对话中暴露的 GitHub PAT。
 
@@ -740,7 +741,7 @@ adb logcat -s BleSyncServer BleEcgUploader BleApiKeyFetcher
 可以把下面这段直接发给下一位 AI：
 
 ```text
-请先阅读仓库 README.md，它是当前权威交接文档。项目是 Samsung Galaxy Watch ECG + Android 手机同步器，目标设备是国行 One UI Watch 8。Google Wearable Data Layer 在该设备上不可用，因此代码保留 Data Layer，同时新增直接 BLE GATT：手机做 peripheral/server，手表做 central/client。当前重点是验证手机保存 API Key→手表无历史也可 BLE 获取 Key→完成 ECG→BLE 分片上传→手机 Room 落库→ACK 后手表标记同步。请先查最新 GitHub Actions 和 main，不要依据旧 Build 状态；不要回退 ECG 采集历史修复，也不要把 putDataItem/GATT 写成功当作持久化成功。
+请先阅读仓库 README.md，它是当前权威交接文档。项目是 Samsung Galaxy Watch ECG + Android 手机同步器，目标设备是国行 Galaxy Watch7（公开仓库，已清理历史泄露的 API key）。Google Wearable Data Layer 在该设备上不可用，因此代码保留 Data Layer，同时新增直接 BLE GATT：手机做 peripheral/server，手表做 central/client。ECG 本地算法已迭代至 v7（Pan-Tompkins + 精修二次不应期 300ms + T 波排除 300-450ms + PPG 兜底 + R 峰可靠性评估三档降级）。当前重点是验证手机保存 API Key→手表无历史也可 BLE 获取 Key→完成 ECG→BLE 分片上传→手机 Room 落库→ACK 后手表标记同步。请先查最新 GitHub Actions 和 main，不要依据旧 Build 状态；不要回退 ECG 采集历史修复，也不要把 putDataItem/GATT 写成功当作持久化成功。
 ```
 
 ---

@@ -9,17 +9,18 @@
 
 | 项目 | 当前值 | 位置 |
 |------|--------|------|
-| **算法版本** | v5（mean+1.7std + ±50ms 精修窗口） | [EcgFeatureExtractor.kt:175-360](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt#L175-L360) |
-| **最新 CI** | Build #29504644243 / commit `94326ea` ✅ BUILD SUCCESSFUL | [Actions](https://github.com/hongquangphung7044-oss/WearHealthCompanion/actions) |
-| **R 波检测核心参数** | k=1.7, MWI=150ms, 不应期=200ms, 精修=±50ms, 回溯触发=1.66×, 回溯阈值=0.5× | [L234-360](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt#L234-L360) |
-| **节律判别策略** | 本地只测量（RR/CV/Poincaré/短长配对），判读归 DS | 见第 7.3 节 |
+| **算法版本** | v7（精修二次不应期 300ms + T 波排除 300-450ms + PPG 兜底 + R 峰可靠性评估） | [EcgFeatureExtractor.kt:120-790](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt#L120-L790) |
+| **最新 CI** | Build #138 / commit `7ab060c` ✅ BUILD SUCCESSFUL | [Actions](https://github.com/hongquangphung7044-oss/WearHealthCompanion/actions) |
+| **R 波检测核心参数** | k=1.7, MWI=150ms, envelope 峰间距不应期=200ms, 精修=±50ms, **精修二次不应期=300ms**, **回溯补检 T 波排除=300-450ms**, 回溯触发=1.66×, 回溯阈值=0.5× | [L234-433](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt#L234-L433) |
+| **R 峰可靠性评估** | 5 维度（极端 RR/有效 RR/RR 跳变/一致性/异常段），三档判定（可信/边缘/不可信），不可信时降级输出 | [L681-790](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt#L681-L790) |
+| **节律判别策略** | 本地只测量（RR/CV/Poincaré/短长配对），判读归 DS；R 峰不可信时不传节律证据 | 见第 7.3 节 |
 | **核心约束** | 不本地构建（只 `git diff --check` + Python 验证）；TDD；阈值要有依据；不回退 Build #59 BLE 修复 | 见第 6 节 |
 | **配套主文档** | [README.md](../README.md)（项目总交接文档，顶部有自动构建状态） | — |
 
 **最近 3 次算法演进**：
+- v7 (commit `b463332`→`7ab060c`, 2026-07-17)：精修二次不应期 200ms→300ms，回溯补检 T 波排除窗口 200-450ms→300-450ms，新增 PPG 兜底 avgHr + min/max=0 提示。7 样本验证：5 个边缘升级为可信，无回归 → 见第 5 节 Bug 9-10
+- v6 (commit `682cc6c`, 2026-07-17)：精修二次不应期验证 200ms + 回溯补检 T 波排除 200-450ms；新增 R 峰可靠性评估（5 维度三档降级）；节律判别 CV/ratio 改用 filterEctopicBeats 清洗后 RR，消除早搏短长 RR 导致的房颤误判 → 见第 5 节 Bug 8
 - v5 (commit `94326ea`, 2026-07-16)：精修窗口 ±25ms→±50ms，修复 envelope 峰在 R 峰上升沿导致 HR range>10 → 见第 5 节 Bug 7
-- v4 (commit `a834d69`, 2026-07-16)：mean+2.0std→mean+1.7std，删除形态验证，修复运动后 R 波漏检 60% → 见第 5 节 Bug 6
-- v3 (废弃)：百分位 0.92 + 形态验证，静息过度检出 → 已回退
 
 **接手第一步**：先读第 3 节算法架构，再读第 5 节 Bug 历史（避免重复踩坑），最后读第 7 节待优化方向。
 
@@ -341,10 +342,10 @@ HeartVoice API（`https://api.heartvoice.com.cn/api/v1/basic/ecg/1-lead/analyze`
 ## 7. 待优化方向
 
 ### 7.1 本地 R 波检测在真实数据上的稳定性
-- **状态**：合成 ECG 测试通过；median×1.5 bug 已修；运动后漏检 60% 已修（v4 mean+1.7std）；精修窗口 ±25ms→±50ms 修复 R 峰位置漂移（v5，Bug 7）
+- **状态**：合成 ECG 测试通过；median×1.5 bug 已修；运动后漏检 60% 已修（v4 mean+1.7std）；精修窗口 ±25ms→±50ms 修复 R 峰位置漂移（v5，Bug 7）；精修二次不应期 300ms 消除超短 RR（v6/v7，Bug 8-9）；回溯补检 T 波排除消除 T 波误补检（v6/v7，Bug 8-9）；R 峰可靠性评估三档降级防止 R 峰不可信时误判房颤（v6，Bug 8）
 - **方法**：收集 3-4 次真实 HeartVoice 路径导出文件，对照 avgHr 差异
 - **风险**：真实 wrist ECG 噪声更复杂（基线漂移+运动伪差+电极接触不良），可能有未发现的退化模式
-- **当前验证**：5 份真实样本（静息/活动后/运动后）HR 偏差均 <15bpm 或改善（见 Bug 6）；±50ms 精修窗口让 R 峰位置更准，预期真实数据 HRV/间期估测也会改善
+- **当前验证**：7 份真实样本（静息/活动后/运动后/223211/专业/ds均衡/dsmax）HR 偏差均 <15bpm 或改善；v7 后 6/7 样本可靠性达"可信"，1 个"边缘"（专业样本 R 峰欠检 25 vs 期望 30，300ms 不应期合并了部分真 R 波的 envelope 双峰）
 
 ### 7.2 间期估测（QRS/PR/QT）准确性
 - **状态**：本地估测，未与 HeartVoice 系统对照
@@ -405,7 +406,7 @@ HeartVoice 5 份样本的诊断（SN/SNB）正属于此类。
 ## 8. 文件索引
 
 ### 核心算法
-- [shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt) — 本地特征提取（R 波检测/HRV/间期/toPromptText），**算法核心，v5 版本**
+- [shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt](../shared/src/main/java/com/wearhealth/companion/shared/EcgFeatureExtractor.kt) — 本地特征提取（R 波检测/HRV/间期/toPromptText/R 峰可靠性评估），**算法核心，v7 版本**
 - [app/src/main/java/com/wearhealth/companion/model/EcgAnalysisResult.kt](../app/src/main/java/com/wearhealth/companion/model/EcgAnalysisResult.kt) — 数据模型 + `computeMinMaxHeartRate`（独立本地算法）
 - [app/src/main/java/com/wearhealth/companion/network/HeartVoiceApiClient.kt](../app/src/main/java/com/wearhealth/companion/network/HeartVoiceApiClient.kt) — HeartVoice API 客户端
 
