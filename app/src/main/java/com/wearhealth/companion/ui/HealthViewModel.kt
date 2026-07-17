@@ -57,6 +57,9 @@ data class EcgUiState(
     // 原始波形直传开关：开启后 DS 均衡/Max 跳过本地算法，原始波形去 DC 后直传 DS
     // 仅在选择 DS 均衡或 DS Max 时生效；heartvoice 不受影响
     val rawEcgEnabled: Boolean = false,
+    // Tavily 联网检索开关：开启后 DS 均衡/Max 会联网检索医学文献（耗时约+30s）
+    // 关闭后仅用 prompt 内置阈值，提速约 60-70s。raw 模式建议关闭（prompt 已覆盖三大心律）
+    val tavilyEnabled: Boolean = true,
     val dsApiKeyConfigured: Boolean = false,      // DeepSeek API Key 是否已配置
     val dsBalanceText: String? = null,           // DS 余额文本（如 "¥8.66"），null=未查询
     val dsBalanceLoading: Boolean = false,        // 正在查询余额
@@ -274,9 +277,11 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         val recordedMethod = if (isRawMode && !method.endsWith("_raw")) "${method}_raw" else method
 
         // 3. 调 DS（传入 Tavily Key：均衡/Max 档会触发联网检索医学文献，raw 模式同样触发）
+        // tavilyEnabled 开关关闭时传空串跳过 Tavily（提速约 30s）
+        val tavilyKey = if (_uiState.value.tavilyEnabled) tavilySettings.getApiKey() else ""
         val dsResult = deepSeekApi.analyzeEcg(
             featureText, model, thinking,
-            tavilyApiKey = tavilySettings.getApiKey(),
+            tavilyApiKey = tavilyKey,
             rawEcgMode = isRawMode,
         )
         return dsResult.mapCatching { report ->
@@ -645,6 +650,11 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
     /** 设置原始波形直传开关（仅 DS 均衡/Max 生效，heartvoice 不受影响） */
     fun setRawEcgEnabled(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(rawEcgEnabled = enabled)
+    }
+
+    /** 设置 Tavily 联网检索开关（仅 DS 均衡/Max 生效） */
+    fun setTavilyEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(tavilyEnabled = enabled)
     }
 
     /** 保存用户年龄 */

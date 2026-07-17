@@ -155,11 +155,10 @@ class TavilyApiClient(
         private val cache = mutableMapOf<String, CacheEntry>()
 
         /**
-         * 固定医学参考检索方向（7 个，覆盖本设备涉及的主要判读方向）。
+         * 固定医学参考检索方向（4 个核心，覆盖三大心律 + 间期校正）。
          *
-         * 选择依据：覆盖腕表单导联 ECG 判读的核心方向——节律分类（房颤/早搏/房扑）、
-         * HRV 时域分析、间期测量与心率校正（QTc/PR/QRS）、腕表 ECG 算法性能、ST-T 改变、
-         * 筛查型综合征（长 QT/Brugada/WPW），让 DS 能引用最新指南/研究而非仅训练数据。
+         * 选择依据：raw 模式 DS 自己看波形，prompt 已内置 PR/QRS/ST-T/腕表局限性等约束，
+         * Tavily 只补 DS 训练数据可能过时的部分——节律分类（房颤/早搏）、HRV 分层、QTc 阈值。
          * 查询用英文（医学文献库以英文为主，命中更优），年份锚定最新指南周期。
          */
         private val SEARCH_QUERIES = listOf(
@@ -167,9 +166,6 @@ class TavilyApiClient(
             "premature atrial ventricular contraction PAC PVC detection wearable ECG RR interval short-long pairing",
             "HRV SDNN RMSSD pNN50 normal reference values by age clinical interpretation",
             "QTc prolongation Fridericia Bazett clinical significance threshold ESC guidelines 2024",
-            "PR interval QRS duration measurement single lead ECG normal range bundle branch block",
-            "smartwatch wearable single lead ECG accuracy validation clinical study Apple Watch Samsung",
-            "ST segment T wave morphology interpretation single lead ECG ischemia detection limitations",
         )
     }
 }
