@@ -1056,6 +1056,7 @@ private fun AnalysisMethodSelector(
                 Triple("heartvoice", "专业API", Color(0xFF4CAF50)),
                 Triple("ds_flash_balanced", "DS均衡", Color(0xFF64B5F6)),
                 Triple("ds_pro_max", "DS Max", Color(0xFF9C27B0)),
+                Triple("ds_raw", "DS原始", Color(0xFFFF9800)),
             )
             options.forEach { (method, label, color) ->
                 val isSelected = selected == method

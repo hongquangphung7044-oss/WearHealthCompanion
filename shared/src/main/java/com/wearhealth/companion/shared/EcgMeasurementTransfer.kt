@@ -52,6 +52,11 @@ data class EcgMeasurementTransfer(
     val aiReport: String = "",
     val tavilyStatus: String = "",   // Tavily 联网检索状态（仅 DS Max 档有值）
     val ppgReferenceHr: Int = 0,     // PPG 绿光参考心率（0=未采集/不可用）
+    // 是否经过本地算法处理（feature/raw-ecg-to-ds 分支新增）
+    // true=经过 EcgFeatureExtractor 算法估测（间期/HRV/形态等本地算出）
+    // false=原始波形直传 DS 分析（ds_raw 方式，未经本地算法）
+    // 手机端据此区分数据来源，UI 展示时标注"算法分析"或"原始波形分析"
+    val processedByAlgorithm: Boolean = true,
 )
 
 /**

@@ -73,12 +73,15 @@ data class EcgMeasurementEntity(
     /** DeepSeek 生成的 JSON 报告（仅 DS 分析方式有值；HeartVoice 为空字符串） */
     @ColumnInfo(defaultValue = "''")
     val aiReport: String = "",
-    /** Tavily 联网检索状态（仅 DS Max 档有值） */
+    /** Tavily 联网检索状态（DS 均衡/Max 档有值） */
     @ColumnInfo(defaultValue = "''")
     val tavilyStatus: String = "",
     /** PPG 绿光参考心率（0=未采集/不可用） */
     @ColumnInfo(defaultValue = "0")
     val ppgReferenceHr: Int = 0,
+    /** 是否经过本地算法处理（ds_raw 模式为 false，其余为 true） */
+    @ColumnInfo(defaultValue = "1")
+    val processedByAlgorithm: Boolean = true,
 ) {
     // ByteArray 的 equals/hashCode 需要重写，避免 Room/集合判等异常
     override fun equals(other: Any?): Boolean {
@@ -108,7 +111,8 @@ data class EcgMeasurementEntity(
                 analysisMethod == other.analysisMethod &&
                 aiReport == other.aiReport &&
                 tavilyStatus == other.tavilyStatus &&
-                ppgReferenceHr == other.ppgReferenceHr
+                ppgReferenceHr == other.ppgReferenceHr &&
+                processedByAlgorithm == other.processedByAlgorithm
     }
 
     override fun hashCode(): Int {
@@ -137,6 +141,7 @@ data class EcgMeasurementEntity(
         result = 31 * result + aiReport.hashCode()
         result = 31 * result + tavilyStatus.hashCode()
         result = 31 * result + ppgReferenceHr
+        result = 31 * result + processedByAlgorithm.hashCode()
         return result
     }
 }

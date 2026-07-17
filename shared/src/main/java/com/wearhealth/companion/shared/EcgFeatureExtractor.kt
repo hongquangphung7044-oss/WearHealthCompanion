@@ -1384,4 +1384,85 @@ object EcgFeatureExtractor {
 
         return sb.toString()
     }
+
+    /**
+     * 原始 ECG 提示词构造器（feature/raw-ecg-to-ds 分支）
+     *
+     * 与 toPromptText 的本质区别：不经过本地算法的间期/形态估测，直接把去 DC 的原始波形
+     * 交给 DS 分析。让 DS 自己看波形判读，避免本地算法的估测偏差污染 DS 判断。
+     *
+     * 预处理（最小化，只做 DS 无法做的）：
+     * 1. 去 DC 偏移：减去全局中位数。原始数据是 ADC 值（14-17.5 万），不减 DC DS 看到的全是
+     *    几十万的大数字毫无意义。减中位数后波形以 0 为中心，R 波/T 波形态清晰可辨。
+     *    注意：不能用平均值去 DC——QRS 尖峰会让均值偏置；中位数对尖峰鲁棒。
+     *    不做滤波/平滑/降采样：保留原始波形信息，让 DS 自己判读。
+     * 2. 采样元信息：采样率、时长、总点数，让 DS 知道数据格式
+     * 3. PPG 参考心率：独立于 ECG 的心率参考，帮助 DS 交叉验证 R 波检测
+     *
+     * 数据量评估：30s × 500Hz = 15000 点，每点 1 个整数（去 DC 后 ±500 范围内），
+     * 文本化后约 45000 字符（≈ 30K token），加上 system prompt + Tavily 文献约 35K token，
+     * 远低于 1M 上下文上限。
+     *
+     * @param ecgData 原始 ECG 数据（ADC 整数，500Hz × 30s）
+     * @param sampleRateHz 采样率
+     * @param ppgReferenceHr PPG 绿光参考心率（0=未采集）
+     * @param profile 用户属性
+     */
+    fun toRawEcgPromptText(
+        ecgData: List<Int>,
+        sampleRateHz: Int = 500,
+        ppgReferenceHr: Int = 0,
+        profile: UserProfile = UserProfile(),
+    ): String {
+        val sb = StringBuilder()
+
+        // 采样元信息
+        sb.append("[采样元信息]\n")
+        sb.append("采样率:${sampleRateHz}Hz\n")
+        sb.append("时长:${if (sampleRateHz > 0) ecgData.size.toFloat() / sampleRateHz else 0f}秒\n")
+        sb.append("总点数:${ecgData.size}\n")
+        sb.append("数据格式:去DC后的整数序列(原始ADC值减去全局中位数),1点=${1000f / sampleRateHz}ms\n")
+        sb.append("算法处理:无(原始波形直传,未经本地算法间期/形态估测)\n")
+        sb.append("\n")
+
+        // 用户属性
+        sb.append("[用户属性]\n")
+        if (profile.ageYears > 0) sb.append("年龄: ${profile.ageYears}岁\n")
+        if (profile.isMale != null) {
+            sb.append("性别: ${if (profile.isMale) "男" else "女"}\n")
+        }
+        sb.append("\n")
+
+        // PPG 参考心率
+        if (ppgReferenceHr > 0) {
+            sb.append("[PPG绿光参考心率]\n")
+            sb.append("心率:${ppgReferenceHr}bpm(系统心率传感器独立测算,与ECG分析互不干扰)\n")
+            sb.append("\n")
+        }
+
+        // 去DC后的原始波形
+        sb.append("[原始ECG波形(去DC,每行1秒])\n")
+        sb.append("说明:每行${sampleRateHz}个整数(1秒),正值表示基线上方,负值表示基线下方\n")
+        sb.append("R波通常表现为尖锐的同向尖峰,T波在R波后100-400ms,振幅约为R波的1/5-1/2\n")
+        sb.append("\n")
+        val ecgSorted = ecgData.sorted()
+        val dcOffset = ecgSorted[ecgSorted.size / 2]  // 中位数去DC
+        val samplesPerSec = sampleRateHz
+        var sec = 0
+        var i = 0
+        while (i < ecgData.size) {
+            val end = minOf(ecgData.size, i + samplesPerSec)
+            val secData = StringBuilder()
+            for (j in i until end) {
+                if (j > i) secData.append(",")
+                secData.append(ecgData[j] - dcOffset)
+            }
+            sb.append("第${sec}秒:${secData}\n")
+            sec++
+            i = end
+        }
+        sb.append("\n")
+
+        return sb.toString()
+    }
 }

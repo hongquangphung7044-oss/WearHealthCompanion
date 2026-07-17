@@ -47,6 +47,10 @@ object MeasurementSerializer {
         if (data.ppgReferenceHr > 0) {
             putInt(DataLayerPaths.KEY_PPG_HR, data.ppgReferenceHr)
         }
+        // raw 模式标记（默认 true，raw 模式为 false 时不写，反序列化默认 true 保持向后兼容）
+        if (!data.processedByAlgorithm) {
+            putBoolean(DataLayerPaths.KEY_PROCESSED_BY_ALGORITHM, false)
+        }
         // A retry with the same timestamp and ECG bytes must still generate TYPE_CHANGED so the
         // phone can persist idempotently and resend an ACK that may have been lost previously.
         putString(DataLayerPaths.KEY_TRANSFER_NONCE, java.util.UUID.randomUUID().toString())
@@ -99,6 +103,7 @@ object MeasurementSerializer {
             aiReport = dataMap.getString(DataLayerPaths.KEY_AI_REPORT, ""),
             tavilyStatus = dataMap.getString(DataLayerPaths.KEY_TAVILY_STATUS, ""),
             ppgReferenceHr = dataMap.getInt(DataLayerPaths.KEY_PPG_HR, 0),
+            processedByAlgorithm = dataMap.getBoolean(DataLayerPaths.KEY_PROCESSED_BY_ALGORITHM, true),
         )
     }
 
@@ -141,6 +146,9 @@ object MeasurementSerializer {
             if (data.ppgReferenceHr > 0) {
                 put("ppgHr", data.ppgReferenceHr)
             }
+            if (!data.processedByAlgorithm) {
+                put("processedByAlgorithm", false)
+            }
         }.toString()
     }
 
@@ -179,6 +187,7 @@ object MeasurementSerializer {
             aiReport = o.optString("aiReport", ""),
             tavilyStatus = o.optString("tavilyStatus", ""),
             ppgReferenceHr = o.optInt("ppgHr", 0),
+            processedByAlgorithm = o.optBoolean("processedByAlgorithm", true),
         )
     }
 }

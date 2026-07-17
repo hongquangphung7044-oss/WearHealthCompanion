@@ -220,52 +220,73 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         val ppgReferenceHr = ecgCollector.fetchPpgHeartRate()
 
         // 1. 提取本地特征（含用户年龄性别 + PPG 参考心率）
+        // raw 模式跳过本地算法，直接构造原始波形提示词
         val profile = EcgFeatureExtractor.UserProfile(
             ageYears = dsSettings.getUserAge(),
             isMale = dsSettings.getUserIsMale(),
         )
-        val bundle = EcgFeatureExtractor.extract(
+        val isRawMode = method == "ds_raw"
+        val bundle = if (isRawMode) null else EcgFeatureExtractor.extract(
             ecgData, sampleRateHz = 500, profile = profile,
             ppgReferenceHr = ppgReferenceHr,
         )
-        val featureText = EcgFeatureExtractor.toPromptText(bundle)
-        val g = bundle.global
+        val featureText = if (isRawMode) {
+            EcgFeatureExtractor.toRawEcgPromptText(
+                ecgData, sampleRateHz = 500,
+                ppgReferenceHr = ppgReferenceHr, profile = profile,
+            )
+        } else {
+            EcgFeatureExtractor.toPromptText(bundle!!)
+        }
+        val g = bundle?.global
 
         // 2. 解析 method → DeepSeekApiClient.Model + ThinkingMode
         // 统一用 FLASH 模型（轻量快），仅区分思考强度：均衡=标准思考，Max=最大思考
+        // ds_raw：原始波形直传，用 BALANCED 思考强度 + rawEcgMode=true 专用提示词
         val (model, thinking) = when (method) {
             "ds_flash_balanced" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
             "ds_pro_max" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.MAX
             "ds_flash_fast" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.FAST  // 兼容旧历史
+            "ds_raw" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
             else -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
         }
 
-        // 3. 调 DS（传入 Tavily Key：仅 Max 档会触发联网检索医学文献）
+        // 3. 调 DS（传入 Tavily Key：均衡/Max 档会触发联网检索医学文献，raw 模式同样触发）
         val dsResult = deepSeekApi.analyzeEcg(
             featureText, model, thinking,
             tavilyApiKey = tavilySettings.getApiKey(),
+            rawEcgMode = isRawMode,
         )
         return dsResult.mapCatching { report ->
             val waveform = downsample(ecgData, 1200)
 
-            // 4. DS 报告里的 JSON 字段尝试提取节律判断作为诊断标签（兜底用本地估算）
-            val dsDiagnosis = extractDsDiagnosis(report.reportJson, g)
+            // 4. DS 报告里的 JSON 字段尝试提取节律判断作为诊断标签
+            // raw 模式没有本地 g 特征，用 DS 报告里的心率/间期字段兜底
+            val dsDiagnosis = if (g != null) {
+                extractDsDiagnosis(report.reportJson, g)
+            } else {
+                extractDsDiagnosisFromRaw(report.reportJson)
+            }
 
+            // raw 模式从 DS 报告 JSON 提取数值（DS 自己测量），算法模式用本地 g
+            val rawJson = runCatching {
+                org.json.JSONObject(com.wearhealth.companion.shared.JsonCleaner.extractJsonObject(report.reportJson))
+            }.getOrNull()
             EcgAnalysisResult(
                 isAbnormal = dsDiagnosis.any { it !in listOf("SN", "SNT", "SNB") },
-                signalQuality = g.signalQuality.toDouble(),
+                signalQuality = g?.signalQuality?.toDouble() ?: 0.7,  // raw 模式无本地质量评估，用中性默认值
                 diagnosis = dsDiagnosis,
                 possibleDiagnoses = emptyList(),
                 isReverse = false,
-                avgHeartRate = g.avgHeartRate,
-                minHeartRate = g.minHeartRate,
-                maxHeartRate = g.maxHeartRate,
-                avgQrs = g.qrsWidthMs,
+                avgHeartRate = g?.avgHeartRate ?: rawJson?.optInt("平均心率", 0) ?: 0,
+                minHeartRate = g?.minHeartRate ?: rawJson?.optInt("最小心率", 0) ?: 0,
+                maxHeartRate = g?.maxHeartRate ?: rawJson?.optInt("最大心率", 0) ?: 0,
+                avgQrs = g?.qrsWidthMs ?: rawJson?.optInt("QRS宽度", 0) ?: 0,
                 avgP = 0,
-                prInterval = g.prIntervalMs,
-                avgQt = g.qtIntervalMs,
-                avgQtc = g.qtcMs,
-                avgQtcFridericia = g.qtcFridericiaMs,
+                prInterval = g?.prIntervalMs ?: rawJson?.optInt("PR间期", 0) ?: 0,
+                avgQt = g?.qtIntervalMs ?: rawJson?.optInt("QT间期", 0) ?: 0,
+                avgQtc = g?.qtcMs ?: rawJson?.optInt("QTc", 0) ?: 0,
+                avgQtcFridericia = g?.qtcFridericiaMs ?: 0,
                 pacCount = 0,
                 pvcCount = 0,
                 rawData = "",  // DS 模式不保留原始 API 响应
@@ -275,6 +296,31 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 tavilyStatus = report.tavilyStatus,
                 ppgReferenceHr = ppgReferenceHr,
             )
+        }
+    }
+
+    /**
+     * raw 模式诊断标签提取（无本地 g 特征，纯从 DS 报告 JSON 提取）
+     * 逻辑与 extractDsDiagnosis 一致，只是不依赖本地 g 做兜底
+     */
+    private fun extractDsDiagnosisFromRaw(reportJson: String): List<String> {
+        return try {
+            val cleaned = com.wearhealth.companion.shared.JsonCleaner.extractJsonObject(reportJson)
+            val json = org.json.JSONObject(cleaned)
+            val rhythm = json.optString("节律判断", "")
+            val labels = mutableListOf<String>()
+            when {
+                rhythm.contains("房颤") -> labels.add("AF")
+                rhythm.contains("房扑") -> labels.add("AFL")
+                rhythm.contains("早搏") -> labels.add("PAC")
+                rhythm.contains("窦性心动过速") -> labels.add("SNT")
+                rhythm.contains("窦性心动过缓") -> labels.add("SNB")
+                rhythm.contains("窦性") -> labels.add("SN")
+                else -> labels.add("SN")  // 解析失败默认窦性，避免误报
+            }
+            labels
+        } catch (e: Exception) {
+            listOf("SN")
         }
     }
 
@@ -706,6 +752,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         aiReport = aiReport,
         tavilyStatus = tavilyStatus,
         ppgReferenceHr = ppgReferenceHr,
+        processedByAlgorithm = analysisMethod != "ds_raw",
     )
 
     private fun refreshHistoryAfterSync(message: String) {
@@ -764,6 +811,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                         sampleRate = 500,
                         analysisMethod = item.analysisMethod,
                         aiReport = item.aiReport,
+                        processedByAlgorithm = item.analysisMethod != "ds_raw",
                     )
                     val putDataMapReq = PutDataMapRequest.create(
                         "${DataLayerPaths.PATH_ECG_MEASUREMENT}/${item.timestamp}"

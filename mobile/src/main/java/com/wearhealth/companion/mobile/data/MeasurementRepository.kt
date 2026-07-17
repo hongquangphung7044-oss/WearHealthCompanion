@@ -41,6 +41,7 @@ class MeasurementRepository(private val dao: EcgMeasurementDao) {
             aiReport = transfer.aiReport,
             tavilyStatus = transfer.tavilyStatus,
             ppgReferenceHr = transfer.ppgReferenceHr,
+            processedByAlgorithm = transfer.processedByAlgorithm,
         )
         return dao.insert(entity)
     }

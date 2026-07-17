@@ -86,7 +86,9 @@ class DeepSeekApiClient(
      * @param featureText EcgFeatureExtractor.toPromptText() 输出的结构化特征文本
      * @param model 选用模型
      * @param thinkingMode 思考强度
-     * @param tavilyApiKey 可选 Tavily Key；非空且 thinkingMode=MAX 时，分析前联网检索
+     * @param tavilyApiKey 可选 Tavily Key；非空且非 FAST 档时，分析前联网检索
+     * @param rawEcgMode 是否为原始波形直传模式。true 时用原始波形专用系统提示词，
+     *   DS 直接分析波形而非本地算法估测的特征。feature/raw-ecg-to-ds 分支新增。
      *        固定医学文献方向，把摘要注入提示词（搜索预算：3 个固定查询 + 6h 进程内缓存）
      * @return 成功返回 [DeepSeekReport]，失败返回异常
      */
@@ -95,6 +97,7 @@ class DeepSeekApiClient(
         model: Model = Model.FLASH,
         thinkingMode: ThinkingMode = ThinkingMode.BALANCED,
         tavilyApiKey: String = "",
+        rawEcgMode: Boolean = false,
     ): Result<DeepSeekReport> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext Result.failure(IllegalStateException("未配置 DeepSeek API Key"))
@@ -110,13 +113,15 @@ class DeepSeekApiClient(
         }
 
         try {
-            // 联网检索（仅 Max 档 + Tavily Key 已配置）：固定 3 个医学文献方向，6h 进程内缓存
-            // 均衡/快速不检索，省搜索预算；检索失败不阻断 DS 分析（返回空字符串）
+            // 联网检索（均衡/Max 档 + Tavily Key 已配置）：固定 3 个医学文献方向，6h 进程内缓存
+            // 快速档不检索，省搜索预算；检索失败不阻断 DS 分析（返回空字符串）
             // 状态记录供 UI 展示（用户能看见是否联网成功）
+            // 设计变更（feature/raw-ecg-to-ds）：Tavily 从仅 Max 下放到均衡档，
+            // 原因是均衡档是日常主力分析路径，配 Tavily 文献后判读依据更全面准确
             var tavilyStatus = ""
-            val tavilyRefs = if (thinkingMode == ThinkingMode.MAX) {
+            val tavilyRefs = if (thinkingMode != ThinkingMode.FAST) {
                 if (tavilyApiKey.isBlank()) {
-                    tavilyStatus = "未配置 Tavily Key（Max 档可选联网，本次未检索）"
+                    tavilyStatus = "未配置 Tavily Key（均衡/Max 档可选联网，本次未检索）"
                     ""
                 } else {
                     val result = runCatching { TavilyApiClient(tavilyApiKey).fetchMedicalReferences() }
@@ -131,11 +136,12 @@ class DeepSeekApiClient(
                     refs
                 }
             } else {
-                tavilyStatus = "未触发（仅 Max 档联网检索）"
+                tavilyStatus = "未触发（快速档不联网，仅均衡/Max 档检索）"
                 ""
             }
 
-            val systemPrompt = buildSystemPrompt() + tavilyRefs
+            val baseSystemPrompt = if (rawEcgMode) buildRawEcgSystemPrompt() else buildSystemPrompt()
+            val systemPrompt = baseSystemPrompt + tavilyRefs
             val messages = JSONArray().apply {
                 put(JSONObject().apply {
                     put("role", "system")
@@ -150,7 +156,10 @@ class DeepSeekApiClient(
             val body = JSONObject().apply {
                 put("model", model.id)
                 put("messages", messages)
-                put("max_tokens", 32000)  // 仅输出上限，按实际用量计费。V4-Flash 最大输出 384K，报告 2-3K + Max 档思维链约 10-20K，32K 留足余量
+                // max_tokens 上限设到 DeepSeek-V4-Flash 官方最大输出 384K（依据 api-docs.deepseek.com 模型&价格页）
+                // 上下文 1M，输入侧（原始 ECG 15000 点去 DC 文本约 30-60K token）+ 输出侧（思维链 + JSON 报告）合计 <1M
+                // 384K 输出上限按实际用量计费，未用满不扣费，留足余量应对原始波形深度分析的长思维链
+                put("max_tokens", 384000)
                 put("response_format", JSONObject().put("type", "json_object"))
                 // 思考强度参数：根据 ThinkingMode 组合 thinking + reasoning_effort
                 // 注意：思考模式(thinking=enabled)不支持 temperature/top_p 等采样参数
@@ -497,6 +506,104 @@ class DeepSeekApiClient(
   "综合解读": "...(2-4句连贯中文，整合以上分析)",
   "健康建议": ["...", "..."],
   "免责声明": "本报告基于腕表单导联 ECG 统计特征生成，间期为本地算法估测，仅供健康参考，不作为医疗诊断依据。如有不适请就医复查标准 12 导联心电图。"
+}
+        """.trimIndent()
+    }
+
+    /**
+     * 原始波形直传模式的系统提示词（feature/raw-ecg-to-ds 分支）
+     *
+     * 与 buildSystemPrompt 的区别：
+     * - 输入是去 DC 的原始波形（每行 1 秒，500 个整数），不是本地算法估测的特征
+     * - DS 自己看波形找 R 波/T 波/P 波，自己测间期，不依赖本地算法的估测值
+     * - 提示词指导 DS 如何解读波形数据格式、如何判读节律、如何测量间期
+     * - 输出 JSON 格式与算法模式一致，方便下游 UI 复用解析逻辑
+     *
+     * 设计原则（全面准确）：
+     * 1. 明确告知数据是腕表单导联 ADC 原始值去 DC，不是 mV，振幅只反映相对变化
+     * 2. 指导 DS 识别腕表 ECG 特征：R 波振幅常<0.5mV、T 波振幅常<0.05mV、可能有基线漂移
+     * 3. 让 DS 自己做 R 波检测（找尖锐同向尖峰）、间期测量（QRS/QT/PR）、节律判读
+     * 4. 心律判读三大方向明确：窦性/房颤/早搏，依据 RR 间期规律性
+     * 5. 反幻觉约束：不可编造波形中看不到的特征，不可猜测未给出的临床信息
+     */
+    private fun buildRawEcgSystemPrompt(): String {
+        return """
+你是一名精通单导联心电图判读的临床心电生理专家，熟练掌握窦性心律识别、心律失常分类（房颤/房扑/室上速/室速/早搏分类）、HRV 时域分析、间期测量（PR/QRS/QT/QTc 的正常范围与心率校正）、ST-T 改变识别，以及 AHA/ESC/ACC 的最新心电图解读指南。
+
+你正在分析来自腕表单导联设备（采样率 500Hz）的**原始 ECG 波形数据**（已去 DC 偏移，未经本地算法处理）。你需要直接从波形中识别 R 波、P 波、T 波，测量间期，判读节律。
+
+【数据格式说明 - 必须理解】
+1. 输入是去 DC 后的整数序列：原始 ADC 值减去全局中位数，波形以 0 为中心
+2. 每行 500 个整数 = 1 秒（每点 2ms），正值表示基线上方，负值表示基线下方
+3. 这是腕表单导联数据，振幅单位不是 mV（是 ADC 相对值），振幅大小只反映相对变化，不可直接换算为 mV
+4. 腕表 ECG 特征：R 波振幅常较小（相对值 100-500），T 波振幅更小（相对值 20-100），可能有基线漂移和运动伪差
+5. R 波通常表现为尖锐的同向尖峰（正向或负向，取决于导联方向），T 波在 R 波后 100-400ms，振幅约为 R 波的 1/5-1/2
+6. P 波在 R 波前 80-200ms，振幅很小，腕表上常不可辨
+
+【分析步骤 - 你必须主动执行】
+1. **R 波检测**：扫描整段波形，找尖锐的同向尖峰。记录每个 R 波的时间位置（第几秒第几点）
+2. **RR 间期计算**：相邻 R 波时间差，单位 ms（1 点 = 2ms）
+3. **心率计算**：60000 / 平均 RR(ms) = 平均心率(bpm)
+4. **节律判读**（基于 RR 序列规律性）：
+   - 窦性心律：RR 规律（变异系数<0.05），无明显短长配对
+   - 窦性心律不齐：RR 轻度波动（变异系数 0.05-0.15），青年人常见，良性
+   - 早搏：RR 序列有短-长配对（短 RR = 早搏前心跳过快，长 RR = 代偿间隙）
+   - 房颤：RR 极度不规律（变异系数>0.20），无任何连续 3 个 RR 接近，无周期性
+5. **间期测量**（在 R 波周围找 QRS 起止、T 波终点）：
+   - QRS 宽度：R 波前找 Q 点（QRS 起始，振幅突然增大处），R 波后找 S 点（QRS 终止，振幅回落处），正常 80-120ms
+   - QT 间期：Q 点到 T 波终点（T 波降支回到基线处），正常 350-450ms（随心率变化）
+   - PR 间期：P 波起点到 Q 点，正常 120-200ms（腕表 P 波常不可辨，此时标"无法测量"）
+6. **形态判读**（只在波形清晰可辨时报告，不可辨时标"无法判断"）：
+   - R 波极性（正向/负向）
+   - T 波方向（与 R 波同向/反向）
+   - ST 段有无偏移
+
+【循证依据声明】本系统采用的阈值依据权威文献，你应在报告中遵循，并明确所有结论为筛查辅助而非临床诊断金标准：
+- Poincaré SD1/SD2 公式：Brennan 2001（SD1=std(RR_n-RR_{n+1})/√2，SD2=std(RR_n+RR_{n+1})/√2）
+- 房颤 RR 特征：Tuboly 2019（单导联+Poincaré，Se 98.69%/Sp 99.59%）、Park 2009（Se 91.4%/Sp 92.9%）
+- 早搏 RR 剔除阈值：Karey 2019 Front Physiol（20% 变化是最佳分界）
+- QTc 校正：Bazett 1920 (Heart 7:353-370) QT/sqrt(RR)；Fridericia 1920 QT/RR^(1/3)
+- HRV/节律判断结论仅作健康参考，须建议就医复查标准 12 导联心电图确诊
+
+【反幻觉约束 - 严格遵守】
+1. 你直接分析原始波形，不要编造波形中看不到的特征。某项无法从波形判断时，必须明确写"数据不足，无法判断"，禁止猜测性填充
+2. 波形可能含噪声段（振幅极低或基线严重漂移），对噪声段应标注"信号质量差，无法分析"
+3. 不可编造未给出的临床信息（如患者病史、用药、其他导联数据）
+4. 这是腕表单导联数据，精度远低于 12 导联心电图，所有结论仅供健康参考，不作为医疗诊断依据
+5. 禁止给出药物剂量、具体治疗方案，仅可建议"建议就医复查心电图"
+6. 【PPG 绿光参考心率】若输入中给出"PPG绿光参考心率"，这是独立于 ECG 的心率参考。你应将自己从波形算出的心率与 PPG 参考心率交叉验证：若偏差>15bpm，提示你的 R 波检测可能有误，需重新检查
+
+【输出要求 - 严格的 JSON 格式】
+你的最终输出（content）必须且只能是一个完整的 JSON 对象：
+- 第一个字符必须是 "{"，最后一个字符必须是 "}"
+- 禁止在 JSON 前后添加解释、思考过程、markdown 标记（如 ```json）、问候语
+- 思考过程只能放在 reasoning_content（由系统自动处理），content 必须是纯 JSON
+- 即使不确定，也必须输出完整 JSON，缺失字段填"数据不足，无法判断"，绝不输出半截 JSON
+
+JSON 格式如下：
+{
+  "算法版本": "raw-v1(原始波形直传,未经本地算法)",
+  "平均心率": 72,
+  "最小心率": 68,
+  "最大心率": 78,
+  "心率分析": "RR 间期规律，心率范围正常",
+  "节律判断": "窦性心律",
+  "节律依据": "RR 变异系数 0.04<0.05，无明显短长配对",
+  "QRS宽度": 100,
+  "QT间期": 380,
+  "QTc": 410,
+  "PR间期": 160,
+  "间期测量说明": "R 波清晰可辨，QRS/QT 可测；P 波振幅过小，PR 为估测值",
+  "R波极性": "正向",
+  "T波方向": "与R波同向",
+  "ST段": "无明显偏移",
+  "R波振幅评估": "相对值约300，振幅偏低(腕表常见)",
+  "信号质量": "良好/中等/差",
+  "噪声段": ["3.0-4.0s 振幅偏低"],
+  "异常提示": ["..."],
+  "综合解读": "...(2-4句连贯中文，整合以上分析)",
+  "健康建议": ["...", "..."],
+  "免责声明": "本报告基于腕表单导联 ECG 原始波形由 AI 直接分析生成，间期为 AI 从波形估测，仅供健康参考，不作为医疗诊断依据。如有不适请就医复查标准 12 导联心电图。"
 }
         """.trimIndent()
     }
