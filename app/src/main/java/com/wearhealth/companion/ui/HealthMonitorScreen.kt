@@ -351,7 +351,9 @@ fun HealthMonitorScreen(
                 AnalysisMethodSelector(
                     selected = uiState.analysisMethod,
                     dsConfigured = uiState.dsApiKeyConfigured,
+                    rawEcgEnabled = uiState.rawEcgEnabled,
                     onSelect = { viewModel.setAnalysisMethod(it) },
+                    onToggleRawEcg = { viewModel.setRawEcgEnabled(it) },
                 )
             }
             item {
@@ -1036,7 +1038,9 @@ private fun DeepSeekConfigCard(
 private fun AnalysisMethodSelector(
     selected: String,
     dsConfigured: Boolean,
+    rawEcgEnabled: Boolean,
     onSelect: (String) -> Unit,
+    onToggleRawEcg: (Boolean) -> Unit,
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -1056,7 +1060,6 @@ private fun AnalysisMethodSelector(
                 Triple("heartvoice", "专业API", Color(0xFF4CAF50)),
                 Triple("ds_flash_balanced", "DS均衡", Color(0xFF64B5F6)),
                 Triple("ds_pro_max", "DS Max", Color(0xFF9C27B0)),
-                Triple("ds_raw", "DS原始", Color(0xFFFF9800)),
             )
             options.forEach { (method, label, color) ->
                 val isSelected = selected == method
@@ -1074,6 +1077,26 @@ private fun AnalysisMethodSelector(
                         fontSize = 10.sp,
                     )
                 }
+            }
+        }
+        // 第 2 行：原始波形直传开关（仅 DS 均衡/Max 选中时显示）
+        // 开启后跳过本地算法，原始波形去 DC 后直传 DS，由 DS 自行看波形判读
+        // heartvoice 不显示此开关（专业 API 不走 DS）
+        if (selected == "ds_flash_balanced" || selected == "ds_pro_max") {
+            Button(
+                onClick = { onToggleRawEcg(!rawEcgEnabled) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (rawEcgEnabled) Color(0xFFFF9800) else Color(0xFF263238),
+                    contentColor = Color.White,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = if (rawEcgEnabled) "原始直传：开启（跳过算法）" else "原始直传：关闭（用算法特征）",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 10.sp,
+                    textAlign = TextAlign.Center,
+                )
             }
         }
         if (!dsConfigured && selected.startsWith("ds_")) {

@@ -178,7 +178,7 @@ class WatchWearableListenerService : WearableListenerService() {
                     aiReport = item.aiReport,
                     tavilyStatus = item.tavilyStatus,
                     ppgReferenceHr = item.ppgReferenceHr,
-                    processedByAlgorithm = item.analysisMethod != "ds_raw",
+                    processedByAlgorithm = !item.analysisMethod.endsWith("_raw") && item.analysisMethod != "ds_raw",
                 )
 
                 val putDataMapReq = PutDataMapRequest.create(

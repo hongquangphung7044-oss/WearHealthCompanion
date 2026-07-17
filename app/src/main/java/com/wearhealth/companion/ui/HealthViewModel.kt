@@ -54,6 +54,9 @@ data class EcgUiState(
     val autoSyncEnabled: Boolean = true,           // 分析并保存后自动传送
     // 分析方式选择：heartvoice / ds_flash_balanced（均衡）/ ds_pro_max（Max思考）
     val analysisMethod: String = "heartvoice",
+    // 原始波形直传开关：开启后 DS 均衡/Max 跳过本地算法，原始波形去 DC 后直传 DS
+    // 仅在选择 DS 均衡或 DS Max 时生效；heartvoice 不受影响
+    val rawEcgEnabled: Boolean = false,
     val dsApiKeyConfigured: Boolean = false,      // DeepSeek API Key 是否已配置
     val dsBalanceText: String? = null,           // DS 余额文本（如 "¥8.66"），null=未查询
     val dsBalanceLoading: Boolean = false,        // 正在查询余额
@@ -221,11 +224,25 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
 
         // 1. 提取本地特征（含用户年龄性别 + PPG 参考心率）
         // raw 模式跳过本地算法，直接构造原始波形提示词
+        // 触发条件：rawEcgEnabled 开关开启 + 当前是 DS 方式（均衡/Max）。
+        //   heartvoice 不受开关影响（始终走专业 API）。
+        //   "ds_raw" 为旧版独立选项，保留兼容历史记录，等价于开关开启 + 均衡。
         val profile = EcgFeatureExtractor.UserProfile(
             ageYears = dsSettings.getUserAge(),
             isMale = dsSettings.getUserIsMale(),
         )
-        val isRawMode = method == "ds_raw"
+        val isDsMethod = method.startsWith("ds_")
+        val rawEcgEnabled = _uiState.value.rawEcgEnabled
+        // raw 模式触发：开关开启 + DS 方式；或历史 method 已带 _raw 后缀（如 ds_flash_balanced_raw）
+        val isRawMode = isDsMethod && (rawEcgEnabled || method.endsWith("_raw"))
+        // 实际用于选择思考强度的 key：raw 模式去掉 _raw 后缀还原档位
+        val thinkingKey = if (isRawMode && method.endsWith("_raw")) {
+            method.removeSuffix("_raw")
+        } else if (isRawMode) {
+            method  // 开关触发但 method 未带后缀，用原 method 选档位
+        } else {
+            method
+        }
         val bundle = if (isRawMode) null else EcgFeatureExtractor.extract(
             ecgData, sampleRateHz = 500, profile = profile,
             ppgReferenceHr = ppgReferenceHr,
@@ -240,16 +257,21 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         }
         val g = bundle?.global
 
-        // 2. 解析 method → DeepSeekApiClient.Model + ThinkingMode
+        // 2. 解析 thinkingKey → DeepSeekApiClient.Model + ThinkingMode
         // 统一用 FLASH 模型（轻量快），仅区分思考强度：均衡=标准思考，Max=最大思考
-        // ds_raw：原始波形直传，用 BALANCED 思考强度 + rawEcgMode=true 专用提示词
-        val (model, thinking) = when (method) {
+        // raw 模式不影响档位选择——thinkingKey 已还原为 ds_flash_balanced/ds_pro_max
+        // "ds_raw" 为旧版历史记录字符串，等价于均衡
+        val (model, thinking) = when (thinkingKey) {
             "ds_flash_balanced" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
             "ds_pro_max" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.MAX
             "ds_flash_fast" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.FAST  // 兼容旧历史
-            "ds_raw" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
+            "ds_raw" -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED  // 兼容旧历史
             else -> DeepSeekApiClient.Model.FLASH to DeepSeekApiClient.ThinkingMode.BALANCED
         }
+
+        // raw 模式实际记录到结果的 analysisMethod：在档位后加 _raw 后缀，方便历史记录区分算法/原始
+        // 如：ds_flash_balanced + raw 开关 → 记录为 ds_flash_balanced_raw
+        val recordedMethod = if (isRawMode && !method.endsWith("_raw")) "${method}_raw" else method
 
         // 3. 调 DS（传入 Tavily Key：均衡/Max 档会触发联网检索医学文献，raw 模式同样触发）
         val dsResult = deepSeekApi.analyzeEcg(
@@ -291,7 +313,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                 pvcCount = 0,
                 rawData = "",  // DS 模式不保留原始 API 响应
                 ecgSamples = waveform,
-                analysisMethod = method,
+                analysisMethod = recordedMethod,
                 aiReport = report.reportJson,
                 tavilyStatus = report.tavilyStatus,
                 ppgReferenceHr = ppgReferenceHr,
@@ -579,6 +601,11 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(analysisMethod = method)
     }
 
+    /** 设置原始波形直传开关（仅 DS 均衡/Max 生效，heartvoice 不受影响） */
+    fun setRawEcgEnabled(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(rawEcgEnabled = enabled)
+    }
+
     /** 保存用户年龄 */
     fun saveUserAge(age: Int) {
         dsSettings.setUserAge(age)
@@ -752,7 +779,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
         aiReport = aiReport,
         tavilyStatus = tavilyStatus,
         ppgReferenceHr = ppgReferenceHr,
-        processedByAlgorithm = analysisMethod != "ds_raw",
+        processedByAlgorithm = !analysisMethod.endsWith("_raw") && analysisMethod != "ds_raw",
     )
 
     private fun refreshHistoryAfterSync(message: String) {
@@ -811,7 +838,7 @@ class HealthViewModel(app: Application) : AndroidViewModel(app) {
                         sampleRate = 500,
                         analysisMethod = item.analysisMethod,
                         aiReport = item.aiReport,
-                        processedByAlgorithm = item.analysisMethod != "ds_raw",
+                        processedByAlgorithm = !item.analysisMethod.endsWith("_raw") && item.analysisMethod != "ds_raw",
                     )
                     val putDataMapReq = PutDataMapRequest.create(
                         "${DataLayerPaths.PATH_ECG_MEASUREMENT}/${item.timestamp}"
