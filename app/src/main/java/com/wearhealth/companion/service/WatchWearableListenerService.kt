@@ -178,6 +178,9 @@ class WatchWearableListenerService : WearableListenerService() {
                     aiReport = item.aiReport,
                     tavilyStatus = item.tavilyStatus,
                     ppgReferenceHr = item.ppgReferenceHr,
+                    sdnnMs = item.sdnnMs,
+                    rmssdMs = item.rmssdMs,
+                    pnn50Pct = item.pnn50Pct,
                     processedByAlgorithm = !item.analysisMethod.endsWith("_raw") && item.analysisMethod != "ds_raw",
                 )
 
