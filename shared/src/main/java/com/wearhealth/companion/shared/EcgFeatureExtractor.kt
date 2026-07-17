@@ -16,6 +16,20 @@ import kotlin.math.sqrt
  */
 object EcgFeatureExtractor {
 
+    /**
+     * 算法版本号（自动注入到导出诊断包与 toPromptText，便于横向对照样本与定位回归）。
+     *
+     * 升级算法时只需改这一处：DiagnosticExporter 导出的元信息头、toPromptText 输出的
+     * [全局指标] 段、以及 ds_* 路径发给 DeepSeek 的提示词，都会自动带上新版本号，
+     * 不需要同步修改多处字符串。历史样本对照时，凭此字段即可判断是哪个版本跑出的结果。
+     *
+     * 版本演进：
+     * - v5：初版 R 波检测 + HRV + 间期估测
+     * - v6：引入二次不应期 200ms + T 波排除 200-400ms（拦不住 208-276ms 超短 RR）
+     * - v7（当前）：精修二次不应期 300ms + 回溯补检 T 波排除 300-450ms + PPG 兜底 avgHr + R 峰可靠性评估三档降级
+     */
+    const val ALGORITHM_VERSION = "v7"
+
     /** 用户基本属性（影响 QTc/HRV 判断阈值） */
     data class UserProfile(
         val ageYears: Int = 0,        // 0=未知
@@ -1187,6 +1201,7 @@ object EcgFeatureExtractor {
 
         // 全局指标
         sb.append("[全局指标]\n")
+        sb.append("算法版本:${ALGORITHM_VERSION}\n")
         sb.append("采样率:${g.sampleRateHz}Hz 时长:${"%.1f".format(g.durationSec)}s 总点数:${g.totalSamples}\n")
         sb.append("R波检测:${g.rPeakCount}个 平均心率:${g.avgHeartRate}bpm 范围:${g.minHeartRate}-${g.maxHeartRate}bpm\n")
         // min/max=0 提示：R 波检测数不足或 HV API 缺陷时无法算 min/max

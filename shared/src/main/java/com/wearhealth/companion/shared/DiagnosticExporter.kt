@@ -50,6 +50,10 @@ object DiagnosticExporter {
         } else 0.0
         sb.append("时长:${"%.1f".format(durationSec)} 秒\n")
         sb.append("分析方法:${transfer.analysisMethod}\n")
+        // 算法版本号自动注入：引用 EcgFeatureExtractor.ALGORITHM_VERSION，升级算法时改一处即可
+        // heartvoice 路径走 HeartVoice API 不用本地算法，但导出仍标注版本，方便横向对照
+        // （[算法提取后的结构化特征] 段会重建本地算法结果，版本号在此有意义）
+        sb.append("算法版本:${EcgFeatureExtractor.ALGORITHM_VERSION}\n")
         if (transfer.tavilyStatus.isNotEmpty()) {
             sb.append("Tavily状态:${transfer.tavilyStatus}\n")
         }

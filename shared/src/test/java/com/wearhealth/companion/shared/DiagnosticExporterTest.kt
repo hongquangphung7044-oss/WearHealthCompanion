@@ -154,6 +154,17 @@ class DiagnosticExporterTest {
         assertTrue("应包含采样率", text.contains("采样率:$sampleRate Hz"))
         assertTrue("应包含数据点数", text.contains("数据点数:${sampleRate * 30}"))
         assertTrue("应包含分析方法", text.contains("分析方法:ds_flash_fast"))
+        // 算法版本号应自动注入到元信息头（引用 EcgFeatureExtractor.ALGORITHM_VERSION）
+        assertTrue(
+            "元信息头应包含算法版本号",
+            text.contains("算法版本:${EcgFeatureExtractor.ALGORITHM_VERSION}"),
+        )
+        // 全局指标段也应带版本号（toPromptText 输出）
+        val featureSection = text.substringAfter("[算法提取后的结构化特征]")
+        assertTrue(
+            "特征段 [全局指标] 应包含算法版本号",
+            featureSection.contains("算法版本:${EcgFeatureExtractor.ALGORITHM_VERSION}"),
+        )
     }
 
     @Test
