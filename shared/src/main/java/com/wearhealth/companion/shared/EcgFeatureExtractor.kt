@@ -145,6 +145,14 @@ object EcgFeatureExtractor {
         // 早搏短长 RR 会同时污染 HRV 和心率范围（短 RR→虚高 maxHr，长 RR→虚低 minHr）
         val rrForHrv = filterEctopicBeats(rrIntervals)
         val hr = computeHeartRateStats(rrForHrv, profile.ageYears)
+        // PPG 兜底：当本地 R 波检测失败（RR<3 → avgHr=0）但 PPG 可用时，用 PPG 填充 avgHr。
+        // 场景：信号质量差导致 R 峰检测数不足，但 PPG 绿光传感器仍能给出瞬时心率。
+        // min/max 仍为 0（PPG 是瞬时值无法算范围），但 avgHr 至少有值供 DS 参考。
+        // 依据：DeepSeekApiClient 提示词第 9 条"PPG 不可用时按原逻辑用 R 波心率"，
+        //       反之 R 波不可用时应优先采信 PPG（系统心率传感器独立测算，绕开 R 波检测）。
+        val finalAvgHr = if (hr.avgHr == 0 && ppgReferenceHr > 0) ppgReferenceHr else hr.avgHr
+        val finalMinHr = if (hr.avgHr == 0 && ppgReferenceHr > 0) 0 else hr.minHr  // PPG 无法算 min
+        val finalMaxHr = if (hr.avgHr == 0 && ppgReferenceHr > 0) 0 else hr.maxHr  // PPG 无法算 max
         val hrv = computeHrv(rrForHrv)
         val rhythm = computeRhythmFeatures(rrIntervals)
         val intervals = estimateIntervals(ecgData, sampleRateHz, effectiveRPeaks, hr.avgHr)
@@ -162,7 +170,7 @@ object EcgFeatureExtractor {
             rawRPeaks = rPeaks,
             effectiveRPeaks = effectiveRPeaks,
             rrIntervals = rrIntervals,
-            avgHr = hr.avgHr,
+            avgHr = finalAvgHr,
             durationSec = durationSec,
             segments = segments,
             sampleRateHz = sampleRateHz,
@@ -173,9 +181,9 @@ object EcgFeatureExtractor {
             durationSec = durationSec,
             totalSamples = ecgData.size,
             rPeakCount = effectiveRPeaks.size,
-            avgHeartRate = hr.avgHr,
-            minHeartRate = hr.minHr,
-            maxHeartRate = hr.maxHr,
+            avgHeartRate = finalAvgHr,
+            minHeartRate = finalMinHr,
+            maxHeartRate = finalMaxHr,
             rrIntervalsMs = rrIntervals,
             sdnnMs = hrv.sdnn,
             rmssdMs = hrv.rmssd,
@@ -308,6 +316,7 @@ object EcgFeatureExtractor {
         //   k=1.7 阈值 + 噪声段掩码 + filterEctopicBeats 已足够控制误检
         val rPeaks = mutableListOf<Int>()
         val refractory = sampleRateHz / 5  // 200ms 不应期（500/5=100样本，最高 300bpm 上限）
+        val refineRefractory = (sampleRateHz * 0.300).toInt()  // 300ms 精修二次不应期（v7）
         var lastPeakIdx = -refractory * 2
         val checkRange = sampleRateHz / 50  // ±10ms 局部最大检查（500/50=10样本=±10ms）
 
@@ -343,14 +352,17 @@ object EcgFeatureExtractor {
                     bestIdx = j
                 }
             }
-            // 二次不应期验证（v6 新增）：精修位移可能让 bestIdx 距上一个 R 峰 < refractory。
-            // 根因：envelope 峰 i 满足 i - lastPeakIdx >= refractory，但 bestIdx = i ± 50ms，
-            // 若 bestIdx = i - 50ms，则 bestIdx - 上一个 bestIdx 可能 < refractory，
-            // 产生 156-186ms 的超短 RR（生理不可能）。
-            // 验证（test_refine_refractory.py）：静息/223211/运动后 均有精修后 RR<200ms 的违规对。
-            // 修复：精修后若 bestIdx 距上一个 R 峰 < refractory，跳过（双峰/切迹第二峰）。
-            // 效果（test_refine_fix.py）：极端 RR 占比降 2-9%，心电api静息换右手 不可信→边缘。
-            if (rPeaks.isNotEmpty() && (bestIdx - rPeaks.last()) < refractory) continue
+            // 二次不应期验证（v6 新增，v7 调整为 300ms）：
+            // 根因：envelope 双峰（150ms MWI 让一个 QRS 产生两个包络峰，间距 250-330ms），
+            // 精修后两个 bestIdx 距离 208-276ms，超过 200ms refractory 但仍是极端 RR。
+            // v6 用 200ms 拦不住 208-276ms 的超短 RR（test_short_rr_source.py 证实全是"主-主精修过近"）。
+            // v7 改用 300ms：生理上 RR<300ms = 心率>200bpm，腕表 ECG 不可能；
+            // 107bpm(运动后) RR=561ms > 300ms 安全，不会误杀高心率真 R 波。
+            // 验证（test_refine_300ms.py，7 样本）：
+            // - 专业/dsmax/静息/心电api活动后 极端 RR 全清零
+            // - ds均衡/223211 边缘→可信，运动后无回归
+            // - 仅专业 R 峰 32→25（双峰合并，58bpm RR=1034ms 不会误杀真 R 波）
+            if (rPeaks.isNotEmpty() && (bestIdx - rPeaks.last()) < refineRefractory) continue
             rPeaks.add(bestIdx)
             // 关键修复：lastPeakIdx 必须用精修后的 bestIdx，否则不应期基于包络峰位置计算，
             // 与实际 R 峰位置偏差累积，可能让相邻 QRS 的精修位置进入同一不应期窗口
@@ -412,18 +424,20 @@ object EcgFeatureExtractor {
                                 rIdx = j
                             }
                         }
-                        // T 波位置排除（v6 新增）：回溯补检可能把 T 波当 R 波补检。
+                        // T 波位置排除（v6 新增，v7 窗口调整为 300-450ms）：
                         // 根因：腕表 ECG 的 T/R 比普遍 ≥1（223211 T/R=1.09、静息 T/R=1.80、
                         // 运动后 T/R=0.97），T 波也有斜率会产生 envelope 峰，半阈值搜索时
                         // 可能找到 T 波峰 → 产生 R-T 短 RR + T-下个R 长 RR 的伪配对。
                         // 验证（test_backfill_twave.py）：223211 有 4 个、静息有 3 个回溯补检峰
                         // 落在 T 波位置（距前 R 峰 200-450ms）。
-                        // 修复：补检峰若距前一个 R 峰在 200-450ms（T 波位置），判为 T 波，跳过。
-                        // T 波窗口 200-450ms 依据：生理 T 波在 R 峰后 200-400ms（tOffsetSec 默认 0.3s），
-                        // 加 50ms 容差覆盖精修位移。
+                        // v7 调整：下限从 200ms 提到 300ms，与精修二次不应期一致，
+                        // 避免 <300ms 的补检峰（极端 RR）通过；上限 450ms 不变（T 波最晚位置）。
+                        // 二次不应期也用 refineRefractory（300ms），与主检测一致。
                         val prevR = rPeaks.filter { it < rIdx }.maxOrNull() ?: -refractory * 4
                         val offsetToPrevMs = (rIdx - prevR) * 1000.0 / sampleRateHz
-                        if (offsetToPrevMs in 200.0..450.0) continue  // T 波位置，跳过
+                        if (offsetToPrevMs in 300.0..450.0) continue  // T 波位置，跳过
+                        // 回溯补检二次不应期（300ms，与主检测一致）
+                        if (rPeaks.any { abs(rIdx - it) < refineRefractory }) continue
                         extraPeaks.add(rIdx)
                     }
                 }
@@ -1175,6 +1189,10 @@ object EcgFeatureExtractor {
         sb.append("[全局指标]\n")
         sb.append("采样率:${g.sampleRateHz}Hz 时长:${"%.1f".format(g.durationSec)}s 总点数:${g.totalSamples}\n")
         sb.append("R波检测:${g.rPeakCount}个 平均心率:${g.avgHeartRate}bpm 范围:${g.minHeartRate}-${g.maxHeartRate}bpm\n")
+        // min/max=0 提示：R 波检测数不足或 HV API 缺陷时无法算 min/max
+        if (g.minHeartRate == 0 && g.maxHeartRate == 0 && g.avgHeartRate > 0) {
+            sb.append("(心率范围不可用：R波检测数不足无法算min/max，平均心率由${if (g.ppgReferenceHr > 0 && g.rPeakCount < 4) "PPG绿光参考" else "R波中位数"}估算；建议重新测量获取完整心率范围)\n")
+        }
         // PPG 绿光参考心率：测后读系统心率传感器，绕开本地 R 波检测可能的不准
         // DS 应以此为"金标准参考"校验本地 R 波心率：两者偏差大时本地 R 波检测可能漏检/误检
         if (g.ppgReferenceHr > 0) {
