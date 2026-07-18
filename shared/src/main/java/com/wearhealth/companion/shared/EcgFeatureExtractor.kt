@@ -1423,7 +1423,8 @@ object EcgFeatureExtractor {
         sb.append("总点数:${ecgData.size}\n")
         sb.append("数据格式:去DC+去趋势后的相对偏移整数序列(以0为中心,非绝对ADC值,非mV),1点=${1000f / sampleRateHz}ms\n")
         sb.append("预处理:每个点减去以其为中心的2秒滑动窗口局部均值(去基线漂移+DC偏移,保留R波/T波形态)\n")
-        sb.append("重要:数值是相对偏移(原始ADC含约18万DC偏移已去除),振幅判读须用峰峰值(max-min),R波峰峰值通常200-1000\n")
+        sb.append("重要:数值是相对偏移(原始ADC含约14-19万DC偏移已去除),单点绝对值可达1000-2500(R波尖峰/运动伪差)属正常\n")
+        sb.append("振幅判读须用局部峰峰值(max-min),R波局部峰峰值通常200-1200,整段全局峰峰值通常1000-4000,只有<100才判信号差\n")
         sb.append("算法处理:无(原始波形直传,未经本地算法间期/形态估测)\n")
         sb.append("\n")
 
@@ -1448,7 +1449,7 @@ object EcgFeatureExtractor {
         sb.append("[原始ECG波形(去DC+去趋势,每行1秒])\n")
         sb.append("说明:每行${sampleRateHz}个整数(1秒),正值表示基线上方,负值表示基线下方\n")
         sb.append("重要:数值是相对偏移(以0为中心),严禁把单个整数绝对大小当振幅,振幅看峰峰值(max-min)\n")
-        sb.append("R波=尖锐同向尖峰(去趋势后峰峰值200-1000),T波在R波后100-400ms(峰峰值50-300),P波常不可辨\n")
+        sb.append("R波=尖锐同向尖峰(去趋势后峰峰值200-1200),T波在R波后100-400ms(峰峰值50-300),P波常不可辨\n")
         sb.append("\n")
         val detrended = detrendBySlidingWindow(ecgData, windowSize = sampleRateHz * 2)
         val samplesPerSec = sampleRateHz
